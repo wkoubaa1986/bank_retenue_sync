@@ -176,3 +176,79 @@ def extract_honoraire(pdf_bytes: bytes) -> dict:
                          and abs((net + rs) - ttc) < 0.01)
     data["_model"] = model
     return data
+
+
+# ------------------------------------------------------------------ scans (sans couche texte)
+
+_SCAN_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
+    " Le document est un SCAN : lis les montants tels qu'ils sont IMPRIMES. "
+    "⚠️ Format tunisien : la virgule est le separateur DECIMAL et les montants ont TROIS "
+    "decimales — « 1 087,021 » vaut 1087.021, pas 1087021 ; « 923,700 » vaut 923.7. "
+    "L'espace ou le point separe les milliers. Verifie ta lecture avec la regle de coherence : "
+    "si total_ht + total_tva + timbre ne tombe pas sur total_ttc, tu as mal lu une virgule."
+)
+
+
+def extract_invoice_scan(pdf_bytes: bytes, extra_hint: str = None) -> dict:
+    """Extraction d'une facture SCANNEE, sans couche texte. -> meme dict que `extract_invoice`.
+
+    ⚠️ POURQUOI UNE SECONDE VOIE. `extract_invoice` lit le texte du PDF : parfait pour les factures
+    recues par email, inutilisable sur un scan, qui n'est qu'une image. Or les factures fournisseurs
+    locales arrivent en papier — sur 222 pieces jointes de factures d'achat, la premiere essayee
+    rendait « PDF sans texte extractible ».
+
+    Le PDF part donc TEL QUEL au modele (API Responses, `input_file`), qui le rasterise de son cote.
+    Aucune dependance nouvelle : ni poppler, ni PyMuPDF — dont l'installation aurait demande de
+    reconstruire l'image Docker de production.
+
+    ⚠️ ET LE FORMAT TUNISIEN EST UN PIEGE A LUI SEUL. Sans consigne explicite, le modele a lu
+    « 923,688 » comme 922688 et rendu un TTC de 1098.99 pour une facture a 1087,021. Trois decimales
+    et virgule decimale : c'est dit dans le prompt, et la regle de coherence sert de garde-fou.
+    """
+    import base64
+
+    client, model, _temperature = _get_client_model_temp()
+    if not hasattr(client, "responses"):
+        frappe.throw("Le SDK OpenAI installe ne sait pas lire un PDF (API Responses absente).")
+
+    consigne = "Facture fournisseur scannee." + (" %s" % extra_hint if extra_hint else "")
+    b64 = base64.b64encode(pdf_bytes).decode()
+    res = client.responses.create(
+        model=model,
+        instructions=_SCAN_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": [
+            {"type": "input_file", "filename": "facture.pdf",
+             "file_data": "data:application/pdf;base64,%s" % b64},
+            {"type": "input_text", "text": consigne}]}])
+
+    texte = (res.output_text or "").strip()
+    if texte.startswith("```"):
+        # Le modele encadre parfois son JSON d'un bloc de code : on le retire sans etre malin.
+        texte = texte.strip("`")
+        texte = texte.split("\n", 1)[1] if texte.lower().startswith("json") else texte
+        texte = texte.rsplit("```", 1)[0]
+    data = json.loads(texte)
+
+    for k in ("total_ht", "total_tva", "stamp_duty", "total_ttc", "vat_rate"):
+        data[k] = _to_float(data.get(k))
+    ht, tva, ttc = data.get("total_ht"), data.get("total_tva"), data.get("total_ttc")
+    stamp = data.get("stamp_duty") or 0.0
+    data["_balanced"] = (ht is not None and tva is not None and ttc is not None
+                         and abs((ht + tva + stamp) - ttc) < 0.01)
+    data["_model"] = model
+    data["_scan"] = True
+    return data
+
+
+def extract_invoice_any(pdf_bytes: bytes, extra_hint: str = None) -> dict:
+    """Le texte d'abord, le scan ensuite. C'est l'entree a utiliser quand on ignore la nature du PDF.
+
+    L'ordre n'est pas indifferent : lire le texte quand il existe est plus fidele (aucune
+    reconnaissance de caracteres) et moins couteux qu'envoyer une image au modele.
+    """
+    try:
+        if pdf_to_text(pdf_bytes).strip():
+            return extract_invoice(pdf_bytes, extra_hint=extra_hint)
+    except Exception:
+        pass
+    return extract_invoice_scan(pdf_bytes, extra_hint=extra_hint)

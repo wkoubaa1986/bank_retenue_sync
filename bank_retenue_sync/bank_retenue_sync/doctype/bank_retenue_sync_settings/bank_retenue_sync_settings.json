@@ -44,7 +44,14 @@
   "ras_mode_dette",
   "supprimer_reglement_annule",
   "pdf_auto_apres_rapprochement",
-  "last_tej_sync"
+  "last_tej_sync",
+  "section_achat",
+  "controle_achat_actif",
+  "ras_achat_seuil",
+  "ras_achat_taux",
+  "column_break_achat",
+  "ras_achat_compte",
+  "ras_achat_mode"
  ],
  "fields": [
   {
@@ -298,6 +305,49 @@
    "precision": "3",
    "label": "Montant d'une recharge de la carte technologique",
    "description": "Montant propose au tableau « Paiements a faire » quand le solde REEL de la carte passe sous le seuil. Une recharge type, pas un appoint : virer seulement ce qui manque pour repasser le seuil ferait replonger la carte des le premier debit. Plafonne par le solde disponible en banque."
+  },
+  {
+   "fieldname": "section_achat",
+   "fieldtype": "Section Break",
+   "label": "Achats locaux"
+  },
+  {
+   "default": "1",
+   "fieldname": "controle_achat_actif",
+   "fieldtype": "Check",
+   "label": "Controler les factures d'achat locales",
+   "description": "Refuse la validation d'une facture d'un fournisseur tunisien tant que le scan n'est pas joint, que le stock et le magasin ne sont pas renseignes, ou que les totaux saisis different de ceux du scan. Decoche : plus aucun controle."
+  },
+  {
+   "default": "1000",
+   "fieldname": "ras_achat_seuil",
+   "fieldtype": "Currency",
+   "label": "Seuil de la retenue a la source achat",
+   "description": "TTC a partir duquel la retenue est due (1 000 DT)."
+  },
+  {
+   "default": "1",
+   "fieldname": "ras_achat_taux",
+   "fieldtype": "Percent",
+   "label": "Taux de la retenue a la source achat"
+  },
+  {
+   "fieldname": "column_break_achat",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Retenue a la source achat - A&S",
+   "fieldname": "ras_achat_compte",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Compte de retenue a la source achat"
+  },
+  {
+   "default": "Retenue a la source achat",
+   "fieldname": "ras_achat_mode",
+   "fieldtype": "Link",
+   "options": "Mode of Payment",
+   "label": "Mode de paiement de la retenue achat"
   }
  ],
  "issingle": 1,

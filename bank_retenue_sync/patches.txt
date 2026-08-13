@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 bank_retenue_sync.patches.politique_regularisation_ras
+bank_retenue_sync.patches.politique_achat_local
