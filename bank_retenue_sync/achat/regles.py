@@ -4,9 +4,13 @@ CE QUE CE FICHIER DECIDE
 ------------------------
 Une facture d'achat aupres d'un fournisseur TUNISIEN engage trois choses que la saisie seule ne
 garantit pas : la preuve (le scan de la facture reelle), le stock (la marchandise entre quelque
-part), et l'impot (1 % retenu a la source au-dela de 1 000 DT TTC). Aucune de ces trois n'est
-rattrapable apres validation sans annuler l'ecriture — d'ou des controles BLOQUANTS, et non des
-avertissements que personne ne lit.
+part), et l'impot (1 % retenu a la source au-dela de 1 000 DT TTC). Aucune des trois n'est
+rattrapable apres validation sans annuler l'ecriture.
+
+⚠️ MAIS DEUX DES TROIS SE CORRIGENT, ET NE BLOQUENT DONC RIEN. Le stock et la retenue se posent
+seuls a l'enregistrement (cf. `achat/facture.py`) : refuser une facture pour une case a cocher
+qu'on sait cocher soi-meme fait perdre du temps sans rien proteger. Ce fichier ne decide donc que
+de ce qui reste vraiment indecidable par une machine — cf. `bloquants`.
 
 ⚠️ LE FOURNISSEUR ETRANGER EST HORS SUJET. Une facture chinoise n'a ni retenue a la source ni
 timbre : lui appliquer ces regles bloquerait des saisies parfaitement legitimes. Le pays du
@@ -21,10 +25,26 @@ PAYS_LOCAL = "Tunisia"
 SEUIL_RETENUE = 1000.0
 TAUX_RETENUE = 1.0
 
-# Ecart admis entre la facture saisie et la facture scannee. Ce n'est pas une tolerance de calcul :
-# c'est la marge de LECTURE d'un scan. Sur ELECTROQUIP, le modele a rendu 1 098,999 la ou la facture
-# porte 1 099,011 — douze millimes d'ecart de reconnaissance, sur une TVA lue au millime pres.
-TOLERANCE = 0.05
+# ⚠️ SEUL UN ECART IMPORTANT BLOQUE, ET C'EST LA CALIBRATION QUI FAIT TOUT. Un scan ne se lit pas
+# au millime : sur ELECTROQUIP, le modele rend 922,688 la ou la facture porte 923,700 — un chiffre
+# mal reconnu, pas une erreur de saisie. Refuser la validation pour cela ferait crier au loup a
+# chaque facture.
+#
+# ⚠️ MAIS TROIS GRANDEURS NE SE TOLERENT PAS PAREIL, ET LES CONFONDRE A LAISSE PASSER UNE VRAIE
+# ERREUR. Un seuil unique, calcule sur le TTC, etait applique tel quel aux trois : sur
+# ACC-PINV-2026-00092 il valait 10,937 DT, soit 6,2 % d'une TVA de 175 DT. Une TVA ramenee a la main
+# de 175,311 a 170,000 — 5,311 DT deduits en trop — est passee sans un mot, et la retenue a la
+# source, calculee sur un TTC devenu faux, avec elle. Chaque grandeur a donc desormais son seuil.
+ECART_TTC = 1.5      # TTC : ecart ABSOLU admis. Le bruit de lecture constate vaut 1,012 DT
+                     # (1 099,011 saisi contre 1 097,999 lu) : 1,5 le couvre, 1,0 ne le couvrait pas.
+ECART_TVA_TAUX = 0.1  # TVA : pourcentage de la TVA LUE — 0,175 DT sur ELECTROQUIP. La TVA se lit
+                     # bien mieux que le HT : les trois extractions en base la rendent au millime
+                     # exact, la ou le HT derape de 1,012 DT sur le meme scan.
+# HT : le PLUS GRAND de 1 DT et d'un pourcentage du TTC. Volontairement large — c'est la grandeur
+# ou vit le bruit de lecture, et la seule des trois qui ne serait pas resserree sans faire refuser
+# des factures saines.
+ECART_MINIMAL = 1.0
+ECART_TAUX = 1.0
 
 # Ecart admis sur la retenue elle-meme. Celle-la est CALCULEE, pas lue : le millime suffit.
 TOLERANCE_RETENUE = 0.01
@@ -55,69 +75,77 @@ def est_local(pays) -> bool:
     return (pays or "").strip().lower() == PAYS_LOCAL.lower()
 
 
-def manques(facture: dict, pieces_jointes: list, extraction: dict = None,
-            tolerance: float = TOLERANCE) -> list:
-    """Ce qui empeche de valider cette facture. -> [str], vide si tout est en regle.
+def bloquants(facture: dict, pieces_jointes: list, extraction: dict = None,
+              minimal: float = ECART_MINIMAL, taux: float = ECART_TAUX,
+              ecart_ttc: float = ECART_TTC, tva_taux: float = ECART_TVA_TAUX) -> list:
+    """Ce qui empeche de valider cette facture. -> [str], vide si rien ne s'y oppose.
 
-    L'ordre compte : on annonce d'abord ce qui manque (la piece, le stock), ensuite seulement les
-    ecarts de montant — reprocher un ecart de TVA a quelqu'un qui n'a pas encore joint son scan
-    n'aide personne.
+    ⚠️ DEUX MOTIFS SEULEMENT, ET C'EST UN CHOIX. Tout ce qui peut etre CORRIGE l'est plutot que
+    refuse : le stock, le magasin, le numero, les dates et la retenue a la source se posent tout
+    seuls a l'enregistrement (cf. `achat/facture.py`). Refuser une facture pour une case a cocher
+    qu'on sait cocher soi-meme fait perdre du temps sans rien proteger.
+
+    Restent bloquants :
+    - l'absence de PDF, parce qu'aucune machine ne peut inventer la piece justificative ;
+    - un ecart IMPORTANT sur les totaux, parce que la seule chose qu'on ne peut pas trancher a la
+      place de l'utilisateur, c'est lequel des deux documents dit vrai.
     """
     if not est_local(facture.get("pays_fournisseur")):
         return []
-
-    bloquants = []
     if not pdf_present(pieces_jointes):
-        bloquants.append("aucun scan PDF de la facture fournisseur n'est joint : la piece "
-                         "justificative est obligatoire pour un fournisseur local, et au format PDF"
-                         + (" (%s piece(s) jointe(s), mais aucune en PDF)" % len(pieces_jointes)
-                            if pieces_jointes else ""))
-    if not facture.get("update_stock"):
-        bloquants.append("« Mettre a jour le stock » n'est pas coche : la marchandise entrerait "
-                         "sans mouvement de stock")
-    if not facture.get("set_warehouse"):
-        bloquants.append("aucun magasin n'est choisi : le stock ne saurait pas ou entrer")
-    if not facture.get("bill_no"):
-        bloquants.append("le numero de la facture fournisseur est vide%s"
-                         % (" et le scan n'en donne pas" if pieces_jointes else ""))
-    if not facture.get("bill_date"):
-        # La date lue puis ecartee est plus utile qu'une absence : elle dit ou regarder, et
-        # pourquoi la machine n'a pas voulu la poser a la place de l'utilisateur.
-        lue = (extraction or {}).get("invoice_date")
-        bloquants.append("la date de la facture fournisseur est vide%s"
-                         % (" — le scan porte %s, trop eloigne de la date de comptabilisation pour "
-                            "etre posee sans relecture" % lue if lue else ""))
-
-    controle = facture.get("controle_retenue") or {}
-    if controle.get("verdict") == "manquante" and controle.get("due"):
-        bloquants.append("la retenue a la source de %s DT (1 %% de %s) n'est pas dans les taxes"
-                         % (controle["due"], controle.get("assiette")))
-    elif controle.get("verdict") == "montant faux":
-        bloquants.append("la retenue a la source saisie (%s) ne vaut pas celle qui est due (%s) : "
-                         "ecart de %s" % (controle["saisie"], controle["due"], controle["ecart"]))
-
-    if not bloquants and extraction:
-        bloquants += ecarts(facture, extraction, tolerance)
-    return bloquants
+        return ["aucun scan PDF de la facture fournisseur n'est joint : la piece justificative est "
+                "obligatoire pour un fournisseur local, et au format PDF"
+                + (" (%s piece(s) jointe(s), mais aucune en PDF)" % len(pieces_jointes)
+                   if pieces_jointes else "")]
+    return ecarts_importants(facture, extraction, minimal, taux, ecart_ttc, tva_taux)
 
 
-def ecarts(facture: dict, extraction: dict, tolerance: float = TOLERANCE) -> list:
-    """Les desaccords entre ce qui est saisi et ce que le scan porte. -> [str].
+def seuil_ecart(total_ttc, minimal: float = ECART_MINIMAL, taux: float = ECART_TAUX) -> float:
+    """Le seuil du HT : le plus grand de 1 DT et d'un pourcentage du TTC."""
+    return round(max(float(minimal), abs(float(total_ttc or 0)) * float(taux) / 100.0), 3)
 
-    ⚠️ C'EST LE CONTROLE QUI JUSTIFIE TOUT LE RESTE. Une facture saisie de travers passe tous les
-    autres tests : elle a son scan, son stock, son magasin. Seule la confrontation des totaux dit
-    que le montant paye n'est pas celui que le fournisseur reclame — et c'est aussi ce qui rend la
-    retenue a la source juste, puisqu'elle se calcule sur ce TTC.
+
+def seuil_tva(tva_lue, taux: float = ECART_TVA_TAUX) -> float:
+    """Le seuil de la TVA : un pourcentage de la TVA LUE SUR LE SCAN.
+
+    Sur la valeur lue, et non sur la saisie : c'est le scan qui fait foi, et une saisie gonflee ne
+    doit pas s'acheter au passage la tolerance qui va avec.
     """
+    return round(abs(float(tva_lue or 0)) * float(taux) / 100.0, 3)
+
+
+def ecarts_importants(facture: dict, extraction: dict = None, minimal: float = ECART_MINIMAL,
+                      taux: float = ECART_TAUX, ecart_ttc: float = ECART_TTC,
+                      tva_taux: float = ECART_TVA_TAUX) -> list:
+    """Les desaccords MATERIELS entre la saisie et le scan. -> [str].
+
+    ⚠️ ON NE COMPARE QUE CE QUE LE SCAN LIT DE FACON COHERENTE. Si HT + TVA + timbre ne tombe pas
+    sur le TTC du scan, c'est la LECTURE qui est fausse, pas forcement la saisie : accuser la
+    facture sur cette base reviendrait a transformer une erreur de reconnaissance en refus de
+    validation. Sur ELECTROQUIP, deux modeles ont rendu 922,688 et 971,25 pour le meme HT — le
+    second ne bouclait pas, et n'aurait jamais du peser sur une decision.
+
+    ⚠️ CHAQUE GRANDEUR AVEC SON SEUIL. Le TTC en absolu (1,5 DT), la TVA en pourcentage d'elle-meme
+    (0,1 %), le HT sur le TTC parce que c'est la qu'est le bruit. Un seuil unique calcule sur le TTC
+    donnait a la TVA une tolerance de 6,2 % — la porte par laquelle est passee ACC-PINV-2026-00092.
+    """
+    if not extraction or not extraction.get("coherent"):
+        return []
     out = []
-    for cle, libelle in (("total_ttc", "TTC"), ("total_tva", "TVA")):
-        lu = extraction.get(cle)
-        saisi = facture.get(cle)
+    for cle, libelle in (("total_ttc", "TTC"), ("total_tva", "TVA"), ("total_ht", "HT")):
+        lu, saisi = extraction.get(cle), facture.get(cle)
         if lu is None or saisi is None:
             continue
-        if abs(float(lu) - float(saisi)) > tolerance:
-            out.append("%s de la facture saisie (%s) different du %s lu sur le scan (%s)"
-                       % (libelle, round(float(saisi), 3), libelle, round(float(lu), 3)))
+        if cle == "total_ttc":
+            seuil = round(abs(float(ecart_ttc)), 3)
+        elif cle == "total_tva":
+            seuil = seuil_tva(lu, tva_taux)
+        else:
+            seuil = seuil_ecart(facture.get("total_ttc"), minimal, taux)
+        ecart = round(float(saisi) - float(lu), 3)
+        if abs(ecart) > seuil:
+            out.append("%s : la facture porte %s, le scan porte %s — ecart de %s (au-dela de %s)"
+                       % (libelle, round(float(saisi), 3), round(float(lu), 3), ecart, seuil))
     return out
 
 

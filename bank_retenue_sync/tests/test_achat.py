@@ -9,6 +9,7 @@ import unittest
 from datetime import date
 
 from bank_retenue_sync.achat import regles as R
+from bank_retenue_sync.achat import retenue as RET
 
 
 # La table des taxes d'ELECTROQUIP (ACC-PINV-2026-00088), telle qu'elle est saisie.
@@ -18,9 +19,10 @@ TAXES = [{"account_head": "TVA 19% - A&S", "tax_amount": 175.311, "add_deduct_ta
 
 
 def facture(pays="Tunisia", stock=1, magasin="Magasins - A&S", bill_no="26FA01134",
-            bill_date=date(2026, 8, 3), ttc=1099.011, tva=175.311, controle=None):
+            bill_date=date(2026, 8, 3), ttc=1099.011, tva=175.311, ht=923.7, controle=None):
     return {"pays_fournisseur": pays, "update_stock": stock, "set_warehouse": magasin,
             "bill_no": bill_no, "bill_date": bill_date, "total_ttc": ttc, "total_tva": tva,
+            "total_ht": ht,
             "controle_retenue": controle or {"verdict": "conforme", "due": 10.99}}
 
 
@@ -32,8 +34,8 @@ class TestPerimetre(unittest.TestCase):
     def test_le_fournisseur_etranger_est_hors_sujet(self):
         """Une facture chinoise n'a ni retenue a la source ni scan obligatoire : lui appliquer ces
         regles bloquerait des saisies parfaitement legitimes."""
-        self.assertEqual(R.manques(facture(pays="China", stock=0, magasin=None, bill_no=None), []),
-                         [])
+        self.assertEqual(R.bloquants(facture(pays="China", stock=0, magasin=None, bill_no=None),
+                                     []), [])
 
     def test_le_pays_se_lit_sans_se_soucier_de_la_casse(self):
         self.assertTrue(R.est_local("tunisia"))
@@ -41,18 +43,22 @@ class TestPerimetre(unittest.TestCase):
         self.assertFalse(R.est_local(None))
 
 
-class TestControlesBloquants(unittest.TestCase):
-    def test_une_facture_complete_ne_bloque_rien(self):
-        self.assertEqual(R.manques(facture(), PIECE), [])
+class TestCeQuiBloque(unittest.TestCase):
+    """⚠️ DEUX MOTIFS SEULEMENT. Tout ce qui peut etre corrige l'est plutot que refuse : stock,
+    magasin, numero, dates et retenue se posent seuls a l'enregistrement. Refuser une facture pour
+    une case a cocher qu'on sait cocher soi-meme fait perdre du temps sans rien proteger."""
 
-    def test_sans_scan_joint_on_refuse(self):
-        [m] = R.manques(facture(), [])
-        self.assertIn("scan", m)
+    def test_une_facture_avec_son_pdf_et_des_totaux_concordants_passe(self):
+        self.assertEqual(R.bloquants(facture(), PIECE), [])
+
+    def test_sans_pdf_on_refuse(self):
+        [m] = R.bloquants(facture(), [])
+        self.assertIn("PDF", m)
 
     def test_une_piece_jointe_qui_n_est_pas_un_pdf_ne_suffit_pas(self):
         """Un JPG ou un DOCX se joint aussi bien, mais ne s'imprime pas pareil au controle et
-        l'extraction ne sait pas l'ouvrir. Sur 222 pieces deja attachees, 219 sont des PDF."""
-        [m] = R.manques(facture(), PIECE_IMAGE)
+        l'extraction ne sait pas l'ouvrir."""
+        [m] = R.bloquants(facture(), PIECE_IMAGE)
         self.assertIn("PDF", m)
         self.assertIn("1 piece(s) jointe(s)", m)
 
@@ -61,57 +67,77 @@ class TestControlesBloquants(unittest.TestCase):
         self.assertFalse(R.pdf_present([{"file_name": "facture.pdf.jpg"}]))
         self.assertFalse(R.pdf_present([]))
 
-    def test_sans_mise_a_jour_du_stock_on_refuse(self):
-        m = R.manques(facture(stock=0), PIECE)
-        self.assertTrue(any("stock" in x for x in m))
+    def test_le_stock_le_numero_et_les_dates_ne_bloquent_plus(self):
+        """Ils sont corriges a l'enregistrement : les refuser ici serait refuser deux fois."""
+        nue = facture(stock=0, magasin=None, bill_no=None, bill_date=None)
+        self.assertEqual(R.bloquants(nue, PIECE), [])
 
-    def test_sans_magasin_on_refuse(self):
-        m = R.manques(facture(magasin=None), PIECE)
-        self.assertTrue(any("magasin" in x for x in m))
-
-    def test_sans_numero_ni_date_de_facture_fournisseur_on_refuse(self):
-        m = R.manques(facture(bill_no=None, bill_date=None), PIECE)
-        self.assertEqual(len(m), 2)
-
-    def test_les_manques_passent_avant_les_ecarts(self):
-        """Reprocher un ecart de TVA a quelqu'un qui n'a pas encore joint son scan n'aide
-        personne."""
-        m = R.manques(facture(), [], extraction={"total_ttc": 999.0, "total_tva": 1.0})
-        self.assertEqual(len(m), 1)
-        self.assertIn("scan", m[0])
-
-    def test_une_retenue_manquante_bloque_la_validation(self):
-        m = R.manques(facture(controle={"verdict": "manquante", "due": 11.01,
-                                        "assiette": 1100.977}), PIECE)
-        self.assertTrue(any("retenue" in x for x in m))
-
-    def test_une_retenue_fausse_bloque_la_validation(self):
-        m = R.manques(facture(controle={"verdict": "montant faux", "due": 10.99, "saisie": 11.99,
-                                        "ecart": 1.0}), PIECE)
-        self.assertTrue(any("ne vaut pas celle qui est due" in x for x in m))
+    def test_une_retenue_fausse_ne_bloque_plus(self):
+        """Elle est ramenee au montant du a l'enregistrement."""
+        f = facture(controle={"verdict": "montant faux", "due": 10.99, "saisie": 11.99})
+        self.assertEqual(R.bloquants(f, PIECE), [])
 
 
-class TestConfrontationAuScan(unittest.TestCase):
-    """Cas reel ELECTROQUIP : la saisie porte 1 087,021 TTC / 163,321 TVA, deux lectures
-    independantes du scan s'accordent sur 1 098,999 / 176,311."""
+class TestEcartsImportants(unittest.TestCase):
+    """Cas reel ELECTROQUIP : la saisie porte 923,700 / 175,311 / 1 099,011 et le scan se lit
+    922,688 / 175,311 / 1 097,999 — un chiffre mal reconnu, pas une erreur de saisie."""
 
-    def test_la_lecture_du_scan_concorde_avec_la_facture(self):
-        """Cas reel ELECTROQUIP : le modele a rendu 1 098,999 la ou la facture porte 1 099,011, et
-        la TVA au millime pres. Douze millimes de reconnaissance ne sont pas un ecart comptable."""
-        self.assertEqual(R.ecarts(facture(), {"total_ttc": 1098.999, "total_tva": 175.311}), [])
+    SCAN = {"total_ht": 922.688, "total_tva": 175.311, "total_ttc": 1097.999, "coherent": 1}
 
-    def test_un_vrai_ecart_de_ttc_est_signale(self):
-        m = R.ecarts(facture(), {"total_ttc": 1150.0, "total_tva": 175.311})
-        self.assertEqual(len(m), 1)
-        self.assertIn("1150.0", m[0])
+    def test_le_bruit_de_lecture_ne_bloque_pas(self):
+        """1,012 DT d'ecart sur le TTC comme sur le HT, et une TVA lue au millime exact. C'est la
+        facture JUSTE : elle doit passer les trois seuils, y compris le TTC resserre a 1,5 DT — qui
+        a ete choisi pour couvrir ce bruit-la, la ou 1,0 l'aurait refuse."""
+        self.assertEqual(R.ecarts_importants(facture(), self.SCAN), [])
 
-    def test_un_vrai_ecart_de_tva_est_signale(self):
-        m = R.ecarts(facture(), {"total_ttc": 1099.011, "total_tva": 200.0})
-        self.assertEqual(len(m), 1)
-        self.assertIn("TVA", m[0])
+    def test_un_vrai_ecart_bloque(self):
+        scan = dict(self.SCAN, total_ttc=1050.0, total_ht=874.689)
+        m = R.ecarts_importants(facture(), scan)
+        self.assertTrue(any("TTC" in x for x in m))
 
-    def test_une_valeur_absente_ne_reproche_rien(self):
-        self.assertEqual(R.ecarts(facture(), {"total_ttc": None, "total_tva": None}), [])
+    def test_le_seuil_du_HT_est_le_plus_grand_de_un_dinar_et_du_pourcentage(self):
+        self.assertEqual(R.seuil_ecart(1099.011), 10.99)
+        self.assertEqual(R.seuil_ecart(50.0), 1.0)        # 1 % vaudrait 0,5 : le plancher gagne
+
+    def test_le_seuil_de_la_TVA_se_calcule_sur_la_TVA_LUE(self):
+        """Sur la valeur du scan, pas sur la saisie : une TVA gonflee ne doit pas s'acheter au
+        passage la tolerance qui va avec."""
+        self.assertEqual(R.seuil_tva(175.311), 0.175)
+
+    def test_une_lecture_incoherente_n_accuse_personne(self):
+        """⚠️ Si HT + TVA ne tombe pas sur le TTC du scan, c'est la LECTURE qui est fausse. Un
+        modele a rendu 971,25 de HT sur cette facture : cette lecture-la ne bouclait pas et
+        n'aurait jamais du peser sur une decision."""
+        scan = {"total_ht": 971.25, "total_tva": 176.311, "total_ttc": 1098.999, "coherent": 0}
+        self.assertEqual(R.ecarts_importants(facture(), scan), [])
+
+    def test_la_TVA_FAUSSE_DE_00092_EST_MAINTENANT_ARRETEE(self):
+        """⚠️ CAS REEL, ET LE TROU QUE CE TEST BOUCHE. Sur ACC-PINV-2026-00092 la TVA a ete ramenee
+        a la main de 175,311 a 170,000 : 5,311 DT deduits en trop. Le seuil unique, calcule sur le
+        TTC, valait 10,937 — la facture s'est validee sans un mot, et la retenue a la source,
+        assise sur un TTC devenu faux, avec elle. Le seuil de la TVA vaut desormais 0,175."""
+        fausse = facture(ttc=1093.7, tva=170.0)
+        m = R.ecarts_importants(fausse, self.SCAN)
+        self.assertTrue(any("TVA" in x for x in m), m)
+        self.assertTrue(any("TTC" in x for x in m), m)   # 4,299 d'ecart, au-dela des 1,5 admis
+
+    def test_un_millime_de_TVA_ne_bloque_pas_une_grosse_facture(self):
+        """Le pourcentage suit l'echelle : 0,1 % de 733 DT laisse passer un chiffre mal lu."""
+        gros = facture(ttc=4593.899, tva=733.0, ht=3860.4)
+        scan = {"total_ht": 3860.4, "total_tva": 733.499, "total_ttc": 4593.899, "coherent": 1}
+        self.assertEqual([x for x in R.ecarts_importants(gros, scan) if "TVA" in x], [])
+
+    def test_sans_extraction_rien_ne_bloque(self):
+        self.assertEqual(R.ecarts_importants(facture(), None), [])
+
+    def test_une_extraction_sans_drapeau_de_coherence_ne_bloque_pas_non_plus(self):
+        """⚠️ CE TEST GARDE UN BUG REEL, PAS UNE HYPOTHESE. `extraction_de` a longtemps lu tous les
+        montants SAUF `coherent` : la regle recevait un dict complet, n'y trouvait pas le drapeau,
+        et rendait la main sans rien comparer. Le seul controle qui confronte la saisie au scan
+        etait mort en silence — et toutes les factures passaient. Que la fonction soit prudente est
+        voulu ; que l'appelant oublie le champ ne doit plus arriver."""
+        scan = {"total_ht": 500.0, "total_tva": 95.0, "total_ttc": 595.0}
+        self.assertEqual(R.ecarts_importants(facture(), scan), [])
 
 
 class TestLectureDeLaTableDesTaxes(unittest.TestCase):
@@ -215,10 +241,6 @@ class TestDateLueSurLeScan(unittest.TestCase):
             self.assertFalse(R.date_plausible(valeur, date(2026, 8, 3)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestDateDeComptabilisation(unittest.TestCase):
     """La date de comptabilisation suit celle de la facture fournisseur — ce qui donne a
     `date_plausible` une portee bien plus grande : elle decide desormais de l'EXERCICE."""
@@ -233,3 +255,77 @@ class TestDateDeComptabilisation(unittest.TestCase):
         """Une facture de juillet saisie en aout : la comptabilisation doit bien reculer en
         juillet."""
         self.assertTrue(R.date_plausible("2026-07-12", date(2026, 8, 3)))
+
+    def test_une_mauvaise_date_DEJA_EN_BASE_ne_deplace_rien_non_plus(self):
+        """⚠️ CAS REEL, ET LE PIRE DES DEUX. ACC-PINV-2026-00088 porte 2020-08-03 en date
+        fournisseur : une annee fausse posee avant que le filtre n'existe. Filtrer ce que le scan
+        PROPOSE ne suffit donc pas — il faut aussi se mefier de ce que le champ CONTIENT, sans quoi
+        le simple fait d'enregistrer ramenait la comptabilisation de 2026 a 2020.
+
+        La date arrive ici en `datetime.date` et non en chaine : c'est le chemin de la base, pas
+        celui de l'extraction."""
+        self.assertFalse(R.date_plausible(date(2020, 8, 3), date(2026, 8, 3)))
+
+
+class _Ligne:
+    """Une ligne de la table des taxes, reduite a ce que le geste regarde."""
+
+    def __init__(self, account_head, add_deduct_tax="Deduct", cost_center=None):
+        self.account_head, self.add_deduct_tax, self.cost_center = (account_head, add_deduct_tax,
+                                                                    cost_center)
+
+
+class _Facture:
+    """Une facture reduite a sa table des taxes et a son centre de couts.
+
+    `cost_center` est renseigne pour que `centre_de_cout` s'arrete avant la base : la convention de
+    l'app est de ne rien interroger dans les tests.
+    """
+
+    def __init__(self, taxes, cost_center="Principal - A&S"):
+        self._d = {"taxes": taxes, "cost_center": cost_center}
+
+    def get(self, k, defaut=None):
+        return self._d.get(k, defaut)
+
+
+class TestCentreDeCoutDeLaRetenue(unittest.TestCase):
+    """⚠️ LE MONTANT JUSTE NE SUFFIT PAS. `Retenue a la source achat - A&S` est un compte de
+    RESULTAT : ERPNext refuse toute ecriture de resultat sans centre de couts, et l'ecriture de taxe
+    reprend la colonne de la ligne sans se rabattre sur le defaut de la societe. Le defaut
+    `:Company` du champ n'est pose qu'a l'ecran, jamais par un `append()` cote serveur — la ligne
+    posee par la machine partait donc vide. Cas reel : ACC-PINV-2026-00092, refusee a la validation
+    apres avoir ete corrigee sans bruit."""
+
+    def test_une_ligne_sans_centre_le_recoit(self):
+        f = _Facture([_Ligne("TVA 19% - A&S", "Add", "Principal - A&S"),
+                      _Ligne("Retenue a la source achat - A&S")])
+        self.assertEqual(RET.completer_centre(f)["statut"], "pose")
+        self.assertEqual(f.get("taxes")[1].cost_center, "Principal - A&S")
+
+    def test_un_centre_deja_choisi_n_est_pas_ecrase(self):
+        """Sur une societe a plusieurs centres, celui que l'utilisateur a designe vaut mieux que le
+        defaut."""
+        f = _Facture([_Ligne("Retenue a la source achat - A&S", cost_center="Atelier - A&S")])
+        self.assertEqual(RET.completer_centre(f)["statut"], "deja pose")
+        self.assertEqual(f.get("taxes")[0].cost_center, "Atelier - A&S")
+
+    def test_sans_ligne_de_retenue_il_n_y_a_rien_a_porter(self):
+        """Une facture sous le seuil : pas de ligne, donc pas de manque a signaler — et surtout pas
+        celui d'un centre de couts que rien ne reclame."""
+        f = _Facture([_Ligne("TVA 19% - A&S", "Add", "Principal - A&S")], cost_center=None)
+        self.assertEqual(RET.completer_centre(f)["statut"], "ligne introuvable")
+
+    def test_sans_centre_par_defaut_le_manque_est_nomme(self):
+        """Ni sur la facture ni sur la societe : le geste ne devine pas, il dit ce qui bloquera."""
+        f = _Facture([_Ligne("Retenue a la source achat - A&S")], cost_center=None)
+        vrai = RET.centre_de_cout
+        RET.centre_de_cout = lambda doc: None
+        try:
+            self.assertEqual(RET.completer_centre(f)["statut"], "aucun centre de couts")
+        finally:
+            RET.centre_de_cout = vrai
+
+
+if __name__ == "__main__":
+    unittest.main()

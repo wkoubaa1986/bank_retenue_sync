@@ -2,11 +2,17 @@
 
 OU S'ACCROCHE CHAQUE GESTE, ET POURQUOI LA
 -------------------------------------------
-- `avant_validation` (before_submit) : les controles BLOQUANTS. Apres la validation, la facture a
-  produit ses ecritures et son mouvement de stock ; corriger demande une annulation. C'est donc le
-  dernier moment ou refuser coute moins cher que laisser passer.
-- `apres_validation` (on_submit) : la retenue a la source. Elle ne peut pas exister avant la
-  facture qu'elle impute — d'ou l'ordre, et non un choix de confort.
+- `a_l_enregistrement` (before_validate) : tout ce qui se CORRIGE — le stock, le magasin, le numero
+  et la date du fournisseur, la date de comptabilisation, la ligne de retenue. Avant la validation
+  d'ERPNext, pour que les totaux et l'echeance se recalculent sur ce qu'on vient de poser ; et en
+  brouillon, parce que la table des taxes est figee des la validation.
+- `avant_validation` (before_submit) : les deux seuls controles BLOQUANTS. Apres la validation, la
+  facture a produit ses ecritures et son mouvement de stock ; corriger demande une annulation.
+
+⚠️ ON CORRIGE PLUTOT QUE DE REFUSER, ET C'EST LA REGLE DE PARTAGE ENTRE LES DEUX CROCHETS. Refuser
+une facture pour une case a cocher qu'on sait cocher soi-meme fait perdre du temps sans rien
+proteger. Ne restent bloquants que l'absence de PDF et un ecart important entre la saisie et le
+scan : les deux seules choses qu'aucune machine ne peut trancher a la place de l'utilisateur.
 
 ⚠️ L'EXTRACTION SE FAIT AU PLUS TARD A LA VALIDATION, JAMAIS A CHAQUE ENREGISTREMENT. Un appel
 OpenAI par sauvegarde couterait a chaque virgule corrigee. Elle est donc lancee soit a la demande
@@ -74,6 +80,7 @@ def _lu(doc) -> dict:
             "lignes_taxes": lignes,
             "total_ttc": regles.ttc_avant_retenue(doc.grand_total, lignes),
             "total_tva": regles.tva_facturee(lignes),
+            "total_ht": flt(doc.net_total, 3),
             "controle_retenue": regles.controle_retenue(doc.grand_total, lignes, _seuil(),
                                                         _taux())}
 
@@ -82,10 +89,15 @@ def _lu(doc) -> dict:
 
 
 def extraction_de(nom):
-    """L'extraction deja faite pour cette facture, ou None."""
+    """L'extraction deja faite pour cette facture, ou None.
+
+    ⚠️ `coherent` FAIT PARTIE DE LA LECTURE, PAS DE LA DECORATION. Sans lui, `ecarts_importants` ne
+    voit qu'un dict sans drapeau et rend la main sans rien comparer : la seule regle qui confronte
+    la saisie au scan serait morte en silence, et toutes les factures passeraient.
+    """
     e = frappe.db.get_value(DOCTYPE_EXTRACTION, {"purchase_invoice": nom},
                             ["name", "invoice_no", "invoice_date", "total_ht", "total_tva",
-                             "total_ttc", "fichier", "modele"], as_dict=1)
+                             "total_ttc", "coherent", "fichier", "modele"], as_dict=1)
     return e
 
 
@@ -190,6 +202,46 @@ def completer(doc) -> dict:
     return {"statut": "complete", "pose": pose, **res}
 
 
+def magasin_par_defaut() -> str:
+    """Le magasin ou entre la marchandise, a defaut de choix explicite.
+
+    Le reglage d'abord, puis le magasin de Stock Settings, puis celui que la pratique designe :
+    sur 181 factures d'achat renseignees, 161 pointent le meme. On ne devine pas, on constate.
+    """
+    reglage = _reglage("magasin_achat_defaut", None)
+    if reglage and frappe.db.exists("Warehouse", reglage):
+        return reglage
+    defaut = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+    if defaut and frappe.db.exists("Warehouse", defaut):
+        return defaut
+    courant = frappe.db.sql("""select set_warehouse, count(*) n from `tabPurchase Invoice`
+                               where docstatus = 1 and ifnull(set_warehouse, '') <> ''
+                               group by set_warehouse order by n desc limit 1""")
+    return courant[0][0] if courant else None
+
+
+def corriger_stock(doc) -> dict:
+    """Coche « Mettre a jour le stock » et pose le magasin. -> dict.
+
+    ⚠️ CE N'EST PAS UN REFUS DEGUISE : c'est une correction. Une facture d'achat locale entre de la
+    marchandise ; la case et le magasin ne sont pas des choix, ce sont des oublis quand ils
+    manquent. 197 des 211 factures validees les portent deja.
+    """
+    pose = {}
+    if not doc.update_stock:
+        doc.update_stock = 1
+        pose["update_stock"] = 1
+    if not doc.set_warehouse:
+        magasin = magasin_par_defaut()
+        if magasin:
+            doc.set_warehouse = magasin
+            for ligne in doc.get("items") or []:
+                if not ligne.warehouse:
+                    ligne.warehouse = magasin
+            pose["set_warehouse"] = magasin
+    return pose
+
+
 def aligner_dates(doc) -> dict:
     """La date de comptabilisation suit la date de la facture fournisseur.
 
@@ -201,9 +253,19 @@ def aligner_dates(doc) -> dict:
 
     `set_posting_time` est indispensable : sans lui, ERPNext ramene la date du jour a chaque
     enregistrement et l'alignement serait perdu en silence.
+
+    ⚠️ ET LA PLAUSIBILITE SE REVERIFIE ICI, MEME SI `completer` L'A DEJA FAITE. Les deux controles
+    ne portent pas sur la meme chose : la-bas on filtre ce que le SCAN propose, ici on regarde ce
+    que le champ CONTIENT — et il peut contenir une annee fausse posee avant que ce filtre
+    n'existe. Cas reel : ACC-PINV-2026-00088 porte 2020-08-03 en date fournisseur ; sans ce garde-
+    fou, le simple fait de l'enregistrer ramenait sa comptabilisation de 2026 a 2020, dans un
+    exercice clos, sans que rien ne le dise.
     """
     if not doc.bill_date or str(doc.posting_date) == str(doc.bill_date):
         return {"statut": "deja aligne"}
+    if not regles.date_plausible(doc.bill_date, doc.posting_date):
+        return {"statut": "ecartee", "bill_date": str(doc.bill_date),
+                "posting_date": str(doc.posting_date)}
     avant = str(doc.posting_date)
     doc.set_posting_time = 1
     doc.posting_date = doc.bill_date
@@ -229,7 +291,7 @@ def diagnostic(nom) -> dict:
     facture = _lu(doc)
     extraction = extraction_de(nom)
     return {"local": regles.est_local(facture["pays_fournisseur"]),
-            "manques": regles.manques(facture, _pieces_jointes(nom), extraction),
+            "manques": regles.bloquants(facture, _pieces_jointes(nom), extraction, *_seuils()),
             "extraction": extraction, "retenue": facture["controle_retenue"],
             "ttc_avant_retenue": facture["total_ttc"], "tva": facture["total_tva"]}
 
@@ -263,15 +325,16 @@ def avant_validation(doc, method=None):
             frappe.log_error(title="Extraction facture achat %s" % doc.name,
                              message=frappe.get_traceback())
 
-    manques = regles.manques(facture, pieces, extraction)
-    if manques:
-        frappe.throw(_("Facture d'achat locale — il manque :<br>• {0}").format(
-            "<br>• ".join(frappe.utils.escape_html(m) for m in manques)),
+    refus = regles.bloquants(facture, pieces, extraction, *_seuils())
+    if refus:
+        frappe.throw(_("Facture d'achat locale :<br>• {0}").format(
+            "<br>• ".join(frappe.utils.escape_html(m) for m in refus)),
             title=_("Validation refusée"))
 
 
 def a_l_enregistrement(doc, method=None):
-    """Hook `before_validate` : complete depuis le scan, aligne les dates, pose la retenue.
+    """Hook `before_validate` : corrige le stock, complete depuis le scan, aligne les dates, pose ou
+    redresse la retenue — puis DIT ce qu'il a change.
 
     ⚠️ AVANT LA VALIDATION D'ERPNEXT, ET C'EST TOUT L'INTERET. Ce crochet deplace la date de
     comptabilisation et ajoute une ligne de taxe : place APRES, il laissait une date d'echeance
@@ -288,16 +351,101 @@ def a_l_enregistrement(doc, method=None):
         return
     from bank_retenue_sync.achat import retenue
 
-    # Le numero et la date du fournisseur AVANT tout : ils viennent du scan, pas de la saisie.
+    # ⚠️ TOUT CE QUI PEUT ETRE CORRIGE L'EST ICI, ET RIEN N'EST REFUSE POUR CELA. Le stock, le
+    # magasin, le numero, les dates et la retenue se posent seuls ; ne restent bloquants que
+    # l'absence de PDF et un ecart important sur les totaux — les deux seules choses qu'aucune
+    # machine ne peut trancher a la place de l'utilisateur.
+    faits = []
+    stock = corriger_stock(doc)
+    if stock.get("update_stock"):
+        faits.append(_("« Mettre à jour le stock » a été coché : la marchandise doit entrer."))
+    if stock.get("set_warehouse"):
+        faits.append(_("Magasin posé : {0}.").format(stock["set_warehouse"]))
     try:
-        completer(doc)
-        aligner_dates(doc)
+        pose = (completer(doc) or {}).get("pose") or {}
+        if pose.get("bill_no"):
+            faits.append(_("N° de facture fournisseur lu sur le scan : {0}.").format(pose["bill_no"]))
+        if pose.get("bill_date"):
+            faits.append(_("Date de la facture fournisseur lue sur le scan : {0}.").format(
+                frappe.utils.formatdate(pose["bill_date"])))
+        if pose.get("date_ecartee"):
+            faits.append(_("Date lue sur le scan ({0}) écartée : trop éloignée de la "
+                           "comptabilisation, à saisir à la main.").format(pose["date_ecartee"]))
+        dates = aligner_dates(doc)
+        if dates.get("statut") == "aligne":
+            faits.append(_("Date de comptabilisation alignée sur la facture fournisseur : "
+                           "{0} au lieu de {1}.").format(dates["apres"], dates["avant"]))
+        elif dates.get("statut") == "ecartee":
+            faits.append(_("Date de comptabilisation LAISSÉE au {0} : la date fournisseur ({1}) en "
+                           "est trop éloignée pour être suivie sans relecture — corrigez-la si "
+                           "elle est juste.").format(dates["posting_date"], dates["bill_date"]))
     except Exception:
-        # Une panne d'OpenAI ne doit pas empecher d'enregistrer : les champs resteront vides et le
-        # refus de validation dira quoi faire.
+        # Une panne d'OpenAI ne doit pas empecher d'enregistrer : les champs resteront vides, la
+        # facture se validera, et l'extraction se retentera au prochain enregistrement.
         frappe.log_error(title="Extraction facture achat %s" % doc.name,
                          message=frappe.get_traceback())
-    retenue.poser_ligne(doc)
+    posee = retenue.poser_ligne(doc)
+    if posee.get("statut") == "posee":
+        faits.append(_("Retenue à la source ajoutée : {0} — 1 % de {1} (timbre exclu).").format(
+            posee["due"], posee["assiette"]))
+    corrigee = retenue.corriger_ligne(doc)
+    if corrigee.get("statut") == "corrigee":
+        faits.append(_("Retenue à la source ramenée à {0} : {1} était saisi, et une retenue ne se "
+                       "négocie pas.").format(corrigee["apres"], corrigee["avant"]))
+    # ⚠️ APRES LES DEUX AUTRES, ET POUR LES BROUILLONS D'AVANT LE CORRECTIF. La ligne de retenue
+    # pointe un compte de RESULTAT : sans centre de couts, ERPNext refuse la validation — et le
+    # motif ne se lit nulle part sur la facture, puisque le montant, lui, est juste.
+    centre = retenue.completer_centre(doc)
+    if centre.get("statut") == "pose":
+        faits.append(_("Centre de coûts posé sur la ligne de retenue : {0} — sans lui, la "
+                       "validation serait refusée (compte de résultat).").format(
+                           centre["cost_center"]))
+    elif centre.get("statut") == "aucun centre de couts":
+        faits.append(_("Aucun centre de coûts par défaut sur la société : la ligne de retenue en "
+                       "exige un, la validation sera refusée tant qu'il manquera."))
+    _annoncer(faits)
+
+
+def _annoncer(faits):
+    """Dit ce qui vient d'etre change sur la facture, sans rien demander.
+
+    ⚠️ CORRIGER EN SILENCE SERAIT PIRE QUE REFUSER. Ces corrections deplacent une date de
+    comptabilisation, ajoutent un mouvement de stock et changent un montant retenu : l'utilisateur
+    doit voir ce qui a bouge sous sa saisie, sinon il decouvre l'ecart au controle fiscal.
+
+    Rien n'est affiche hors d'une requete : en tache de fond ou pendant une migration, un msgprint
+    ne s'adresse a personne.
+    """
+    if not faits or not getattr(frappe.local, "request", None):
+        return
+    frappe.msgprint("<ul><li>" + "</li><li>".join(faits) + "</li></ul>",
+                    title=_("Corrigé automatiquement"), indicator="blue")
+
+
+def _ecart_minimal():
+    return flt(_reglage("ecart_achat_minimal", None) or regles.ECART_MINIMAL, 3)
+
+
+def _ecart_taux():
+    return flt(_reglage("ecart_achat_taux", None) or regles.ECART_TAUX, 3)
+
+
+def _ecart_ttc():
+    return flt(_reglage("ecart_achat_ttc", None) or regles.ECART_TTC, 3)
+
+
+def _ecart_tva_taux():
+    return flt(_reglage("ecart_achat_tva_taux", None) or regles.ECART_TVA_TAUX, 3)
+
+
+def _seuils():
+    """Les quatre reglages d'ecart, dans l'ordre attendu par `regles.bloquants`.
+
+    Regroupes parce qu'ils voyagent toujours ensemble : les passer un a un a chaque appel, c'est
+    l'occasion d'en oublier un — et un seuil oublie reprend sa valeur par defaut en silence, ce qui
+    rouvre exactement la porte que ce resserrage vient de fermer.
+    """
+    return (_ecart_minimal(), _ecart_taux(), _ecart_ttc(), _ecart_tva_taux())
 
 
 def _seuil():

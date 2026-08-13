@@ -10,7 +10,7 @@ frappe.ui.form.on("Purchase Invoice", {
     frm.add_custom_button(__("Lire le scan"), () => lire(frm), __("Facture fournisseur"));
     frm.add_custom_button(__("Vérifier avant validation"), () => verifier(frm),
                           __("Facture fournisseur"));
-    frm.add_custom_button(__("Poser la retenue à la source"), () => poser(frm),
+    frm.add_custom_button(__("Recalculer la retenue à la source"), () => poser(frm),
                           __("Facture fournisseur"));
   },
 });
@@ -71,8 +71,9 @@ function verifier(frm) {
       indicator: m.manques.length ? "red" : "green",
       message: (m.manques.length
         ? "<ul><li>" + m.manques.map(frappe.utils.escape_html).join("</li><li>") + "</li></ul>"
-        : `<p>${__("Scan joint, stock et magasin renseignés, totaux concordants.")}</p>`) +
-        `<p>${retenue}</p>`,
+        : `<p>${__("Scan PDF joint, totaux concordants avec le scan.")}</p>`) +
+        `<p>${retenue}</p>` +
+        `<p class="text-muted">${__("Le stock, le magasin, le n° et les dates du fournisseur ne bloquent plus rien : ils sont corrigés tout seuls à l'enregistrement.")}</p>`,
     });
   });
 }
@@ -86,14 +87,26 @@ function poser(frm) {
   }).then((r) => {
     const m = r.message || {};
     frm.reload_doc();
+    const centre = m.centre || {};
+    const fait = m.statut === "posee" || m.statut === "corrigee" || centre.statut === "pose";
+    // Le centre de coûts n'est pas un détail d'écran : la ligne pointe un compte de résultat, et
+    // ERPNext refuse la validation sans lui.
+    const note = centre.statut === "pose"
+      ? `<p>${__("Centre de coûts posé sur la ligne : {0}.", [frappe.utils.escape_html(centre.cost_center)])}</p>`
+      : centre.statut === "aucun centre de couts"
+        ? `<p style="color:var(--red-500)">${__("Aucun centre de coûts par défaut sur la société : la validation sera refusée tant qu'il manquera.")}</p>`
+        : "";
     frappe.msgprint({
       title: __("Retenue à la source"),
-      indicator: m.statut === "posee" ? "green" : "orange",
-      message: m.statut === "posee"
+      indicator: fait ? "green" : "orange",
+      message: (m.statut === "posee"
         ? __("Ligne ajoutée : {0} — 1 % de {1} (TTC {2}, timbre exclu).",
              [format_currency(m.due), format_currency(m.assiette),
               format_currency(m.ttc_avant_retenue)])
-        : __("Rien à poser ({0}).", [m.statut]),
+        : m.statut === "corrigee"
+          ? __("Ligne ramenée à {0} : {1} était saisi. Une retenue à la source se calcule, elle ne se négocie pas.",
+               [format_currency(m.apres), format_currency(m.avant)])
+          : __("Rien à faire ({0}).", [m.statut])) + note,
     });
   });
 }

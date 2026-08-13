@@ -6,3 +6,12 @@
 # Patches added in this section will be executed after doctypes are migrated
 bank_retenue_sync.patches.politique_regularisation_ras
 bank_retenue_sync.patches.politique_achat_local
+# Relance du meme patch : il porte deux reglages de plus (le seuil d'ecart bloquant). Un patch deja
+# joue ne rejoue pas, et le suffixe date est la seule facon de le redemander. Le code sait retomber
+# sur ses constantes si les champs restent vides ; ce qui se perdrait sans cette relance, c'est de
+# VOIR la valeur appliquee dans l'ecran des reglages — un seuil invisible ne se discute pas.
+bank_retenue_sync.patches.politique_achat_local #2026-08-13
+# Et encore une fois : le seuil d'ecart est desormais SEPARE par grandeur (TTC en absolu, TVA en
+# pourcentage d'elle-meme), soit deux champs de plus. L'entree ci-dessus a deja ete jouee — c'est
+# la chaine entiere, commentaire compris, qui fait l'identite d'un patch, d'ou ce nouveau suffixe.
+bank_retenue_sync.patches.politique_achat_local #2026-08-13-ecarts

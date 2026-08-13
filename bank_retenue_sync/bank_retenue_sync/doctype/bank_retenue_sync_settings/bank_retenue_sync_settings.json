@@ -51,7 +51,12 @@
   "ras_achat_taux",
   "column_break_achat",
   "ras_achat_compte",
-  "ras_achat_mode"
+  "ras_achat_mode",
+  "ecart_achat_minimal",
+  "ecart_achat_taux",
+  "ecart_achat_ttc",
+  "ecart_achat_tva_taux",
+  "magasin_achat_defaut"
  ],
  "fields": [
   {
@@ -348,6 +353,41 @@
    "fieldtype": "Link",
    "options": "Mode of Payment",
    "label": "Mode de paiement de la retenue achat"
+  },
+  {
+   "default": "1",
+   "fieldname": "ecart_achat_minimal",
+   "fieldtype": "Currency",
+   "label": "Ecart bloquant sur le HT : plancher",
+   "description": "En dessous, l'ecart entre le HT saisi et le HT du scan est tenu pour du bruit de lecture. Le seuil retenu est le PLUS GRAND de ce plancher et du pourcentage ci-contre. Large a dessein : le HT est la grandeur que le modele lit le moins bien (1,012 DT d'ecart constate sur un scan par ailleurs juste)."
+  },
+  {
+   "default": "1",
+   "fieldname": "ecart_achat_taux",
+   "fieldtype": "Percent",
+   "label": "Ecart bloquant sur le HT : pourcentage du TTC"
+  },
+  {
+   "fieldname": "magasin_achat_defaut",
+   "fieldtype": "Link",
+   "options": "Warehouse",
+   "label": "Magasin par defaut des achats",
+   "description": "Pose sur les factures d'achat locales dont le magasin est vide. Vide : celui de Stock Settings, sinon le plus utilise."
+  },
+  {
+   "default": "1.5",
+   "fieldname": "ecart_achat_ttc",
+   "fieldtype": "Currency",
+   "precision": "3",
+   "label": "Ecart bloquant sur le TTC",
+   "description": "Ecart absolu admis entre le TTC saisi et le TTC du scan. 1,5 DT couvre le bruit de lecture constate (1,012 DT) sans laisser passer une erreur de saisie."
+  },
+  {
+   "default": "0.1",
+   "fieldname": "ecart_achat_tva_taux",
+   "fieldtype": "Percent",
+   "label": "Ecart bloquant sur la TVA : pourcentage de la TVA lue",
+   "description": "Serre a dessein : la TVA se lit au millime exact sur les scans deja traites. Un seuil calcule sur le TTC lui laissait 6,2 % de tolerance, par ou une TVA ramenee de 175,311 a 170,000 est passee sans un mot."
   }
  ],
  "issingle": 1,
