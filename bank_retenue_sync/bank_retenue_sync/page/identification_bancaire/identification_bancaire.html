@@ -1,0 +1,151 @@
+<style>
+  .ib-wrap { padding: 0 0 40px; }
+
+  .ib-alert { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 6px;
+              background: var(--bg-orange, #fff4e5); color: var(--text-color);
+              border: 1px solid var(--border-color); font-size: 13px; }
+  .ib-alert.show { display: block; }
+
+  /* --- KPI ------------------------------------------------------------ */
+  .ib-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+             gap: 10px; margin-bottom: 14px; }
+  .ib-kpi { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px;
+            background: var(--card-bg, var(--fg-color)); }
+  .ib-kpi .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--text-muted); margin-bottom: 4px; }
+  .ib-kpi .val { font-size: 19px; font-weight: 600; line-height: 1.2; }
+  .ib-kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .ib-kpi.identifie .val { color: var(--text-on-green, #28a745); }
+  .ib-kpi.orphelin  .val { color: var(--text-on-red, #c0392b); }
+  .ib-kpi.averifier .val { color: var(--text-on-orange, #b9770e); }
+
+  /* --- barres de couverture ------------------------------------------ */
+  .ib-cover { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+              gap: 14px; margin-bottom: 18px; }
+  .ib-cover-item { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; }
+  .ib-cover-head { display: flex; justify-content: space-between; font-size: 12px;
+                   margin-bottom: 6px; }
+  .ib-cover-head b { font-size: 13px; }
+  .ib-bar { height: 10px; border-radius: 5px; overflow: hidden; display: flex;
+            background: var(--control-bg, #eee); }
+  .ib-bar span { display: block; height: 100%; }
+  .ib-bar .s-identifie { background: #28a745; }
+  .ib-bar .s-orphelin  { background: #c0392b; }
+  .ib-bar .s-averifier { background: #e0a800; }
+  .ib-bar .s-ignore    { background: #9aa0a6; }
+  .ib-legend { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+  .ib-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+                 margin: 0 4px 0 10px; }
+  .ib-legend i:first-child { margin-left: 0; }
+
+  /* --- filtres --------------------------------------------------------- */
+  .ib-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+                margin-bottom: 12px; }
+  .ib-filters .f { display: flex; flex-direction: column; gap: 3px; }
+  .ib-filters label { font-size: 11px; color: var(--text-muted); }
+  .ib-filters input, .ib-filters select {
+      height: 28px; font-size: 13px; padding: 2px 8px; border-radius: 6px;
+      border: 1px solid var(--border-color); background: var(--control-bg);
+      color: var(--text-color); }
+  .ib-filters input[type="search"] { min-width: 220px; }
+
+  /* --- tableau --------------------------------------------------------- */
+  .ib-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ib-tbl th, .ib-tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border-color);
+                           text-align: left; vertical-align: top; }
+  .ib-tbl th { font-size: 11px; text-transform: uppercase; letter-spacing: .03em;
+               color: var(--text-muted); white-space: nowrap; background: var(--subtle-fg, transparent); }
+  .ib-tbl th.sortable { cursor: pointer; user-select: none; }
+  .ib-tbl th.sortable:hover { color: var(--text-color); }
+  .ib-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ib-tbl tbody tr:hover { background: var(--highlight-color, rgba(0,0,0,.03)); }
+  .ib-tbl .op { max-width: 320px; }
+  .ib-tbl .raison { color: var(--text-muted); font-size: 11.5px; max-width: 280px; }
+  .ib-ignored td { opacity: .5; }
+
+  .ib-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+              white-space: nowrap; border: 1px solid transparent; }
+  .ib-badge.Identifie  { background: rgba(40,167,69,.13);  color: #1e7e34; }
+  .ib-badge.Orphelin   { background: rgba(192,57,43,.13);  color: #a93226; }
+  .ib-badge.Averifier  { background: rgba(224,168,0,.16);  color: #9c6f00; }
+  .ib-badge.Ignore     { background: rgba(154,160,166,.18); color: #5f6368; }
+  .ib-badge.Debit      { background: rgba(192,57,43,.10);  color: #a93226; }
+  .ib-badge.Credit     { background: rgba(40,167,69,.10);  color: #1e7e34; }
+  /* Ecart de paiement : discret sous le seuil (frais bancaires presumes), signale au-dela. */
+  .ib-ecart            { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ib-ecart.mineur     { color: var(--text-muted); font-size: 11px; }
+  .ib-ecart.alerte     { display: inline-block; padding: 1px 6px; border-radius: 10px;
+                         font-weight: 600; background: rgba(192,57,43,.13); color: #a93226; }
+  .ib-tbl th.num       { text-align: right; }
+
+  .ib-act { display: flex; gap: 4px; flex-wrap: wrap; }
+  .ib-act button { font-size: 11px; padding: 1px 7px; border-radius: 5px; cursor: pointer;
+                   border: 1px solid var(--border-color); background: var(--control-bg);
+                   color: var(--text-color); white-space: nowrap; }
+  .ib-act button:hover { background: var(--fg-hover-color, rgba(0,0,0,.05)); }
+
+  .ib-groupe { font-size: 11px; color: var(--text-muted); cursor: pointer;
+               text-decoration: underline dotted; }
+
+  .ib-foot { display: flex; justify-content: space-between; align-items: center;
+             margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+  .ib-foot button { font-size: 12px; padding: 3px 10px; border-radius: 6px;
+                    border: 1px solid var(--border-color); background: var(--control-bg);
+                    color: var(--text-color); cursor: pointer; }
+  .ib-foot button[disabled] { opacity: .4; cursor: default; }
+
+  .ib-empty, .ib-loading { padding: 28px; text-align: center; color: var(--text-muted); }
+
+  /* --- bandeau de solde ------------------------------------------------ */
+  .ib-solde { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+              gap: 10px; margin-bottom: 14px; padding: 12px;
+              border: 1px solid var(--border-color); border-radius: 8px; }
+  .ib-solde .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                   color: var(--text-muted); margin-bottom: 4px; }
+  .ib-solde .val { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ib-solde .sub { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+  .ib-solde .delta .val { color: var(--text-on-red, #c0392b); }
+  .ib-solde .delta.ok .val { color: var(--text-on-green, #28a745); }
+  .ib-solde-actions { display: flex; align-items: flex-end; }
+  .ib-solde-actions button { font-size: 12px; padding: 4px 10px; border-radius: 6px;
+                             border: 1px solid var(--border-color); background: var(--control-bg);
+                             color: var(--text-color); cursor: pointer; }
+</style>
+
+<div class="ib-wrap">
+  <div class="ib-alert" data-role="alert"></div>
+
+  <div class="ib-solde" data-role="solde"></div>
+
+  <div class="ib-kpis" data-role="kpis"></div>
+  <div class="ib-cover" data-role="cover"></div>
+
+  <div class="ib-filters">
+    <!-- Sens de lecture. Le tableau part du releve par defaut ; l'autre vue part de la
+         comptabilite, la seule qui montre une ecriture SANS mouvement bancaire en face. -->
+    <div class="f"><label>Vue</label>
+      <select data-f="vue">
+        <option value="banque">Mouvements bancaires</option>
+        <option value="erpnext">Pièces ERPNext sans mouvement</option>
+      </select></div>
+    <div class="f"><label>Du</label><input type="date" data-f="date_from"></div>
+    <div class="f"><label>Au</label><input type="date" data-f="date_to"></div>
+    <div class="f"><label>Sens</label><select data-f="sens"><option value="">Tous</option></select></div>
+    <div class="f"><label>Statut</label><select data-f="statut"><option value="">Tous</option></select></div>
+    <div class="f"><label>Catégorie</label><select data-f="categorie"><option value="">Toutes</option></select></div>
+    <div class="f"><label>Écart</label><select data-f="ecart"><option value="">Tous</option></select></div>
+    <div class="f"><label>Recherche</label>
+      <input type="search" data-f="search" placeholder="libellé ou référence…"></div>
+  </div>
+
+  <div data-role="table"><div class="ib-loading">Chargement…</div></div>
+
+  <div class="ib-foot">
+    <span data-role="count"></span>
+    <span>
+      <button data-action="prev">‹ Précédent</button>
+      <span data-role="page"></span>
+      <button data-action="next">Suivant ›</button>
+    </span>
+  </div>
+</div>

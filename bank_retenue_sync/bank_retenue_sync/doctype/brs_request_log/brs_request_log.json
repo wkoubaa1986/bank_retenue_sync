@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "autoname": "format:BRS-LOG-{YYYY}-{######}",
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "method",
+  "endpoint",
+  "column_break_head",
+  "status_code",
+  "duration",
+  "section_payload",
+  "request_data",
+  "column_break_payload",
+  "response_data",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "method",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Methode",
+   "options": "GET\nPOST\nPUT\nPATCH\nDELETE"
+  },
+  {
+   "fieldname": "endpoint",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Endpoint",
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status_code",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Code HTTP"
+  },
+  {
+   "description": "Duree de l'appel, en secondes.",
+   "fieldname": "duration",
+   "fieldtype": "Float",
+   "label": "Duree (s)",
+   "precision": "3"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_payload",
+   "fieldtype": "Section Break",
+   "label": "Echange"
+  },
+  {
+   "fieldname": "request_data",
+   "fieldtype": "Code",
+   "label": "Requete",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "column_break_payload",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Corps de reponse, tronque. Ne jamais journaliser de secret.",
+   "fieldname": "response_data",
+   "fieldtype": "Code",
+   "label": "Reponse"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Long Text",
+   "label": "Erreur"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Request Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "endpoint"
+}

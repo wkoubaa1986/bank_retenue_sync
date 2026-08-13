@@ -1,0 +1,409 @@
+{
+ "actions": [],
+ "autoname": "field:reference",
+ "creation": "2026-07-20 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "reference",
+  "etat_depot",
+  "etat_source",
+  "column_break_id",
+  "date_paiement",
+  "type_retenue",
+  "type_generation",
+  "hors_perimetre",
+  "section_declarant",
+  "declarant",
+  "declarant_matricule",
+  "numero_chez_declarant",
+  "column_break_declarant",
+  "customer",
+  "beneficiaire",
+  "beneficiaire_matricule",
+  "section_montants",
+  "total_ht",
+  "total_tva",
+  "total_brut",
+  "column_break_montants",
+  "montant_retenue",
+  "taux",
+  "anomalie",
+  "anomalie_raison",
+  "section_rapprochement",
+  "match_status",
+  "payment_entry",
+  "sales_invoice",
+  "sales_order",
+  "column_break_match",
+  "match_method",
+  "match_score",
+  "ecart_piece",
+  "revue_requise",
+  "match_raison",
+  "match_candidates",
+  "section_piece",
+  "pdf_file",
+  "pdf_attached_to_pe",
+  "pdf_attache_a",
+  "section_technique",
+  "sync_run",
+  "fichier_declare",
+  "date_creation_certificat",
+  "raw_payload"
+ ],
+ "fields": [
+  {
+   "description": "Reference du certificat chez TEJ. Sert de nom du document : c'est la cle de deduplication.",
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Reference",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Recue = paiement declare. Annule = le declarant l'a retire au portail : aucune retenue, rien a comptabiliser. Rectifie = il remplace un certificat anterieur, a verifier.",
+   "fieldname": "etat_depot",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Etat",
+   "options": "\nRecue\nRectifie\nAnnule\nAutre"
+  },
+  {
+   "description": "Etat brut du portail, conserve tel quel : le jour ou un libelle inconnu apparait, il est lisible ici sans relancer un scraping.",
+   "fieldname": "etat_source",
+   "fieldtype": "Data",
+   "label": "Etat au portail",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_id",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "date_paiement",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Date de paiement"
+  },
+  {
+   "fieldname": "type_retenue",
+   "fieldtype": "Data",
+   "label": "Type de retenue"
+  },
+  {
+   "fieldname": "type_generation",
+   "fieldtype": "Data",
+   "label": "Type de generation",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Certificat anterieur a l'annee suivie. Ingere pour l'historique, jamais rapproche ni comptabilise.",
+   "fieldname": "hors_perimetre",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Hors perimetre",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_declarant",
+   "fieldtype": "Section Break",
+   "label": "Declarant"
+  },
+  {
+   "description": "Le CLIENT qui a retenu : c'est lui qui declare, nous sommes le beneficiaire.",
+   "fieldname": "declarant",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Declarant"
+  },
+  {
+   "fieldname": "declarant_matricule",
+   "fieldtype": "Data",
+   "label": "Matricule fiscal"
+  },
+  {
+   "description": "Numero de la piece CHEZ LE DECLARANT. Ce n'est jamais notre numero de facture ni de commande.",
+   "fieldname": "numero_chez_declarant",
+   "fieldtype": "Data",
+   "label": "Numero chez le declarant"
+  },
+  {
+   "fieldname": "column_break_declarant",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Identifie par matricule fiscal (tax_id normalise), puis alias appris, puis raison sociale. Le corriger a la main fait autorite : la machine ne repasse jamais dessus, et la correction sert d'alias aux certificats suivants du meme declarant.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Client",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "beneficiaire",
+   "fieldtype": "Data",
+   "label": "Beneficiaire",
+   "read_only": 1
+  },
+  {
+   "description": "Doit etre notre matricule. Sinon l'export a rendu le certificat d'un tiers : anomalie bloquante.",
+   "fieldname": "beneficiaire_matricule",
+   "fieldtype": "Data",
+   "label": "Matricule du beneficiaire",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_montants",
+   "fieldtype": "Section Break",
+   "label": "Montants"
+  },
+  {
+   "fieldname": "total_ht",
+   "fieldtype": "Currency",
+   "label": "Total HT",
+   "precision": "3"
+  },
+  {
+   "fieldname": "total_tva",
+   "fieldtype": "Currency",
+   "label": "Total TVA",
+   "precision": "3"
+  },
+  {
+   "description": "Assiette de la retenue = HT + TVA. La retenue vaut 1 % de ce montant.",
+   "fieldname": "total_brut",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total TTC",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_montants",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "montant_retenue",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Montant retenu",
+   "precision": "3"
+  },
+  {
+   "description": "Calcule : retenue / TTC. Vide quand l'assiette est nulle — un taux de 999 % ne serait pas une information.",
+   "fieldname": "taux",
+   "fieldtype": "Percent",
+   "label": "Taux",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Le certificat est lisible mais invraisemblable : ingere et affiche, jamais rapproche automatiquement.",
+   "fieldname": "anomalie",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Anomalie",
+   "read_only": 1
+  },
+  {
+   "depends_on": "anomalie",
+   "fieldname": "anomalie_raison",
+   "fieldtype": "Small Text",
+   "label": "Raison de l'anomalie",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_rapprochement",
+   "fieldtype": "Section Break",
+   "label": "Rapprochement"
+  },
+  {
+   "default": "Unmatched",
+   "description": "Sans piece = client identifie mais aucune ecriture de paiement ne porte cette retenue.",
+   "fieldname": "match_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Statut de rapprochement",
+   "options": "Unmatched\nAuto Matched\nManually Matched\nAmbiguous\nSans piece\nRejected\nIgnore",
+   "read_only": 1
+  },
+  {
+   "description": "Ecriture de paiement portant la retenue (mode « Retenue a la source vente »).",
+   "fieldname": "payment_entry",
+   "fieldtype": "Link",
+   "label": "Ecriture de paiement",
+   "options": "Payment Entry"
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Facture de vente",
+   "options": "Sales Invoice"
+  },
+  {
+   "description": "Renseignee seulement quand le paiement ne porte encore aucune facture. Le PDF y est attache en attendant, puis deplace vers la facture des qu'elle existe.",
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Commande",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "column_break_match",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Quel etage a tranche l'identification du client.",
+   "fieldname": "match_method",
+   "fieldtype": "Select",
+   "label": "Methode",
+   "options": "\nmatricule\nmatricule_numero\nalias\nfuzzy\nia\necriture\nmanuel\naucun",
+   "read_only": 1
+  },
+  {
+   "fieldname": "match_score",
+   "fieldtype": "Float",
+   "label": "Score",
+   "read_only": 1
+  },
+  {
+   "description": "Ecart entre la retenue declaree et le montant de l'ecriture. Rendu, jamais absorbe : un ecart de 0,010 DT s'explique par le timbre fiscal de 1 DT, mais c'est a vous de le trancher.",
+   "fieldname": "ecart_piece",
+   "fieldtype": "Currency",
+   "label": "Ecart avec l'ecriture",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Quelque chose demande votre oeil : rectification, ecart de montant, ou annulation posterieure au rapprochement.",
+   "fieldname": "revue_requise",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Revue requise"
+  },
+  {
+   "description": "Pourquoi le rapprochement a abouti — ou pourquoi il n'a pas abouti. Aucun silence.",
+   "fieldname": "match_raison",
+   "fieldtype": "Small Text",
+   "label": "Raison",
+   "read_only": 1
+  },
+  {
+   "fieldname": "match_candidates",
+   "fieldtype": "Code",
+   "label": "Candidats",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_piece",
+   "fieldtype": "Section Break",
+   "label": "Justificatif"
+  },
+  {
+   "fieldname": "pdf_file",
+   "fieldtype": "Attach",
+   "label": "Certificat PDF"
+  },
+  {
+   "default": "0",
+   "description": "Le PDF est attache a la piece comptable : la page Retenue a la source le compte alors comme justificatif.",
+   "fieldname": "pdf_attached_to_pe",
+   "fieldtype": "Check",
+   "label": "PDF attache a la piece",
+   "read_only": 1
+  },
+  {
+   "description": "Sur quel document le PDF a ete pose (facture, commande ou ecriture).",
+   "fieldname": "pdf_attache_a",
+   "fieldtype": "Data",
+   "label": "PDF attache a",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_technique",
+   "fieldtype": "Section Break",
+   "label": "Technique"
+  },
+  {
+   "fieldname": "sync_run",
+   "fieldtype": "Link",
+   "label": "Execution",
+   "options": "BRS Sync Run",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fichier_declare",
+   "fieldtype": "Data",
+   "label": "Fichier declare",
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_creation_certificat",
+   "fieldtype": "Date",
+   "label": "Date de creation au portail",
+   "read_only": 1
+  },
+  {
+   "description": "Ligne d'origine de l'export TEJ, conservee telle quelle : permet de re-deriver un champ sans relancer un scraping.",
+   "fieldname": "raw_payload",
+   "fieldtype": "Code",
+   "label": "Donnees brutes",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-12 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "Retenue Certificate",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "declarant,declarant_matricule,date_paiement",
+ "sort_field": "date_paiement",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "declarant",
+ "track_changes": 1
+}

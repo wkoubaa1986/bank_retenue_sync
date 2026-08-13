@@ -1,0 +1,166 @@
+{
+ "actions": [],
+ "autoname": "format:BRS-RUN-{YYYY}-{#####}",
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "kind",
+  "status",
+  "column_break_head",
+  "remote_job_id",
+  "started_at",
+  "finished_at",
+  "section_counts",
+  "rows_received",
+  "rows_created",
+  "column_break_counts",
+  "rows_duplicate",
+  "rows_failed",
+  "section_detail",
+  "log",
+  "section_payload",
+  "payload_hash",
+  "payload",
+  "error_log"
+ ],
+ "fields": [
+  {
+   "default": "tej_certificates",
+   "description": "Nature de la synchronisation.",
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Type",
+   "options": "tej_certificates\nbank_movements\nremises_cheques\ntej_certificats_recus",
+   "reqd": 1
+  },
+  {
+   "default": "Queued",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Statut",
+   "options": "Queued\nRunning\nSuccess\nPartial\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Identifiant du job cote tej-bank-service.",
+   "fieldname": "remote_job_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Job distant",
+   "search_index": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Debut"
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Fin"
+  },
+  {
+   "fieldname": "section_counts",
+   "fieldtype": "Section Break",
+   "label": "Compteurs"
+  },
+  {
+   "default": "0",
+   "fieldname": "rows_received",
+   "fieldtype": "Int",
+   "label": "Lignes recues"
+  },
+  {
+   "default": "0",
+   "fieldname": "rows_created",
+   "fieldtype": "Int",
+   "label": "Lignes creees"
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "rows_duplicate",
+   "fieldtype": "Int",
+   "label": "Doublons ignores"
+  },
+  {
+   "default": "0",
+   "fieldname": "rows_failed",
+   "fieldtype": "Int",
+   "label": "Lignes en echec"
+  },
+  {
+   "fieldname": "section_detail",
+   "fieldtype": "Section Break",
+   "label": "Detail"
+  },
+  {
+   "fieldname": "log",
+   "fieldtype": "Table",
+   "label": "Lignes",
+   "options": "BRS Sync Run Item"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_payload",
+   "fieldtype": "Section Break",
+   "label": "Charge utile"
+  },
+  {
+   "description": "Empreinte du corps recu. Unique : rejouer le meme push est un no-op.",
+   "fieldname": "payload_hash",
+   "fieldtype": "Data",
+   "label": "Empreinte",
+   "unique": 1
+  },
+  {
+   "fieldname": "payload",
+   "fieldtype": "Code",
+   "label": "Corps recu",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Journal d'erreurs"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-12 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Sync Run",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "kind",
+ "track_changes": 1
+}

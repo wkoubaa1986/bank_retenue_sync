@@ -1,0 +1,304 @@
+{
+ "actions": [],
+ "autoname": "field:cle",
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "cle",
+  "date",
+  "date_valeur",
+  "column_break_head",
+  "reference",
+  "sens",
+  "section_montants",
+  "operation",
+  "operation_norm",
+  "column_break_montants",
+  "debit",
+  "credit",
+  "montant",
+  "section_classement",
+  "categorie",
+  "regle",
+  "groupe",
+  "statut",
+  "raison",
+  "column_break_classement",
+  "document_type",
+  "document_name",
+  "montant_document",
+  "ecart",
+  "ignore_manuel",
+  "ignore_motif",
+  "note",
+  "section_meta",
+  "origine",
+  "snapshot_run",
+  "column_break_meta",
+  "premiere_vue",
+  "dernier_import",
+  "raw_payload"
+ ],
+ "fields": [
+  {
+   "description": "Empreinte de (date, reference, debit, credit). La reference bancaire seule NE SUFFIT PAS : une commission porte la meme reference FT... que le mouvement qui l'a generee.",
+   "fieldname": "cle",
+   "fieldtype": "Data",
+   "label": "Cle",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Date d'operation",
+   "search_index": 1
+  },
+  {
+   "fieldname": "date_valeur",
+   "fieldtype": "Date",
+   "label": "Date de valeur"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Reference bancaire",
+   "search_index": 1
+  },
+  {
+   "fieldname": "sens",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Sens",
+   "options": "Debit\nCredit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_montants",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Libelle"
+  },
+  {
+   "description": "Libelle normalise (majuscules, sans ponctuation) : le seul champ robuste aux casses variables du releve.",
+   "fieldname": "operation_norm",
+   "fieldtype": "Data",
+   "label": "Libelle normalise",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_montants",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "debit",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Debit",
+   "precision": "3"
+  },
+  {
+   "fieldname": "credit",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Credit",
+   "precision": "3"
+  },
+  {
+   "description": "debit ou credit, selon le sens. Permet de trier et de sommer sans CASE SQL.",
+   "fieldname": "montant",
+   "fieldtype": "Currency",
+   "label": "Montant",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_classement",
+   "fieldtype": "Section Break",
+   "label": "Classement"
+  },
+  {
+   "description": "Famille fonctionnelle du mouvement (encaissement, frais_bancaires, pret...).",
+   "fieldname": "categorie",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Categorie",
+   "search_index": 1
+  },
+  {
+   "description": "Cle de la BankRule qui a reconnu ce mouvement (cf. bank/rules.py).",
+   "fieldname": "regle",
+   "fieldtype": "Data",
+   "label": "Regle"
+  },
+  {
+   "description": "Cle d'agregat, pour les mouvements qui ne se comptabilisent jamais a l'unite (frais bancaires regroupes par jour).",
+   "fieldname": "groupe",
+   "fieldtype": "Data",
+   "label": "Groupe",
+   "search_index": 1
+  },
+  {
+   "default": "Orphelin",
+   "fieldname": "statut",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Statut",
+   "options": "Identifie\nOrphelin\nIgnore\nA verifier",
+   "search_index": 1
+  },
+  {
+   "fieldname": "raison",
+   "fieldtype": "Small Text",
+   "label": "Raison"
+  },
+  {
+   "fieldname": "column_break_classement",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "document_type",
+   "fieldtype": "Link",
+   "label": "Type de document",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "document_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Document",
+   "options": "document_type"
+  },
+  {
+   "default": "0",
+   "description": "Arbitrage humain : ce mouvement n'a pas a etre rapproche. Jamais ecrase par un re-import.",
+   "fieldname": "ignore_manuel",
+   "fieldtype": "Check",
+   "label": "Ignorer"
+  },
+  {
+   "depends_on": "ignore_manuel",
+   "fieldname": "ignore_motif",
+   "fieldtype": "Small Text",
+   "label": "Motif de mise a l'ecart"
+  },
+  {
+   "description": "Commentaire libre. Jamais ecrase par un re-import.",
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break",
+   "label": "Technique"
+  },
+  {
+   "default": "export",
+   "description": "Provenance de la ligne.",
+   "fieldname": "origine",
+   "fieldtype": "Select",
+   "label": "Origine",
+   "options": "export\nbank_transaction\nmanuel",
+   "read_only": 1
+  },
+  {
+   "fieldname": "snapshot_run",
+   "fieldtype": "Link",
+   "label": "Dernier run",
+   "options": "BRS Sync Run",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_meta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "premiere_vue",
+   "fieldtype": "Datetime",
+   "label": "Premiere vue",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dernier_import",
+   "fieldtype": "Datetime",
+   "label": "Derniere vue",
+   "read_only": 1
+  },
+  {
+   "description": "Ligne brute de l'export, conservee pour pouvoir re-deriver le classement.",
+   "fieldname": "raw_payload",
+   "fieldtype": "Code",
+   "label": "Ligne brute",
+   "options": "JSON"
+  },
+  {
+   "description": "Montant porte par la piece rattachee, tel qu'il est comptabilise.",
+   "fieldname": "montant_document",
+   "fieldtype": "Currency",
+   "label": "Montant comptabilise",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Montant bancaire moins montant comptabilise. Positif : la banque a credite plus que la piece. Negatif : la piece porte plus que ce que la banque a verse.",
+   "fieldname": "ecart",
+   "fieldtype": "Currency",
+   "label": "Ecart de paiement",
+   "precision": "3",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Bank Movement",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "date,operation,reference",
+ "sort_field": "date",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "operation",
+ "track_changes": 1
+}

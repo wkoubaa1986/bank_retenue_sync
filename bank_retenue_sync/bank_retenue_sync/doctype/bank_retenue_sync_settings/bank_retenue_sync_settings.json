@@ -1,0 +1,324 @@
+{
+ "actions": [],
+ "creation": "2026-07-20 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "column_break_conn",
+  "company",
+  "section_service",
+  "service_url",
+  "service_token",
+  "column_break_service",
+  "webhook_user",
+  "enable_request_log",
+  "section_secrets",
+  "push_secret",
+  "column_break_secrets",
+  "push_secret_previous",
+  "secrets_help",
+  "section_ecritures",
+  "auto_submit_journal_entries",
+  "seuil_ecart_paiement",
+  "frais_bancaires_actifs",
+  "pertes_non_paiement_actives",
+  "seuil_recharge_carte",
+  "montant_recharge_carte",
+  "section_ouverture",
+  "ecart_ouverture_date",
+  "column_break_ouverture",
+  "ecart_ouverture",
+  "section_sources",
+  "sources_email",
+  "section_contrats",
+  "contrats_financement",
+  "section_depenses",
+  "depenses_recurrentes",
+  "section_tej",
+  "enable_tej_sync",
+  "tej_sync_lookback_days",
+  "column_break_tej",
+  "ras_mode_of_payment",
+  "auto_submit_ras_ajustement",
+  "ras_mode_dette",
+  "supprimer_reglement_annule",
+  "pdf_auto_apres_rapprochement",
+  "last_tej_sync"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "Coupe-circuit global. Desactive, l'endpoint de reception repond 503 et les taches planifiees ne font rien.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "fieldname": "column_break_conn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Societe",
+   "options": "Company"
+  },
+  {
+   "fieldname": "section_service",
+   "fieldtype": "Section Break",
+   "label": "Service TEJ"
+  },
+  {
+   "default": "http://tej-bank-service:8080",
+   "description": "Nom de service sur le reseau Docker. Aucune URL ne doit etre codee en dur ailleurs.",
+   "fieldname": "service_url",
+   "fieldtype": "Data",
+   "label": "URL du service"
+  },
+  {
+   "description": "Jeton porteur presente au service. Doit correspondre a SERVICE_TOKEN cote conteneur.",
+   "fieldname": "service_token",
+   "fieldtype": "Password",
+   "label": "Jeton de service"
+  },
+  {
+   "fieldname": "column_break_service",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Utilisateur sous lequel s'execute l'ingestion. Utiliser un compte dedie, PAS Administrator.",
+   "fieldname": "webhook_user",
+   "fieldtype": "Link",
+   "label": "Utilisateur du webhook",
+   "options": "User"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_request_log",
+   "fieldtype": "Check",
+   "label": "Journaliser les appels sortants"
+  },
+  {
+   "fieldname": "section_secrets",
+   "fieldtype": "Section Break",
+   "label": "Signature des push"
+  },
+  {
+   "description": "Cle HMAC verifiant les push entrants. Doit correspondre a PUSH_SECRET cote conteneur.",
+   "fieldname": "push_secret",
+   "fieldtype": "Password",
+   "label": "Cle HMAC"
+  },
+  {
+   "fieldname": "column_break_secrets",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Ancienne cle, acceptee en plus de la nouvelle pendant une rotation.",
+   "fieldname": "push_secret_previous",
+   "fieldtype": "Password",
+   "label": "Cle HMAC precedente"
+  },
+  {
+   "fieldname": "secrets_help",
+   "fieldtype": "HTML",
+   "options": "<p class=\"text-muted small\">Rotation sans coupure : renseigner la nouvelle cle dans <b>Cle HMAC</b>, deplacer l'ancienne dans <b>Cle HMAC precedente</b>, redemarrer le service avec la nouvelle valeur, puis vider le champ precedent.</p>"
+  },
+  {
+   "fieldname": "section_ecritures",
+   "fieldtype": "Section Break",
+   "label": "Ecritures"
+  },
+  {
+   "default": "0",
+   "description": "Soumet automatiquement les ecritures creees. Laisser decoche : l'utilisateur revoit chaque brouillon avant de le soumettre.",
+   "fieldname": "auto_submit_journal_entries",
+   "fieldtype": "Check",
+   "label": "Soumettre automatiquement les ecritures"
+  },
+  {
+   "default": "0",
+   "description": "Cree l'ecriture journaliere agregee des frais bancaires (commissions, TVA, timbre). Laisser decoche tant que la regle metier d'agregation n'est pas arretee : le classement et le regroupement fonctionnent sans cela.",
+   "fieldname": "frais_bancaires_actifs",
+   "fieldtype": "Check",
+   "label": "Comptabiliser les frais bancaires"
+  },
+  {
+   "default": "0",
+   "description": "Cree l'ecriture mensuelle cumulative des ecarts entre le montant attendu d'un encaissement et le montant reellement credite (Dr Perte de non paiement / Cr banque). Seuls les ecarts DANS la tolerance sont comptabilises ; au-dela, c'est un impaye et il ressort en diagnostic.",
+   "fieldname": "pertes_non_paiement_actives",
+   "fieldtype": "Check",
+   "label": "Comptabiliser les pertes de non paiement"
+  },
+  {
+   "fieldname": "section_sources",
+   "fieldtype": "Section Break",
+   "label": "Sources email"
+  },
+  {
+   "description": "Boites d'ou proviennent les factures et avis traites automatiquement. C'est la source unique de verite : l'orchestrateur lit cette table, il ne contient plus aucun expediteur en dur.",
+   "fieldname": "sources_email",
+   "fieldtype": "Table",
+   "label": "Sources email",
+   "options": "BRS Source Email"
+  },
+  {
+   "fieldname": "section_contrats",
+   "fieldtype": "Section Break",
+   "label": "Contrats de financement"
+  },
+  {
+   "description": "Prets et leasings, avec leur echeancier. Les deux prets partagent le meme libelle bancaire : c'est le total mensuel constant qui les distingue.",
+   "fieldname": "contrats_financement",
+   "fieldtype": "Table",
+   "label": "Contrats de financement",
+   "options": "BRS Contrat Financement"
+  },
+  {
+   "fieldname": "section_depenses",
+   "fieldtype": "Section Break",
+   "label": "Depenses recurrentes"
+  },
+  {
+   "description": "Depenses declenchees par leur apparition sur le releve bancaire. Modifier un montant ici suffit : aucune modification de code n'est necessaire.",
+   "fieldname": "depenses_recurrentes",
+   "fieldtype": "Table",
+   "label": "Depenses recurrentes",
+   "options": "BRS Depense Recurrente"
+  },
+  {
+   "fieldname": "section_tej",
+   "fieldtype": "Section Break",
+   "label": "Certificats TEJ"
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_tej_sync",
+   "fieldtype": "Check",
+   "label": "Activer la synchronisation TEJ"
+  },
+  {
+   "default": "30",
+   "description": "Profondeur demandee au service lors de la synchronisation planifiee.",
+   "fieldname": "tej_sync_lookback_days",
+   "fieldtype": "Int",
+   "label": "Profondeur (jours)"
+  },
+  {
+   "fieldname": "column_break_tej",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Retenue a la source vente",
+   "description": "Mode de paiement identifiant une retenue a la source. Doit correspondre a RAS_MODE de customization_app.",
+   "fieldname": "ras_mode_of_payment",
+   "fieldtype": "Link",
+   "label": "Mode de paiement RAS",
+   "options": "Mode of Payment"
+  },
+  {
+   "default": "1",
+   "fieldname": "auto_submit_ras_ajustement",
+   "fieldtype": "Check",
+   "label": "Valider automatiquement les ecritures de retenue",
+   "description": "Coche : l'ecriture de retenue creee et le reglement repris sont VALIDES aussitot (creation comme ajustement). Decoche : ils restent en brouillon, a valider a la main — plus prudent, mais un ajustement annule un reglement deja valide, et tant que les brouillons ne sont pas valides la facture concernee reapparait comme due."
+  },
+  {
+   "default": "Dette non payée",
+   "fieldname": "ras_mode_dette",
+   "fieldtype": "Link",
+   "label": "Mode de paiement « dette »",
+   "options": "Mode of Payment",
+   "description": "Le mode qui ne correspond a AUCUN argent compte : la facture y est eteinte contre un compte de dettes, le montant est deduit de la facture et non d'une caisse. Lui seul peut etre revu a la baisse lors d'une regularisation. Un reglement en especes, cheque ou virement, lui, a ete compte par quelqu'un : son montant ne bouge jamais, c'est son AFFECTATION qui change."
+  },
+  {
+   "default": "1",
+   "fieldname": "supprimer_reglement_annule",
+   "fieldtype": "Check",
+   "label": "Supprimer le reglement annule apres reprise",
+   "description": "Coche : une fois la reprise VALIDEE, le reglement d'origine annule est supprime — il ne reste que l'ecriture juste. La suppression n'a jamais lieu tant que le remplacant est en brouillon, ni si un autre document (rapprochement bancaire, avoir) le reference encore : dans ce cas il est conserve et la raison est affichee. Decoche : le reglement annule reste en place comme trace."
+  },
+  {
+   "default": "1",
+   "fieldname": "pdf_auto_apres_rapprochement",
+   "fieldtype": "Check",
+   "label": "Telecharger le certificat PDF des le rapprochement",
+   "description": "Coche : des qu'une retenue est rapprochee ou regularisee, le certificat est demande au portail et attache a la facture (a la commande si elle n'est pas encore facturee), en tache de fond — une session de scraping prend plusieurs minutes. Decoche : les PDF n'arrivent que par le bouton « Telecharger les PDF » ou la tache quotidienne."
+  },
+  {
+   "fieldname": "last_tej_sync",
+   "fieldtype": "Datetime",
+   "label": "Derniere synchronisation TEJ",
+   "read_only": 1
+  },
+  {
+   "default": "5",
+   "description": "Au-dela de ce montant (en valeur absolue), l'ecart entre le credit bancaire et la piece comptable est signale dans la page Identification bancaire. En deca, l'ecart est repute correspondre aux frais bancaires.",
+   "fieldname": "seuil_ecart_paiement",
+   "fieldtype": "Currency",
+   "label": "Seuil d'alerte sur ecart de paiement",
+   "precision": "3"
+  },
+  {
+   "fieldname": "section_ouverture",
+   "fieldtype": "Section Break",
+   "label": "Point de depart du rapprochement"
+  },
+  {
+   "fieldname": "ecart_ouverture_date",
+   "fieldtype": "Date",
+   "label": "Rapprocher a partir du",
+   "description": "Date a partir de laquelle l'ecart est suivi. Tout ce qui precede est repute acquis et neutralise par le montant ci-contre : la page n'affiche alors que l'ecart CREE depuis cette date. Sans date, l'ecart reste brut."
+  },
+  {
+   "fieldname": "column_break_ouverture",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "ecart_ouverture",
+   "fieldtype": "Currency",
+   "precision": "3",
+   "label": "Ecart residuel accepte a cette date",
+   "description": "Ecart (solde banque moins solde ERPNext) constate a la date de depart, accepte tel quel. Il est soustrait de l'ecart affiche, de sorte que le rapprochement reparte de zero. Le bouton « Mesurer » des Reglages calcule la valeur du jour."
+  },
+  {
+   "default": "700",
+   "fieldname": "seuil_recharge_carte",
+   "fieldtype": "Currency",
+   "precision": "3",
+   "label": "Seuil d'alerte de recharge de la carte technologique",
+   "description": "Sous ce solde REEL (lu chez tej-bank-service), une alerte de recharge est posee a chaque passage de la tache des paiements de carte. Une seule alerte par jour : un rappel repete toutes les heures cesserait d'etre lu. Mettre a 0 desactive l'alerte."
+  },
+  {
+   "default": "1500",
+   "fieldname": "montant_recharge_carte",
+   "fieldtype": "Currency",
+   "precision": "3",
+   "label": "Montant d'une recharge de la carte technologique",
+   "description": "Montant propose au tableau « Paiements a faire » quand le solde REEL de la carte passe sous le seuil. Une recharge type, pas un appoint : virer seulement ce qui manque pour repasser le seuil ferait replonger la carte des le premier debit. Plafonne par le solde disponible en banque."
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-08-12 16:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "Bank Retenue Sync Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

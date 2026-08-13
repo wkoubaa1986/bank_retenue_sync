@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "actif",
+  "cle",
+  "libelle",
+  "role",
+  "column_break_filtre",
+  "expediteurs",
+  "sujet",
+  "limite",
+  "section_pj",
+  "extension",
+  "motif_nom_piece_jointe",
+  "column_break_pj",
+  "notes"
+ ],
+ "fields": [
+  {
+   "columns": 1,
+   "default": "1",
+   "fieldname": "actif",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Actif"
+  },
+  {
+   "description": "Identifiant stable utilise par le code. Ne pas modifier sur une ligne existante.",
+   "fieldname": "cle",
+   "fieldtype": "Data",
+   "label": "Cle",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Libelle",
+   "reqd": 1
+  },
+  {
+   "columns": 2,
+   "default": "Depense mensuelle",
+   "fieldname": "role",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Role",
+   "options": "Depense mensuelle\nIdentification bancaire\nVerification"
+  },
+  {
+   "fieldname": "column_break_filtre",
+   "fieldtype": "Column Break"
+  },
+  {
+   "columns": 3,
+   "description": "Fragments d'adresse expediteur, separes par des virgules. Chacun donne lieu a une recherche IMAP distincte, les resultats sont fusionnes.",
+   "fieldname": "expediteurs",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Expediteurs",
+   "reqd": 1
+  },
+  {
+   "description": "Filtre IMAP sur le sujet. Laisser VIDE pour ne filtrer que sur l'expediteur (necessaire quand le sujet varie, comme les avis de paiement Aramex).",
+   "fieldname": "sujet",
+   "fieldtype": "Data",
+   "label": "Sujet contient"
+  },
+  {
+   "default": "20",
+   "description": "Nombre de messages recents examines par expediteur.",
+   "fieldname": "limite",
+   "fieldtype": "Int",
+   "label": "Messages examines"
+  },
+  {
+   "fieldname": "section_pj",
+   "fieldtype": "Section Break",
+   "label": "Piece jointe"
+  },
+  {
+   "description": "Extension attendue, avec le point. Ex. .pdf, .zip, .xls",
+   "fieldname": "extension",
+   "fieldtype": "Data",
+   "label": "Extension"
+  },
+  {
+   "description": "Fragment attendu dans le NOM du fichier (insensible a la casse et aux espaces). Ex. honoraire, decl.ste",
+   "fieldname": "motif_nom_piece_jointe",
+   "fieldtype": "Data",
+   "label": "Nom de fichier contient"
+  },
+  {
+   "fieldname": "column_break_pj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Source Email",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

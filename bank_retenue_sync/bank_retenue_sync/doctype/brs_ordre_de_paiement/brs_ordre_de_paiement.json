@@ -1,0 +1,59 @@
+{
+ "actions": [],
+ "autoname": "format:OP-{YYYY}-{#####}",
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "libelle", "type_depense", "beneficiaire", "column_break_head",
+  "montant", "date_prevue", "statut",
+  "section_ecriture", "journal_entry", "compte_banque", "column_break_ec", "source_regle", "periode",
+  "section_banque", "mouvement", "date_virement", "column_break_bq", "montant_virement", "ecart",
+  "section_notes", "notes"
+ ],
+ "fields": [
+  {"fieldname": "libelle", "fieldtype": "Data", "label": "Libelle", "in_list_view": 1, "columns": 3, "reqd": 1},
+  {"fieldname": "type_depense", "fieldtype": "Data", "label": "Type", "in_standard_filter": 1},
+  {"fieldname": "beneficiaire", "fieldtype": "Data", "label": "Beneficiaire"},
+  {"fieldname": "column_break_head", "fieldtype": "Column Break"},
+  {"fieldname": "montant", "fieldtype": "Currency", "label": "Montant attendu", "precision": "3", "in_list_view": 1, "columns": 2, "reqd": 1},
+  {"fieldname": "date_prevue", "fieldtype": "Date", "label": "Date prevue", "in_list_view": 1, "columns": 2, "search_index": 1},
+  {"default": "En attente", "fieldname": "statut", "fieldtype": "Select", "label": "Statut", "options": "En attente\nVire\nEcart\nAnnule", "in_list_view": 1, "in_standard_filter": 1, "columns": 2, "search_index": 1},
+
+  {"fieldname": "section_ecriture", "fieldtype": "Section Break", "label": "Ecriture anticipee"},
+  {"description": "Ecriture creee par anticipation, en brouillon. C'est elle que le virement bancaire viendra confirmer.", "fieldname": "journal_entry", "fieldtype": "Link", "label": "Ecriture de journal", "options": "Journal Entry"},
+  {"fieldname": "compte_banque", "fieldtype": "Link", "label": "Compte credite", "options": "Account"},
+  {"fieldname": "column_break_ec", "fieldtype": "Column Break"},
+  {"description": "Cle de la ligne de configuration a l'origine de cet ordre.", "fieldname": "source_regle", "fieldtype": "Data", "label": "Regle d'origine"},
+  {"fieldname": "periode", "fieldtype": "Data", "label": "Periode"},
+
+  {"fieldname": "section_banque", "fieldtype": "Section Break", "label": "Confirmation bancaire"},
+  {"description": "Mouvement du releve qui confirme le paiement.", "fieldname": "mouvement", "fieldtype": "Link", "label": "Mouvement bancaire", "options": "BRS Bank Movement", "read_only": 1},
+  {"fieldname": "date_virement", "fieldtype": "Date", "label": "Date du virement", "read_only": 1},
+  {"fieldname": "column_break_bq", "fieldtype": "Column Break"},
+  {"fieldname": "montant_virement", "fieldtype": "Currency", "label": "Montant vire", "precision": "3", "read_only": 1},
+  {"description": "Montant vire moins montant attendu. Non nul = a examiner.", "fieldname": "ecart", "fieldtype": "Currency", "label": "Ecart", "precision": "3", "read_only": 1},
+
+  {"fieldname": "section_notes", "fieldtype": "Section Break"},
+  {"fieldname": "notes", "fieldtype": "Small Text", "label": "Notes"}
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Ordre de Paiement",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1},
+  {"create": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "Accounts Manager", "share": 1, "write": 1},
+  {"read": 1, "report": 1, "role": "Accounts User"}
+ ],
+ "search_fields": "libelle,date_prevue,montant",
+ "sort_field": "date_prevue",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "libelle",
+ "track_changes": 1
+}

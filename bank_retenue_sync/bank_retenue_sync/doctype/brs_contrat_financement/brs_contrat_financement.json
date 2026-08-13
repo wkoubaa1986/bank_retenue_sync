@@ -1,0 +1,214 @@
+{
+ "actions": [],
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "actif",
+  "cle",
+  "libelle",
+  "reference_bancaire",
+  "type",
+  "column_break_id",
+  "date_debut",
+  "date_fin",
+  "nb_echeances",
+  "total_mensuel",
+  "tolerance",
+  "section_comptes",
+  "compte_banque",
+  "compte_principal",
+  "compte_interet",
+  "column_break_comptes",
+  "compte_tva",
+  "taux_tva",
+  "compte_charge",
+  "section_amort",
+  "compte_amortissement",
+  "montant_amortissement",
+  "column_break_amort",
+  "template_reference",
+  "mode_paiement",
+  "notes"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "fieldname": "actif",
+   "fieldtype": "Check",
+   "label": "Actif",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "description": "Identifiant stable. Ex. pret_nantissement, pret_ligne_credit, leasing_cenntro.",
+   "fieldname": "cle",
+   "fieldtype": "Data",
+   "label": "Cle",
+   "reqd": 1
+  },
+  {
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "label": "Libelle",
+   "in_list_view": 1,
+   "columns": 3,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reference_bancaire",
+   "fieldtype": "Data",
+   "label": "Reference au releve",
+   "description": "Numero de contrat porte par le releve (ex. LD2614000071). C'est la cle d'identification la plus sure : contrairement au total mensuel, elle reste valable sur les echeances hors norme (premier loyer, avance)."
+  },
+  {
+   "default": "Pret",
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "Pret\nLeasing",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "column_break_id",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Date de la premiere echeance. Sert a calculer le compteur N/total du libelle.",
+   "fieldname": "date_debut",
+   "fieldtype": "Date",
+   "label": "Debut"
+  },
+  {
+   "fieldname": "date_fin",
+   "fieldtype": "Date",
+   "label": "Fin"
+  },
+  {
+   "description": "Nombre total d'echeances (le « 10 » de « Remboursement 6/10 »).",
+   "fieldname": "nb_echeances",
+   "fieldtype": "Int",
+   "label": "Nb d'echeances"
+  },
+  {
+   "description": "Total constant de l'echeance (principal + interet). C'EST LE DISCRIMINANT : les deux prets partagent le meme libelle bancaire « TAMOUIL CHIRAET », seule la somme du jour les distingue.",
+   "fieldname": "total_mensuel",
+   "fieldtype": "Currency",
+   "label": "Total mensuel",
+   "precision": "3",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "default": "0.01",
+   "fieldname": "tolerance",
+   "fieldtype": "Currency",
+   "label": "Tolerance",
+   "precision": "3"
+  },
+  {
+   "fieldname": "section_comptes",
+   "fieldtype": "Section Break",
+   "label": "Imputation"
+  },
+  {
+   "default": "STE430127B - Zitouna - A&S",
+   "description": "Credite en DEUX lignes distinctes (principal et interet), comme dans les ecritures manuelles.",
+   "fieldname": "compte_banque",
+   "fieldtype": "Link",
+   "label": "Compte credite",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "fieldname": "compte_principal",
+   "fieldtype": "Link",
+   "label": "Compte du principal",
+   "options": "Account"
+  },
+  {
+   "fieldname": "compte_interet",
+   "fieldtype": "Link",
+   "label": "Compte des interets",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_comptes",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "compte_tva",
+   "fieldtype": "Link",
+   "label": "Compte de TVA",
+   "options": "Account"
+  },
+  {
+   "default": "0",
+   "fieldname": "taux_tva",
+   "fieldtype": "Percent",
+   "label": "Taux de TVA"
+  },
+  {
+   "description": "Leasing : compte de charge du loyer.",
+   "fieldname": "compte_charge",
+   "fieldtype": "Link",
+   "label": "Compte de charge",
+   "options": "Account"
+  },
+  {
+   "fieldname": "section_amort",
+   "fieldtype": "Section Break",
+   "label": "Amortissement (leasing)"
+  },
+  {
+   "fieldname": "compte_amortissement",
+   "fieldtype": "Link",
+   "label": "Compte d'amortissement",
+   "options": "Account"
+  },
+  {
+   "description": "Montant mensuel de la ligne d'amortissement. A renseigner d'apres vos ecritures de reference : la formule n'est pas deduite automatiquement.",
+   "fieldname": "montant_amortissement",
+   "fieldtype": "Currency",
+   "label": "Amortissement mensuel",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_amort",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Jetons : {n} numero d'echeance, {total} nombre d'echeances, {mm} {yyyy}. Ex. « Remboursement {n}/{total} Pret nantissement ».",
+   "fieldname": "template_reference",
+   "fieldtype": "Data",
+   "label": "Modele de reference",
+   "reqd": 1
+  },
+  {
+   "default": "Virement",
+   "fieldname": "mode_paiement",
+   "fieldtype": "Link",
+   "label": "Moyen de paiement",
+   "options": "Mode of Payment"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Contrat Financement",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

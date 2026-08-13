@@ -1,0 +1,219 @@
+{
+ "actions": [],
+ "autoname": "format:SOLDE-{YYYY}-{#####}",
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "date_solde",
+  "compte",
+  "type_solde",
+  "column_break_head",
+  "solde_banque",
+  "devise",
+  "capture_datetime",
+  "derniere_operation",
+  "section_compare",
+  "solde_erpnext",
+  "ecart",
+  "column_break_cmp",
+  "solde_cumule",
+  "ecart_import",
+  "section_source",
+  "fichier",
+  "image",
+  "column_break_src",
+  "concordance",
+  "confiance",
+  "montant_service",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "date_solde",
+   "fieldtype": "Date",
+   "label": "Date du solde",
+   "in_list_view": 1,
+   "columns": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "compte",
+   "fieldtype": "Data",
+   "label": "Compte",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "default": "Non precise",
+   "description": "Le portail n'affiche pas toujours le libelle : sans lui, on ne sait pas si le montant est le solde comptable ou le disponible, qui different des cheques non compenses.",
+   "fieldname": "type_solde",
+   "fieldtype": "Select",
+   "label": "Type de solde",
+   "options": "Comptable\nDisponible\nNon precise",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "solde_banque",
+   "fieldtype": "Currency",
+   "label": "Solde banque",
+   "precision": "3",
+   "in_list_view": 1,
+   "columns": 2,
+   "reqd": 1
+  },
+  {
+   "default": "TND",
+   "fieldname": "devise",
+   "fieldtype": "Data",
+   "label": "Devise"
+  },
+  {
+   "fieldname": "capture_datetime",
+   "fieldtype": "Datetime",
+   "label": "Date de capture",
+   "read_only": 1
+  },
+  {
+   "description": "Date de la derniere operation affichee par le portail. C'est jusqu'ou le solde court REELLEMENT — a comparer au dernier mouvement importe : l'ecart entre les deux est du hors-registre, pas du non-comptabilise.",
+   "fieldname": "derniere_operation",
+   "fieldtype": "Date",
+   "label": "Derniere operation au portail",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_compare",
+   "fieldtype": "Section Break",
+   "label": "Comparaison"
+  },
+  {
+   "description": "Solde comptable du compte dans ERPNext a la meme date.",
+   "fieldname": "solde_erpnext",
+   "fieldtype": "Currency",
+   "label": "Solde ERPNext",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Banque moins ERPNext : ce qui reste A COMPTABILISER.",
+   "fieldname": "ecart",
+   "fieldtype": "Currency",
+   "label": "Ecart a comptabiliser",
+   "precision": "3",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_cmp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Solde de depart augmente des mouvements du registre.",
+   "fieldname": "solde_cumule",
+   "fieldtype": "Currency",
+   "label": "Cumul du registre",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Banque moins cumul du registre : ce qui reste A IMPORTER (mouvements absents). Ne se corrige PAS par une ecriture.",
+   "fieldname": "ecart_import",
+   "fieldtype": "Currency",
+   "label": "Ecart d'import",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Tracabilite"
+  },
+  {
+   "fieldname": "fichier",
+   "fieldtype": "Data",
+   "label": "Fichier de capture",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "description": "La capture elle-meme : c'est la piece justificative du solde retenu.",
+   "fieldname": "image",
+   "fieldtype": "Attach Image",
+   "label": "Capture"
+  },
+  {
+   "fieldname": "column_break_src",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Le montant lu par l'IA et celui parse par le service concordent. Une discordance doit etre tranchee a la main.",
+   "fieldname": "concordance",
+   "fieldtype": "Check",
+   "label": "Lectures concordantes",
+   "read_only": 1
+  },
+  {
+   "fieldname": "confiance",
+   "fieldtype": "Float",
+   "label": "Confiance de lecture",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "montant_service",
+   "fieldtype": "Currency",
+   "label": "Montant parse par le service",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Solde Bancaire",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1
+  }
+ ],
+ "search_fields": "date_solde,solde_banque,compte",
+ "sort_field": "date_solde",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "date_solde",
+ "track_changes": 1
+}

@@ -1,0 +1,243 @@
+{
+ "actions": [],
+ "creation": "2026-08-08 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "actif",
+  "cle",
+  "libelle",
+  "type",
+  "montant",
+  "column_break_match",
+  "bank_rule",
+  "motifs_libelle",
+  "tolerance",
+  "declencheur",
+  "jours_avant_fin_mois",
+  "jour_declenchement",
+  "mois_ancre",
+  "periodicite",
+  "jour_reference",
+  "section_comptes",
+  "compte_banque",
+  "compte_charge",
+  "compte_attente",
+  "column_break_comptes",
+  "compte_tva",
+  "taux_tva",
+  "mode_paiement",
+  "section_idempotence",
+  "template_reference",
+  "idempotence",
+  "notes"
+ ],
+ "fields": [
+  {
+   "columns": 1,
+   "default": "1",
+   "fieldname": "actif",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Actif"
+  },
+  {
+   "description": "Identifiant stable, sert de cle d'idempotence et distingue deux prets en parallele. Ex. salaire_koubaa, loyer_bureau, ijara_principal.",
+   "fieldname": "cle",
+   "fieldtype": "Data",
+   "label": "Cle",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "description": "Nom lisible, repris dans le libelle de l'ecriture.",
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Libelle",
+   "reqd": 1
+  },
+  {
+   "columns": 2,
+   "default": "Autre",
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Type",
+   "options": "Salaire\nLoyer\nRecharge carte\nEcheance pret\nHonoraire\nAutre"
+  },
+  {
+   "columns": 2,
+   "description": "Montant attendu du mouvement bancaire. 0 = montant variable, l'appariement se fera alors sur les mots-cles du libelle.",
+   "fieldname": "montant",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Montant attendu",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_match",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "virement_emis",
+   "description": "Regle de bank/rules.py qui pre-filtre les mouvements candidats. Laisser vide pour ne filtrer que sur le sens.",
+   "fieldname": "bank_rule",
+   "fieldtype": "Select",
+   "label": "Regle bancaire",
+   "options": "\nvirement_emis\nchargement_carte\npret_principal\npret_profit\npret_assurance\nreglement_cb\nreglement_cheque\npaiement_internet"
+  },
+  {
+   "description": "Mots-cles du libelle bancaire, separes par des virgules. Compares sans accent ni ponctuation. Ex. KOUBAA,NEJIB",
+   "fieldname": "motifs_libelle",
+   "fieldtype": "Data",
+   "label": "Mots-cles du libelle"
+  },
+  {
+   "default": "0.01",
+   "fieldname": "tolerance",
+   "fieldtype": "Currency",
+   "label": "Tolerance sur le montant",
+   "precision": "3"
+  },
+  {
+   "default": "Banque",
+   "description": "Banque : l'ecriture est creee quand le mouvement apparait au releve. Calendrier : elle est creee PAR ANTICIPATION a une date fixe, et un ordre de paiement suit sa confirmation bancaire.",
+   "fieldname": "declencheur",
+   "fieldtype": "Select",
+   "label": "Declencheur",
+   "options": "Banque\nCalendrier",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.declencheur=='Calendrier'",
+   "description": "Nombre de jours AVANT la fin du mois. Ex. 2 pour les salaires.",
+   "fieldname": "jours_avant_fin_mois",
+   "fieldtype": "Int",
+   "label": "Jours avant fin de mois"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.declencheur=='Calendrier'",
+   "description": "Jour fixe du mois. Ex. 15 pour le loyer. Ignore si « jours avant fin de mois » est renseigne.",
+   "fieldname": "jour_declenchement",
+   "fieldtype": "Int",
+   "label": "Jour du mois"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.periodicite!='Mensuel'",
+   "description": "Mois de reference (1-12) d'une occurrence connue. Sert a caler le rythme bimestriel ou trimestriel.",
+   "fieldname": "mois_ancre",
+   "fieldtype": "Int",
+   "label": "Mois d'ancrage"
+  },
+  {
+   "default": "Mensuel",
+   "fieldname": "periodicite",
+   "fieldtype": "Select",
+   "label": "Periodicite",
+   "options": "Mensuel\nBimestriel\nTrimestriel\nAucune"
+  },
+  {
+   "default": "0",
+   "description": "Jour de reference, utilise par les modeles de libelle a bornes (loyer du 15 au 15).",
+   "fieldname": "jour_reference",
+   "fieldtype": "Int",
+   "label": "Jour de reference"
+  },
+  {
+   "fieldname": "section_comptes",
+   "fieldtype": "Section Break",
+   "label": "Imputation"
+  },
+  {
+   "default": "STE430127B - Zitouna - A&S",
+   "description": "Compte credite : la banque d'ou part l'argent.",
+   "fieldname": "compte_banque",
+   "fieldtype": "Link",
+   "label": "Compte credite",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "description": "Compte debite : la charge, ou le compte de destination pour un virement interne.",
+   "fieldname": "compte_charge",
+   "fieldtype": "Link",
+   "label": "Compte debite",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "fieldname": "compte_attente",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Compte d'attente (ecriture anticipee)",
+   "description": "Contrepartie de l'ecriture creee PAR ANTICIPATION, avant que le virement ne paraisse au releve — typiquement le compte de decouvert bancaire. Au rapprochement, l'ecriture est recreee sur `compte_banque`. Vide = l'anticipation credite directement la banque (ancien comportement)."
+  },
+  {
+   "fieldname": "column_break_comptes",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "taux_tva",
+   "fieldname": "compte_tva",
+   "fieldtype": "Link",
+   "label": "Compte de TVA",
+   "options": "Account"
+  },
+  {
+   "default": "0",
+   "description": "Si > 0, la TVA est calculee a rebours du TTC et ventilee sur le compte de TVA.",
+   "fieldname": "taux_tva",
+   "fieldtype": "Percent",
+   "label": "Taux de TVA"
+  },
+  {
+   "fieldname": "mode_paiement",
+   "fieldtype": "Link",
+   "label": "Moyen de paiement",
+   "options": "Mode of Payment"
+  },
+  {
+   "fieldname": "section_idempotence",
+   "fieldtype": "Section Break",
+   "label": "Idempotence"
+  },
+  {
+   "description": "Modele du numero de reference du Journal Entry. Jetons : {mm} {yyyy} {mm2} {yyyy2} {jour} {reference} {libelle}. Ex. « Salaire Koubaa Nejib {mm}-{yyyy} », « Recharge Carte Total {reference} ».",
+   "fieldname": "template_reference",
+   "fieldtype": "Data",
+   "label": "Modele de reference",
+   "reqd": 1
+  },
+  {
+   "default": "Les deux",
+   "description": "Comment reconnaitre qu'une ecriture existe deja. « Reference bancaire » est OBLIGATOIRE pour les flux sans periode (recharge de carte), ou le numero de reference ne peut pas etre unique.",
+   "fieldname": "idempotence",
+   "fieldtype": "Select",
+   "label": "Controle d'idempotence",
+   "options": "Les deux\nReference bancaire\nNumero de reference"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-08 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Depense Recurrente",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
