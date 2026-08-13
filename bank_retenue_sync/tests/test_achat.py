@@ -25,6 +25,7 @@ def facture(pays="Tunisia", stock=1, magasin="Magasins - A&S", bill_no="26FA0113
 
 
 PIECE = [{"name": "F-1", "file_name": "Erectroquip.pdf"}]
+PIECE_IMAGE = [{"name": "F-2", "file_name": "photo facture.jpg"}]
 
 
 class TestPerimetre(unittest.TestCase):
@@ -47,6 +48,18 @@ class TestControlesBloquants(unittest.TestCase):
     def test_sans_scan_joint_on_refuse(self):
         [m] = R.manques(facture(), [])
         self.assertIn("scan", m)
+
+    def test_une_piece_jointe_qui_n_est_pas_un_pdf_ne_suffit_pas(self):
+        """Un JPG ou un DOCX se joint aussi bien, mais ne s'imprime pas pareil au controle et
+        l'extraction ne sait pas l'ouvrir. Sur 222 pieces deja attachees, 219 sont des PDF."""
+        [m] = R.manques(facture(), PIECE_IMAGE)
+        self.assertIn("PDF", m)
+        self.assertIn("1 piece(s) jointe(s)", m)
+
+    def test_le_pdf_est_reconnu_quelle_que_soit_la_casse(self):
+        self.assertTrue(R.pdf_present([{"file_name": "FACTURE.PDF"}]))
+        self.assertFalse(R.pdf_present([{"file_name": "facture.pdf.jpg"}]))
+        self.assertFalse(R.pdf_present([]))
 
     def test_sans_mise_a_jour_du_stock_on_refuse(self):
         m = R.manques(facture(stock=0), PIECE)

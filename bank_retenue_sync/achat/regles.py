@@ -36,6 +36,21 @@ MOT_TIMBRE = "imbre"
 MOT_TVA = "TVA"
 
 
+def pdf_present(pieces_jointes) -> bool:
+    """Y a-t-il un PDF parmi les pieces jointes ? Fonction pure.
+
+    ⚠️ « UNE PIECE JOINTE » NE SUFFIT PAS : c'est un PDF qu'il faut. Un JPG ou un DOCX se joint
+    aussi bien, mais il ne se lit pas de la meme facon, ne s'imprime pas pareil au controle, et
+    l'extraction ne sait pas l'ouvrir. Sur les 222 pieces deja attachees a des factures d'achat,
+    219 sont des PDF, 2 des JPG et 1 un DOCX : la regle entérine la pratique, elle ne l'invente pas.
+
+    La qualite du scan ne se juge pas ici — elle se prouve plus loin, quand les totaux lus tombent
+    sur les totaux saisis. Un document illisible echoue de lui-meme a ce test.
+    """
+    return any((f.get("file_name") or "").lower().strip().endswith(".pdf")
+               for f in (pieces_jointes or []))
+
+
 def est_local(pays) -> bool:
     return (pays or "").strip().lower() == PAYS_LOCAL.lower()
 
@@ -52,9 +67,11 @@ def manques(facture: dict, pieces_jointes: list, extraction: dict = None,
         return []
 
     bloquants = []
-    if not pieces_jointes:
-        bloquants.append("aucun scan de la facture fournisseur n'est joint : la piece justificative "
-                         "est obligatoire pour un fournisseur local")
+    if not pdf_present(pieces_jointes):
+        bloquants.append("aucun scan PDF de la facture fournisseur n'est joint : la piece "
+                         "justificative est obligatoire pour un fournisseur local, et au format PDF"
+                         + (" (%s piece(s) jointe(s), mais aucune en PDF)" % len(pieces_jointes)
+                            if pieces_jointes else ""))
     if not facture.get("update_stock"):
         bloquants.append("« Mettre a jour le stock » n'est pas coche : la marchandise entrerait "
                          "sans mouvement de stock")
