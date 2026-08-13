@@ -184,15 +184,16 @@ fixtures = []
 # Hook on document methods and events
 
 # ⚠️ LE CONTROLE DE L'ACHAT LOCAL S'ACCROCHE AVANT ET APRES LA VALIDATION, PAS PENDANT.
-# `before_submit` refuse tant qu'il manque la preuve, le stock ou la concordance des totaux : c'est
-# le dernier instant ou refuser coute moins cher que corriger. `on_submit` cree la retenue a la
-# source, qui ne peut pas exister avant la facture qu'elle impute.
+# `validate` pose la ligne de retenue tant que la facture est modifiable — apres validation, la
+# table des taxes est figee. `before_submit` refuse tant qu'il manque la preuve, le stock, la
+# retenue ou la concordance des totaux : c'est le dernier instant ou refuser coute moins cher que
+# corriger.
 doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
 
 doc_events = {
     "Purchase Invoice": {
+        "validate": "bank_retenue_sync.achat.facture.a_l_enregistrement",
         "before_submit": "bank_retenue_sync.achat.facture.avant_validation",
-        "on_submit": "bank_retenue_sync.achat.facture.apres_validation",
     },
 }
 

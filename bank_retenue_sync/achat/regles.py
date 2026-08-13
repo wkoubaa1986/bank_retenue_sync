@@ -21,9 +21,19 @@ PAYS_LOCAL = "Tunisia"
 SEUIL_RETENUE = 1000.0
 TAUX_RETENUE = 1.0
 
-# Ecart admis entre la facture saisie et la facture scannee. Les deux portent les MEMES totaux
-# imprimes : ce n'est pas une tolerance d'arrondi de calcul, c'est la marge de lecture d'un PDF.
-TOLERANCE = 0.01
+# Ecart admis entre la facture saisie et la facture scannee. Ce n'est pas une tolerance de calcul :
+# c'est la marge de LECTURE d'un scan. Sur ELECTROQUIP, le modele a rendu 1 098,999 la ou la facture
+# porte 1 099,011 — douze millimes d'ecart de reconnaissance, sur une TVA lue au millime pres.
+TOLERANCE = 0.05
+
+# Ecart admis sur la retenue elle-meme. Celle-la est CALCULEE, pas lue : le millime suffit.
+TOLERANCE_RETENUE = 0.01
+
+# Mots qui identifient une ligne de taxe dans le plan comptable. Le compte porte le sens, pas le
+# libelle saisi a la main.
+MOT_RETENUE = "etenue"
+MOT_TIMBRE = "imbre"
+MOT_TVA = "TVA"
 
 
 def est_local(pays) -> bool:
@@ -55,6 +65,14 @@ def manques(facture: dict, pieces_jointes: list, extraction: dict = None,
     if not facture.get("bill_date"):
         bloquants.append("la date de la facture fournisseur est vide")
 
+    controle = facture.get("controle_retenue") or {}
+    if controle.get("verdict") == "manquante" and controle.get("due"):
+        bloquants.append("la retenue a la source de %s DT (1 %% de %s) n'est pas dans les taxes"
+                         % (controle["due"], controle.get("assiette")))
+    elif controle.get("verdict") == "montant faux":
+        bloquants.append("la retenue a la source saisie (%s) ne vaut pas celle qui est due (%s) : "
+                         "ecart de %s" % (controle["saisie"], controle["due"], controle["ecart"]))
+
     if not bloquants and extraction:
         bloquants += ecarts(facture, extraction, tolerance)
     return bloquants
@@ -80,16 +98,87 @@ def ecarts(facture: dict, extraction: dict, tolerance: float = TOLERANCE) -> lis
     return out
 
 
-def retenue_due(total_ttc, seuil: float = SEUIL_RETENUE, taux: float = TAUX_RETENUE) -> float:
+def _somme(lignes, deduire=False, mot=None) -> float:
+    total = 0.0
+    for l in lignes or []:
+        sens = (l.get("add_deduct_tax") or "Add")
+        if (sens == "Deduct") != bool(deduire):
+            continue
+        if mot and mot.lower() not in (l.get("account_head") or "").lower():
+            continue
+        total += float(l.get("tax_amount") or 0)
+    return round(total, 3)
+
+
+def retenue_saisie(lignes) -> float:
+    """Ce que la facture retient deja, en ligne de deduction."""
+    return _somme(lignes, deduire=True, mot=MOT_RETENUE)
+
+
+def timbre(lignes) -> float:
+    return _somme(lignes, mot=MOT_TIMBRE)
+
+
+def tva_facturee(lignes) -> float:
+    """La TVA REELLE de la facture — la somme des lignes de TVA.
+
+    ⚠️ NE PAS CONFONDRE AVEC `total_taxes_and_charges`, qui est le NET de la table : sur
+    ELECTROQUIP il vaut 163,321, soit 175,311 de TVA MOINS 11,990 de retenue. Comparer ce net a la
+    TVA lue sur le scan accusait la facture d'un ecart qui n'existait pas.
+    """
+    return _somme(lignes, mot=MOT_TVA)
+
+
+def ttc_avant_retenue(grand_total, lignes) -> float:
+    """Le TTC tel que le fournisseur le facture, AVANT que nous ne retenions notre 1 %.
+
+    C'est ce montant-la qui figure sur le scan et qui sert d'assiette — le `grand_total` d'ERPNext,
+    lui, est deja net de la retenue (1 087,021 au lieu de 1 099,011).
+    """
+    return round(float(grand_total or 0) + retenue_saisie(lignes), 3)
+
+
+def assiette_retenue(grand_total, lignes) -> float:
+    """L'assiette : le TTC avant retenue, TIMBRE FISCAL DEDUIT.
+
+    ⚠️ LE TIMBRE NE SUPPORTE PAS LA RETENUE, et ce n'est pas une supposition : sur les 17 factures
+    locales de 2026 depassant le seuil, la regle « 1 % du TTC hors timbre » tombe au millime sur
+    dix d'entre elles. C'est aussi ce que le portail applique en sens inverse pour les ventes, ou
+    l'assiette declaree vaut notre TTC moins le timbre de 1 DT.
+    """
+    return round(ttc_avant_retenue(grand_total, lignes) - timbre(lignes), 3)
+
+
+def retenue_due(assiette, seuil: float = SEUIL_RETENUE, taux: float = TAUX_RETENUE,
+                ttc=None) -> float:
     """Le montant a retenir. 0 en dessous du seuil.
 
-    Le seuil se lit sur le TTC, la retenue se calcule sur le TTC : c'est la regle tunisienne, et
-    c'est aussi ce qui la rend verifiable d'un coup d'oeil sur la facture.
+    Le SEUIL se lit sur le TTC (1 000 DT), la RETENUE se calcule sur l'assiette (TTC hors timbre) :
+    les deux ne portent pas sur le meme nombre, et les confondre change le resultat d'un millime
+    sur chaque facture timbree.
     """
-    ttc = float(total_ttc or 0)
-    if ttc < float(seuil):
+    base = float(assiette or 0)
+    reference = float(ttc if ttc is not None else base)
+    if reference < float(seuil):
         return 0.0
-    return round(ttc * float(taux) / 100.0, 3)
+    return round(base * float(taux) / 100.0, 3)
+
+
+def controle_retenue(grand_total, lignes, seuil: float = SEUIL_RETENUE,
+                     taux: float = TAUX_RETENUE, tolerance: float = TOLERANCE_RETENUE) -> dict:
+    """Confronte la retenue saisie a celle qui est due. -> {due, saisie, ecart, verdict}."""
+    ttc = ttc_avant_retenue(grand_total, lignes)
+    due = retenue_due(assiette_retenue(grand_total, lignes), seuil, taux, ttc=ttc)
+    saisie = retenue_saisie(lignes)
+    ecart = round(saisie - due, 3)
+    if abs(ecart) <= tolerance:
+        verdict = "conforme"
+    elif not saisie:
+        verdict = "manquante"
+    else:
+        verdict = "montant faux"
+    return {"ttc_avant_retenue": ttc, "assiette": assiette_retenue(grand_total, lignes),
+            "due": due, "saisie": saisie, "ecart": ecart, "verdict": verdict}
 
 
 # Ecart maximal admis entre la date lue sur le scan et la date de comptabilisation. Large : une

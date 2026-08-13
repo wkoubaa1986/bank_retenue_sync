@@ -53,13 +53,29 @@ def _pdf(pieces):
     return None
 
 
+def _lignes_taxes(doc):
+    return [{"account_head": t.account_head, "tax_amount": t.tax_amount,
+             "add_deduct_tax": t.add_deduct_tax} for t in (doc.get("taxes") or [])]
+
+
 def _lu(doc) -> dict:
-    """La facture telle que les regles la lisent. Les regles ne connaissent pas ERPNext."""
+    """La facture telle que les regles la lisent. Les regles ne connaissent pas ERPNext.
+
+    ⚠️ NI `grand_total` NI `total_taxes_and_charges` NE DISENT CE QU'ON CROIT quand une retenue est
+    deja saisie. Sur ELECTROQUIP, `grand_total` vaut 1 087,021 — le TTC APRES retenue — et
+    `total_taxes_and_charges` vaut 163,321, soit la TVA de 175,311 MOINS la retenue de 11,990.
+    Compares au scan, ces deux nombres accusaient la facture d'ecarts qui n'existaient pas. Les
+    vrais chiffres se reconstituent depuis la table des taxes.
+    """
+    lignes = _lignes_taxes(doc)
     return {"pays_fournisseur": frappe.db.get_value("Supplier", doc.supplier, "country"),
             "update_stock": doc.update_stock, "set_warehouse": doc.set_warehouse,
             "bill_no": doc.bill_no, "bill_date": doc.bill_date,
-            "total_ttc": flt(doc.grand_total, 3),
-            "total_tva": flt(doc.total_taxes_and_charges, 3)}
+            "lignes_taxes": lignes,
+            "total_ttc": regles.ttc_avant_retenue(doc.grand_total, lignes),
+            "total_tva": regles.tva_facturee(lignes),
+            "controle_retenue": regles.controle_retenue(doc.grand_total, lignes, _seuil(),
+                                                        _taux())}
 
 
 # ------------------------------------------------------------------ extraction
@@ -158,8 +174,8 @@ def diagnostic(nom) -> dict:
     extraction = extraction_de(nom)
     return {"local": regles.est_local(facture["pays_fournisseur"]),
             "manques": regles.manques(facture, _pieces_jointes(nom), extraction),
-            "extraction": extraction,
-            "retenue": regles.retenue_due(facture["total_ttc"], _seuil(), _taux())}
+            "extraction": extraction, "retenue": facture["controle_retenue"],
+            "ttc_avant_retenue": facture["total_ttc"], "tva": facture["total_tva"]}
 
 
 @frappe.whitelist()
@@ -201,15 +217,20 @@ def avant_validation(doc, method=None):
             title=_("Validation refusée"))
 
 
-def apres_validation(doc, method=None):
-    """Hook `on_submit` : cree la retenue a la source si le seuil est franchi."""
-    if not controle_actif() or doc.get("is_return"):
+def a_l_enregistrement(doc, method=None):
+    """Hook `validate` : pose la ligne de retenue manquante, tant que la facture est modifiable.
+
+    ⚠️ C'EST LE SEUL MOMENT OU ELLE PEUT ETRE POSEE. La retenue est une LIGNE DE TAXE en deduction,
+    pas une ecriture separee : apres validation, la table des taxes est figee et il faudrait annuler
+    la facture pour l'y ajouter.
+    """
+    if not controle_actif() or doc.get("is_return") or doc.docstatus != 0:
         return
     if not regles.est_local(frappe.db.get_value("Supplier", doc.supplier, "country")):
         return
     from bank_retenue_sync.achat import retenue
 
-    retenue.creer_pour(doc)
+    retenue.poser_ligne(doc)
 
 
 def _seuil():
