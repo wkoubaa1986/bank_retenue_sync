@@ -154,6 +154,62 @@ def extraire(nom, forcer=False) -> dict:
             **{k: v for k, v in valeurs.items() if k not in ("doctype", "payload")}}
 
 
+def completer(doc) -> dict:
+    """Remplit le numero et la date de la facture fournisseur depuis le scan, EN MEMOIRE.
+
+    ⚠️ APPELEE PENDANT `validate`, DONC AVANT L'ENREGISTREMENT : les valeurs posees ici partent
+    avec le document. Une version precedente extrayait au moment de refuser la validation, ecrivait
+    en base puis rechargeait le document — un `reload()` en plein `before_submit` remet le
+    `docstatus` a celui de la base et casse la validation en cours.
+
+    Ne fait rien si les deux champs sont deja renseignes : l'extraction coute un appel OpenAI, et
+    ce qu'un humain a saisi n'est jamais ecrase.
+    """
+    if doc.bill_no and doc.bill_date:
+        return {"statut": "deja renseigne"}
+    if not _pdf(_pieces_jointes(doc.name)):
+        return {"statut": "aucun pdf joint"}
+
+    res = extraire(doc.name, forcer=False)
+    lue = extraction_de(doc.name)
+    if not lue:
+        return res
+
+    pose = {}
+    if not doc.bill_no and lue.get("invoice_no"):
+        doc.bill_no = lue["invoice_no"]
+        pose["bill_no"] = lue["invoice_no"]
+    if not doc.bill_date and lue.get("invoice_date"):
+        # Seulement si elle est croyable : la lecture de l'ANNEE est instable, et une date fausse
+        # decide de l'exercice de rattachement.
+        if regles.date_plausible(lue["invoice_date"], doc.posting_date):
+            doc.bill_date = getdate(lue["invoice_date"])
+            pose["bill_date"] = doc.bill_date
+        else:
+            pose["date_ecartee"] = str(lue["invoice_date"])
+    return {"statut": "complete", "pose": pose, **res}
+
+
+def aligner_dates(doc) -> dict:
+    """La date de comptabilisation suit la date de la facture fournisseur.
+
+    ⚠️ ET C'EST PRECISEMENT POURQUOI LA DATE LUE PASSE PAR `date_plausible`. Tant qu'elle ne
+    servait qu'a remplir un champ d'information, une annee mal lue etait genante ; maintenant
+    qu'elle decide de la date de comptabilisation, elle deciderait de l'EXERCICE. Le modele ayant
+    rendu 2020, 2023 puis 2026 pour une meme facture, seule une date proche de celle deja saisie
+    est posee — et donc seule une date deja croyable peut deplacer la comptabilisation.
+
+    `set_posting_time` est indispensable : sans lui, ERPNext ramene la date du jour a chaque
+    enregistrement et l'alignement serait perdu en silence.
+    """
+    if not doc.bill_date or str(doc.posting_date) == str(doc.bill_date):
+        return {"statut": "deja aligne"}
+    avant = str(doc.posting_date)
+    doc.set_posting_time = 1
+    doc.posting_date = doc.bill_date
+    return {"statut": "aligne", "avant": avant, "apres": str(doc.bill_date)}
+
+
 @frappe.whitelist()
 def extraire_maintenant(nom, forcer=0):
     """Bouton « Lire le scan » du formulaire."""
@@ -195,18 +251,15 @@ def avant_validation(doc, method=None):
         return
 
     pieces = _pieces_jointes(doc.name)
-    # L'extraction manquante n'est pas un motif de refus : on la fait. C'est le seul moment ou on
-    # sait que l'utilisateur a fini de saisir.
+    # Dernier filet : si l'enregistrement n'a pas pu completer (piece jointe ajoutee juste avant de
+    # valider, panne passagere), on retente ici — en memoire, jamais par un `reload`.
     extraction = extraction_de(doc.name)
-    if not extraction and pieces:
+    if pieces and (not extraction or not doc.bill_no or not doc.bill_date):
         try:
-            extraire(doc.name)
+            completer(doc)
             extraction = extraction_de(doc.name)
-            doc.reload()
             facture = _lu(doc)
         except Exception:
-            # Une panne d'OpenAI ne doit pas empecher de travailler : les autres controles
-            # s'appliquent, et l'ecart de montants sera verifie a la prochaine lecture.
             frappe.log_error(title="Extraction facture achat %s" % doc.name,
                              message=frappe.get_traceback())
 
@@ -218,9 +271,14 @@ def avant_validation(doc, method=None):
 
 
 def a_l_enregistrement(doc, method=None):
-    """Hook `validate` : pose la ligne de retenue manquante, tant que la facture est modifiable.
+    """Hook `before_validate` : complete depuis le scan, aligne les dates, pose la retenue.
 
-    ⚠️ C'EST LE SEUL MOMENT OU ELLE PEUT ETRE POSEE. La retenue est une LIGNE DE TAXE en deduction,
+    ⚠️ AVANT LA VALIDATION D'ERPNEXT, ET C'EST TOUT L'INTERET. Ce crochet deplace la date de
+    comptabilisation et ajoute une ligne de taxe : place APRES, il laissait une date d'echeance
+    anterieure a la facture et des totaux calcules sans la retenue. Place avant, ERPNext recalcule
+    l'echeance, les taxes et les totaux a partir de ce qu'on vient de poser.
+
+    ⚠️ ET C'EST LE SEUL MOMENT OU LA RETENUE PEUT ETRE POSEE. C'est une LIGNE DE TAXE en deduction,
     pas une ecriture separee : apres validation, la table des taxes est figee et il faudrait annuler
     la facture pour l'y ajouter.
     """
@@ -230,6 +288,15 @@ def a_l_enregistrement(doc, method=None):
         return
     from bank_retenue_sync.achat import retenue
 
+    # Le numero et la date du fournisseur AVANT tout : ils viennent du scan, pas de la saisie.
+    try:
+        completer(doc)
+        aligner_dates(doc)
+    except Exception:
+        # Une panne d'OpenAI ne doit pas empecher d'enregistrer : les champs resteront vides et le
+        # refus de validation dira quoi faire.
+        frappe.log_error(title="Extraction facture achat %s" % doc.name,
+                         message=frappe.get_traceback())
     retenue.poser_ligne(doc)
 
 

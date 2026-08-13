@@ -184,7 +184,11 @@ fixtures = []
 # Hook on document methods and events
 
 # ⚠️ LE CONTROLE DE L'ACHAT LOCAL S'ACCROCHE AVANT ET APRES LA VALIDATION, PAS PENDANT.
-# `validate` pose la ligne de retenue tant que la facture est modifiable — apres validation, la
+# ⚠️ `before_validate` ET NON `validate` : c'est la seule position ou ERPNext recalcule ENSUITE ce
+# qui depend de ce qu'on change. Poser la date de comptabilisation apres son controle laissait une
+# date d'echeance anterieure a la facture, et la ligne de retenue n'etait plus reprise dans les
+# totaux. Avant, tout se recalcule naturellement.
+# La ligne de retenue se pose tant que la facture est modifiable — apres validation, la
 # table des taxes est figee. `before_submit` refuse tant qu'il manque la preuve, le stock, la
 # retenue ou la concordance des totaux : c'est le dernier instant ou refuser coute moins cher que
 # corriger.
@@ -192,7 +196,7 @@ doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
 
 doc_events = {
     "Purchase Invoice": {
-        "validate": "bank_retenue_sync.achat.facture.a_l_enregistrement",
+        "before_validate": "bank_retenue_sync.achat.facture.a_l_enregistrement",
         "before_submit": "bank_retenue_sync.achat.facture.avant_validation",
     },
 }

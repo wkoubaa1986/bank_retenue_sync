@@ -72,6 +72,11 @@ def poser_ligne(doc) -> dict:
     negocie, ou repris d'un accord avec le fournisseur. L'ecart est signale au moment de valider,
     et c'est un humain qui tranche.
     """
+    # ⚠️ RECALCULER AVANT DE DECIDER. En `before_validate`, `grand_total` porte encore la valeur du
+    # dernier enregistrement : sur une facture dont on venait de retirer la ligne de retenue, il
+    # valait 1 087,021 (net de l'ancienne retenue) et la nouvelle a ete calculee a 10,870 au lieu de
+    # 10,990. La base doit venir des lignes du moment, pas du total d'avant.
+    doc.calculate_taxes_and_totals()
     c = controle(doc)
     if not c["due"]:
         return {"statut": "sous le seuil", **c}

@@ -204,3 +204,19 @@ class TestDateLueSurLeScan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDateDeComptabilisation(unittest.TestCase):
+    """La date de comptabilisation suit celle de la facture fournisseur — ce qui donne a
+    `date_plausible` une portee bien plus grande : elle decide desormais de l'EXERCICE."""
+
+    def test_une_annee_mal_lue_ne_peut_pas_deplacer_l_exercice(self):
+        """Le modele a rendu 2020 puis 2023 pour une facture d'aout 2026. Poser cette date, c'est
+        comptabiliser dans un exercice clos."""
+        for lue in ("2020-08-03", "2023-08-03", "2027-12-31"):
+            self.assertFalse(R.date_plausible(lue, date(2026, 8, 3)), lue)
+
+    def test_une_date_du_mois_precedent_reste_posable(self):
+        """Une facture de juillet saisie en aout : la comptabilisation doit bien reculer en
+        juillet."""
+        self.assertTrue(R.date_plausible("2026-07-12", date(2026, 8, 3)))

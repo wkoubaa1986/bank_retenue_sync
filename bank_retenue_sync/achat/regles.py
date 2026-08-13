@@ -61,9 +61,15 @@ def manques(facture: dict, pieces_jointes: list, extraction: dict = None,
     if not facture.get("set_warehouse"):
         bloquants.append("aucun magasin n'est choisi : le stock ne saurait pas ou entrer")
     if not facture.get("bill_no"):
-        bloquants.append("le numero de la facture fournisseur est vide")
+        bloquants.append("le numero de la facture fournisseur est vide%s"
+                         % (" et le scan n'en donne pas" if pieces_jointes else ""))
     if not facture.get("bill_date"):
-        bloquants.append("la date de la facture fournisseur est vide")
+        # La date lue puis ecartee est plus utile qu'une absence : elle dit ou regarder, et
+        # pourquoi la machine n'a pas voulu la poser a la place de l'utilisateur.
+        lue = (extraction or {}).get("invoice_date")
+        bloquants.append("la date de la facture fournisseur est vide%s"
+                         % (" — le scan porte %s, trop eloigne de la date de comptabilisation pour "
+                            "etre posee sans relecture" % lue if lue else ""))
 
     controle = facture.get("controle_retenue") or {}
     if controle.get("verdict") == "manquante" and controle.get("due"):
