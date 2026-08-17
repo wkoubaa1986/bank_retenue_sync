@@ -1,0 +1,71 @@
+{
+ "charts": [],
+ "content": "[{\"id\": \"bq_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Identification bancaire</b></span>\", \"col\": 12}}, {\"id\": \"bq_sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Identification bancaire\", \"col\": 4}}, {\"id\": \"bq_sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Mouvements bancaires\", \"col\": 4}}, {\"id\": \"bq_sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Reglages\", \"col\": 4}}, {\"id\": \"cartetechno1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Carte technologique\", \"col\": 4}}, {\"id\": \"paiementsafaire1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a faire\", \"col\": 4}}, {\"id\": \"11f42982a7\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Cl\\u00f4ture mensuelle</b></span>\", \"col\": 12}}, {\"id\": \"20194f6b4e\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Facturation mensuelle\", \"col\": 4}}]",
+ "creation": "2026-08-12 11:39:03.851761",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "bank",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Banque",
+ "links": [],
+ "modified": "2026-08-13 17:07:44.618190",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "Banque",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 9.0,
+ "shortcuts": [
+  {
+   "color": "Blue",
+   "doc_view": "",
+   "label": "Identification bancaire",
+   "link_to": "identification-bancaire",
+   "type": "Page"
+  },
+  {
+   "doc_view": "List",
+   "label": "Mouvements bancaires",
+   "link_to": "BRS Bank Movement",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "",
+   "label": "Reglages",
+   "link_to": "Bank Retenue Sync Settings",
+   "type": "DocType"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "",
+   "label": "Carte technologique",
+   "link_to": "Carte technologique",
+   "report_ref_doctype": "Journal Entry",
+   "type": "Report"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "",
+   "label": "Paiements a faire",
+   "link_to": "Paiements a faire",
+   "report_ref_doctype": "BRS Ordre de Paiement",
+   "type": "Report"
+  },
+  {
+   "color": "Green",
+   "doc_view": "",
+   "label": "Facturation mensuelle",
+   "link_to": "facturation-mensuelle",
+   "type": "Page"
+  }
+ ],
+ "title": "Banque"
+}

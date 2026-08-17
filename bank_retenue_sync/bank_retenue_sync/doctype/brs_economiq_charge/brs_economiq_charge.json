@@ -1,0 +1,44 @@
+{
+ "actions": [],
+ "creation": "2026-08-13 21:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "libelle",
+  "montant"
+ ],
+ "fields": [
+  {
+   "columns": 6,
+   "description": "Ce que la charge represente : « Salaire Fatma », « Recuperation Aramex ».",
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Libellé",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "description": "Positif : une charge portee par Aqua World. Negatif : une recuperation sur le partenaire.",
+   "fieldname": "montant",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Montant",
+   "precision": "3",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-13 21:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Economiq Charge",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

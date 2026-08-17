@@ -9,6 +9,12 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
+    #
+    # ⚠️ `openai` DOIT etre declare ICI, pas suppose present. Sur le bench de dev il n'existe
+    # que parce que woocommerce_fusion le declare ; une image construite sans cette app perdrait
+    # les trois extractions (facture, declaration, remise) au premier appel, en silence jusque-la.
+    # requests / openpyxl / pypdf sont deja fournis (et epingles) par frappe : ne pas les redoubler.
+    "openai~=2.15",
 ]
 
 [build-system]

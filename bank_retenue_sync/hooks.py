@@ -5,6 +5,11 @@ app_description = "Ingestion des certificats de retenue a la source (TEJ) vers E
 app_email = "koubaawassim@gmail.com"
 app_license = "mit"
 
+# L'app est inutilisable sans ERPNext : ses DocTypes pointent Account, Purchase Invoice, Mode of
+# Payment, Warehouse…, et ses doc_events vivent sur Purchase Invoice. Sans cette ligne,
+# `bench install-app` sur un site nu echoue au sync des DocTypes avec une erreur de Link obscure.
+required_apps = ["erpnext"]
+
 # ---------------------------------------------------------------------------
 # Taches planifiees
 #
@@ -38,6 +43,12 @@ scheduler_events = {
         # Certificats de retenue a la source : le portail TEJ est alimente par nos clients, pas
         # par nous. Un passage par jour, avant les factures email, suffit largement.
         "20 7 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras"],
+        # Depots de certificats EMIS en attente d'analyse chez TEJ. Trois passages : un depot
+        # soumis le matin doit devenir un PDF remis au fournisseur dans la journee, pas le
+        # lendemain. L'appel est court et en LECTURE SEULE — il ne resoumet jamais rien — et les
+        # heures sont decalees de celles de la banque pour ne pas se disputer le worker unique
+        # du service, qui pilote un navigateur.
+        "10 10,14,18 * * *": ["bank_retenue_sync.tasks.daily.depots_tej"],
         "35 9 * * *": ["bank_retenue_sync.tasks.daily.contrats_financement"],
         # Confirmation des ordres : en fin de journee, une fois les cinq passages faits.
         "30 17 * * *": ["bank_retenue_sync.tasks.daily.confirmation_ordres"],
@@ -48,6 +59,10 @@ scheduler_events = {
 # Le raccourci « Paiements a faire » vit dans le workspace `Accounting`, qui appartient a
 # ERPNext : il serait ecrase a chaque mise a jour. On le reinstalle donc apres chaque migration.
 after_migrate = "bank_retenue_sync.install.after_migrate"
+# Le meme geste a l'install : `bench install-app` seul n'appelle PAS after_migrate (verifie dans
+# frappe/installer.py), et un deploiement qui installerait sans migrer laisserait le workspace
+# sans ses raccourcis. install.py est idempotent, le double appel est sans effet.
+after_install = "bank_retenue_sync.install.after_migrate"
 
 fixtures = []
 
@@ -193,6 +208,10 @@ fixtures = []
 # retenue ou la concordance des totaux : c'est le dernier instant ou refuser coute moins cher que
 # corriger.
 doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
+
+# Vue liste : l'etat du certificat TEJ de chaque facture. Charge APRES le fichier d'ERPNext, ce
+# qui permet d'etendre `listview_settings` au lieu de l'ecraser (cf. le fichier).
+doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}
 
 doc_events = {
     "Purchase Invoice": {

@@ -72,7 +72,15 @@ _SYSTEM_PROMPT = (
     "total_ht (number, montant taxable/HT), total_tva (number, TVA), "
     "stamp_duty (number, droit de timbre / 'Timbre', ou null), "
     "total_ttc (number, montant TTC a payer), "
-    "vat_rate (number en %, ou null), supplier_name (str). "
+    "vat_rate (number en %, ou null), supplier_name (str), "
+    # Le matricule fiscal du FOURNISSEUR : c'est le beneficiaire du certificat de retenue a la
+    # source, et le portail TEJ ne connait pas d'autre facon de le designer. Il n'est renseigne
+    # que sur 17 fiches fournisseur sur 42, alors qu'il figure sur toutes les factures.
+    "supplier_tax_id (str, matricule fiscal du FOURNISSEUR — souvent note 'MF', 'M.F.', "
+    "'Matricule Fiscal', 'Identifiant Unique' ou 'RNE' ; format tunisien : 7 chiffres puis une "
+    "lettre cle, puis des codes de categorie, ex '1646863/M/A/M/000' ou '1298092B' — recopie-le "
+    "TEL QUEL, sans reformater ; ne le confonds pas avec le matricule de l'ACHETEUR, du numero "
+    "de registre de commerce ou du numero de telephone ; null si absent). "
     "Les montants sont des nombres a point decimal, sans separateur de milliers. "
     "Les totaux se trouvent souvent en FIN de document (Montant Taxable, TVA, Timbre, Montant TTC). "
     "Si une valeur est absente ou incertaine, mets null. "

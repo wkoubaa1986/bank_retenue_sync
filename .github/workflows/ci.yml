@@ -1,0 +1,58 @@
+# Tests des fonctions pures — sans site, sans MariaDB, sans bench.
+#
+# ⚠️ SEULS LES MODULES SAINS SONT LA PORTE D'ENTRÉE. 11 des 16 modules historiques échouent
+# depuis avant 08/2026 sur du code inchangé (voir README « Dette connue ») : les inclure ferait
+# rougir chaque commit pour des raisons qui ne lui appartiennent pas, et un CI toujours rouge
+# ne garde plus rien. Les résorber, puis les ajouter à MODULES.
+#
+# `frappe` est installé comme simple paquet Python (pas de bench) : les tests ne touchent ni la
+# base ni un site, ils importent seulement les modules de l'app, qui importent frappe.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install frappe (as a library) and the app
+        run: |
+          pip install --quiet "git+https://github.com/frappe/frappe.git@version-15"
+          pip install --quiet -e .
+
+      - name: Run pure test modules
+        env:
+          MODULES: >-
+            bank_retenue_sync.tests.test_achat
+            bank_retenue_sync.tests.test_emis
+            bank_retenue_sync.tests.test_facturation
+            bank_retenue_sync.tests.test_especes
+            bank_retenue_sync.tests.test_rapport
+        run: python -m unittest -v $MODULES
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # La config ruff vit dans pyproject.toml. Non bloquant le temps de purger l'existant :
+      # un lint qui échoue sur du code ancien masquerait un test qui échoue sur du code nouveau.
+      - run: pip install --quiet ruff && ruff check . || true

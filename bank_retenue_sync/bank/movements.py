@@ -290,6 +290,38 @@ def fetch_movements_file(filename: str) -> list:
     return _parse_movements_xlsx(r.content)
 
 
+def releves_disponibles() -> list:
+    """Les releves PDF deja telecharges par le service. -> [{filename, periode, size_bytes}]"""
+    r = requests.get(_base_url() + "/banque/releves", headers=_headers(), timeout=60)
+    r.raise_for_status()
+    return r.json() or []
+
+
+def releve_pdf(periode: str, timeout: int = 1800) -> bytes:
+    """Le releve MENSUEL de la banque, en PDF. `periode` au format « YYYY-MM ».
+
+    ⚠️ CE N'EST PAS L'EXPORT DES MOUVEMENTS. `/jobs/banque/mouvements/export` rend un tableur de
+    lignes, utile pour alimenter le registre ; le comptable, lui, attend le releve tel que la
+    banque l'edite — le document qui fait foi, avec ses soldes d'ouverture et de cloture. Le
+    service a une route dediee.
+
+    ⚠️ ET ON NE RETELECHARGE PAS CE QUI EST DEJA LA. Le job pilote le portail de la banque : le
+    declencher pour un mois deja archive coute plusieurs minutes pour rien.
+    """
+    periode = (periode or "").strip()
+    deja = {r.get("periode") for r in releves_disponibles()}
+    if periode not in deja:
+        wait_job(start_job("/jobs/banque/releve/pdf",
+                           {"periode": periode, "idempotency_key": "releve-%s" % periode}),
+                 timeout=timeout)
+    r = requests.get(_base_url() + f"/banque/releves/{periode}/pdf",
+                     headers=_headers(), timeout=180)
+    r.raise_for_status()
+    if not r.content.startswith(b"%PDF"):
+        raise ValueError("le service n'a pas rendu un PDF pour le releve %s" % periode)
+    return r.content
+
+
 def refresh_remises(timeout: int = 900) -> dict:
     """Telecharge les bordereaux de remise de cheques absents du service (les deja presents sont
     sautes cote service) : sans ca, une remise recente n'a pas de PDF a extraire."""

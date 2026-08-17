@@ -1,0 +1,220 @@
+{
+ "actions": [],
+ "autoname": "field:mois",
+ "creation": "2026-08-13 21:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "mois",
+  "libelle",
+  "column_break_tete",
+  "valide",
+  "journal_entry",
+  "section_bilan",
+  "ventes_aqua",
+  "achats_aqua",
+  "benefice_aqua",
+  "column_break_bilan",
+  "ventes_partenaire",
+  "achats_partenaire",
+  "benefice_partenaire",
+  "section_charges",
+  "charges",
+  "total_charges",
+  "section_echeancier",
+  "total_commandes",
+  "solde_net",
+  "total_ajustement",
+  "column_break_ech",
+  "report_vers_consolide",
+  "section_lignes",
+  "echeancier"
+ ],
+ "fields": [
+  {
+   "description": "Clé du mois, « YYYY-MM ». Elle nomme le document.",
+   "fieldname": "mois",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Mois",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Libellé",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_tete",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Un mois valide ne se recalcule plus depuis ERP : il fait foi.",
+   "fieldname": "valide",
+   "fieldtype": "Check",
+   "label": "Validé"
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Écriture de journal",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_bilan",
+   "fieldtype": "Section Break",
+   "label": "Bilan d'activité"
+  },
+  {
+   "fieldname": "ventes_aqua",
+   "fieldtype": "Currency",
+   "label": "Ventes Aqua",
+   "precision": "3"
+  },
+  {
+   "fieldname": "achats_aqua",
+   "fieldtype": "Currency",
+   "label": "Achats Aqua",
+   "precision": "3"
+  },
+  {
+   "fieldname": "benefice_aqua",
+   "fieldtype": "Currency",
+   "label": "Bénéfice Aqua",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_bilan",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ventes_partenaire",
+   "fieldtype": "Currency",
+   "label": "Ventes Economiq",
+   "precision": "3"
+  },
+  {
+   "fieldname": "achats_partenaire",
+   "fieldtype": "Currency",
+   "label": "Achats Economiq",
+   "precision": "3"
+  },
+  {
+   "fieldname": "benefice_partenaire",
+   "fieldtype": "Currency",
+   "label": "Bénéfice Economiq",
+   "precision": "3"
+  },
+  {
+   "fieldname": "section_charges",
+   "fieldtype": "Section Break",
+   "label": "Charges libres"
+  },
+  {
+   "fieldname": "charges",
+   "fieldtype": "Table",
+   "label": "Charges",
+   "options": "BRS Economiq Charge"
+  },
+  {
+   "fieldname": "total_charges",
+   "fieldtype": "Currency",
+   "label": "Total des charges",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_echeancier",
+   "fieldtype": "Section Break",
+   "label": "Échéancier"
+  },
+  {
+   "description": "Ce que le partenaire doit sur le mois. C'est la base de l'échéancier.",
+   "fieldname": "total_commandes",
+   "fieldtype": "Currency",
+   "label": "Total des commandes",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Bénéfice Aqua − bénéfice Economiq.",
+   "fieldname": "solde_net",
+   "fieldtype": "Currency",
+   "label": "Solde net du bilan",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Solde net du bilan + charges libres. Vient en déduction de l'échéancier, dès la première échéance.",
+   "fieldname": "total_ajustement",
+   "fieldtype": "Currency",
+   "label": "Ajustement",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ech",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Ce que l'ajustement n'a pas pu absorber faute d'échéances.",
+   "fieldname": "report_vers_consolide",
+   "fieldtype": "Currency",
+   "label": "Report au consolidé",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_lignes",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "echeancier",
+   "fieldtype": "Table",
+   "label": "Échéances",
+   "options": "BRS Economiq Echeance"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-13 21:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Economiq Mois",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "libelle"
+}

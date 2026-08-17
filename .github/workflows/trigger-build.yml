@@ -1,0 +1,22 @@
+# Prévient frappe_docker qu'une nouvelle version de l'app existe : le workflow
+# build-and-deploy d'opssync reconstruit l'image et redéploie la prod.
+# Copié depuis development/trigger-build-template.yml (repo frappe_docker).
+# Secret requis dans CE repo : FRAPPE_DOCKER_PAT (PAT avec repo-dispatch sur frappe_docker).
+
+name: Trigger frappe_docker Build
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.FRAPPE_DOCKER_PAT }}
+          repository: wkoubaa1986/frappe_docker
+          event-type: bank_retenue_sync_updated
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

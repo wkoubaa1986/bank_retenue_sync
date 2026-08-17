@@ -1,0 +1,90 @@
+<style>
+  /* ZERO APOSTROPHE DANS CE FICHIER, COMMENTAIRES COMPRIS.
+     frappe.build.scrub_html_template pretend echapper le caractere apostrophe mais le remplace
+     par lui-meme — un no-op — avant d envelopper le gabarit entier dans des apostrophes simples.
+     La premiere rencontree ferme la chaine et casse tout le script de la page, qui cesse de s
+     afficher sans le moindre message. Les commentaires HTML sont retires avant ce traitement,
+     pas les commentaires CSS. Pour un texte visible, utiliser U+2019.
+     Couvert par test_facturation.TestGabaritsDePage. */
+
+  .pe-wrap { padding: 0 0 40px; }
+
+  .pe-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+            padding: 12px; margin-bottom: 16px;
+            border: 1px solid var(--border-color); border-radius: 8px; }
+  .pe-bar .f { display: flex; flex-direction: column; gap: 3px; }
+  .pe-bar label { font-size: 11px; color: var(--text-muted); }
+  .pe-bar select { height: 30px; font-size: 13px; padding: 2px 8px; border-radius: 6px;
+                   border: 1px solid var(--border-color); background: var(--control-bg);
+                   color: var(--text-color); min-width: 170px; }
+  .pe-bar .periode { font-size: 12px; color: var(--text-muted); align-self: center; }
+
+  .pe-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+             gap: 10px; margin-bottom: 16px; }
+  .pe-kpi { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; }
+  .pe-kpi .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--text-muted); margin-bottom: 4px; }
+  .pe-kpi .val { font-size: 19px; font-weight: 600; line-height: 1.2;
+                 font-variant-numeric: tabular-nums; }
+  .pe-kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .pe-kpi.ok .val   { color: #1e7e34; }
+  .pe-kpi.warn .val { color: #9c6f00; }
+  .pe-kpi.bad .val  { color: #a93226; }
+
+  .pe-scroll { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 8px; }
+  .pe-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .pe-tbl th, .pe-tbl td { padding: 6px 9px; border-bottom: 1px solid var(--border-color);
+                           text-align: left; vertical-align: top; }
+  .pe-tbl th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em;
+               color: var(--text-muted); white-space: nowrap; }
+  .pe-tbl td.num, .pe-tbl th.num { text-align: right; font-variant-numeric: tabular-nums;
+                                   white-space: nowrap; }
+  .pe-tbl tbody tr:hover { background: var(--highlight-color, rgba(0,0,0,.03)); }
+  .pe-tbl tfoot td { font-weight: 600; border-top: 2px solid var(--border-color);
+                     border-bottom: 0; }
+  .pe-tbl .muted { color: var(--text-muted); }
+
+  .pe-sous { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+             color: var(--text-muted); margin: 18px 0 8px; }
+
+  .pe-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px;
+              white-space: nowrap; }
+  .pe-badge.ok     { background: rgba(40,167,69,.13);  color: #1e7e34; }
+  .pe-badge.bad    { background: rgba(192,57,43,.13);  color: #a93226; }
+  .pe-badge.neutre { background: rgba(154,160,166,.18); color: #5f6368; }
+
+  .pe-note { font-size: 12px; padding: 9px 12px; border-radius: 6px; margin-bottom: 12px;
+             border: 1px solid var(--border-color); background: var(--control-bg);
+             color: var(--text-color); }
+  .pe-note.alerte { border-color: rgba(192,57,43,.4); background: rgba(192,57,43,.07); }
+
+  .pe-vide, .pe-chargement { padding: 30px; text-align: center; color: var(--text-muted);
+                             font-size: 13px; }
+
+  .pe-act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  .pe-act button, .pe-act input { font-size: 12px; padding: 4px 10px; border-radius: 6px;
+                                  border: 1px solid var(--border-color);
+                                  background: var(--control-bg); color: var(--text-color); }
+  .pe-act button { cursor: pointer; }
+  .pe-act button.fort { background: var(--primary, #2490ef); color: #fff; border-color: transparent; }
+  .pe-act button[disabled] { opacity: .45; cursor: default; }
+  .pe-act input[type="number"] { width: 120px; text-align: right; }
+  .pe-tbl input { width: 100%; border: 1px solid transparent; background: transparent;
+                  color: var(--text-color); font-size: 12.5px; padding: 2px 4px;
+                  border-radius: 4px; }
+  .pe-tbl input:focus { border-color: var(--border-color); background: var(--control-bg);
+                        outline: none; }
+  .pe-tbl input.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pe-x { cursor: pointer; color: var(--text-muted); border: 0; background: none;
+          font-size: 14px; line-height: 1; }
+  .pe-x:hover { color: #a93226; }
+  .pe-absorbee td { opacity: .55; }
+</style>
+
+<div class="pe-wrap">
+  <div class="pe-bar">
+    <div class="f"><label>Mois</label><select data-f="mois"></select></div>
+    <span class="periode" data-role="periode"></span>
+  </div>
+  <div data-role="contenu"><div class="pe-chargement">Chargement…</div></div>
+</div>

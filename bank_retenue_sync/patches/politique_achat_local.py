@@ -26,6 +26,10 @@ REGLAGES = {
     # reglage vide : il annonce une tolerance nulle, l'exact contraire de ce qui est en vigueur.
     "ecart_achat_ttc": "1.5",
     "ecart_achat_tva_taux": "0.1",
+    # Le vocabulaire du formulaire TEJ, releve sur le portail lui-meme en repetition. Recopie a la
+    # lettre, coquille du portail comprise (« peronnes ») : il compare la chaine exacte.
+    "tej_emis_type_operation": 'Acquisitions des marchandises, matériel équipements et de services',
+    "tej_emis_operation": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%",
 }
 
 

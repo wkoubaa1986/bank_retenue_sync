@@ -121,6 +121,37 @@ def consumed_bank_keys() -> dict:
     return keys
 
 
+def documents_par_cle_bancaire() -> dict:
+    """Meme balayage que `consumed_bank_keys`, mais on GARDE le document. -> {flux: {cle: nom}}
+
+    ⚠️ LE REGISTRE NE RETIENT PAS QUEL ENCAISSEMENT A CONSOMME LA CLE. `classify._resoudre_flux`
+    pose `document_type = "Encaissement Paiement"` et laisse `document_name` vide : il lui suffit
+    de savoir que la cle est consommee. A l'ecran, cela donne un mouvement identifie qui ne dit
+    pas PAR QUOI — 23 encaissements de juillet dans ce cas. Cette fonction refait le lien a la
+    lecture, sans rien ecrire.
+    """
+    par_flux = {"cheque": {}, "traite": {}, "aramex": {}, "virement": {}}
+    for doctype, field, flux in (("Liste Cheque", "bon_remise", "cheque"),
+                                 ("Liste Traite Bancaire", "bon_remise", "traite"),
+                                 ("Liste Aramex", "n_virement", "aramex"),
+                                 ("Liste des Dettes client", "n_chèque", "virement")):
+        if not frappe.db.exists("DocType", doctype):
+            continue
+        rows = frappe.get_all(doctype, filters={field: ["is", "set"],
+                                                "parenttype": "Encaissement Paiement"},
+                              fields=[field, "parent"])
+        if not rows:
+            continue
+        alive = {d["name"] for d in frappe.get_all(
+            "Encaissement Paiement",
+            filters={"name": ["in", list({r["parent"] for r in rows})], "docstatus": ["!=", 2]},
+            fields=["name"])}
+        for r in rows:
+            if r.get(field) and r["parent"] in alive:
+                par_flux[flux].setdefault(str(r[field]).strip(), r["parent"])
+    return par_flux
+
+
 # Cles bancaires citees par la `reference_no` d'une Payment Entry.
 #   cheques  -> « 0000528-BIAT / BR:90028245 »            (BR: + n° de bon de remise)
 #   traites  -> « 11376605424- / RE:FT26198BPZR0 »        (RE: + reference bancaire)
@@ -157,6 +188,31 @@ def montants_par_cle_bancaire() -> dict:
         for cle in cles:
             totaux[cle] = round(totaux.get(cle, 0.0) + montant, 3)
     return totaux
+
+
+def paiements_par_cle_bancaire() -> dict:
+    """{cle bancaire -> [noms de Payment Entry]}. Le pendant nomme de `montants_par_cle_bancaire`.
+
+    ⚠️ CE SONT LES PAYMENT ENTRY DE REMPLACEMENT, PAS CELLES DU BORDEREAU. Le `ref_paiement` des
+    lignes d'`Encaissement Paiement` pointe vers la piece d'ORIGINE, que le server script annule
+    et remplace a la soumission : sur ce site, 1 894 lignes sur 1 894 designent une Payment Entry
+    disparue. Les pieces vivantes sont les nouvelles, reconnaissables a la cle bancaire citee dans
+    leur `reference_no` (« … / BR:90027975 »). C'est par la qu'un credit retrouve les factures
+    qu'il solde.
+    """
+    rows = frappe.db.sql("""
+        select name, reference_no
+        from `tabPayment Entry`
+        where docstatus = 1 and ifnull(reference_no, '') != ''
+          and (paid_to = %(c)s or paid_from = %(c)s)
+    """, {"c": BANK_ACCOUNT}, as_dict=True)
+
+    par_cle: dict = {}
+    for r in rows:
+        ref = r.reference_no or ""
+        for cle in set(_RX_BON.findall(ref)) | set(_RX_REF.findall(ref)):
+            par_cle.setdefault(cle, []).append(r.name)
+    return par_cle
 
 
 def _pending_pes(paid_to: str, exclude: set, extractor=None) -> list:

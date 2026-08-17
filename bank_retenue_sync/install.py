@@ -23,6 +23,17 @@ LABEL = "Paiements à faire"
 REPORT = "Paiements a faire"
 CARTE = "Trésorerie A&S"
 
+# L'espace « Banque » appartient a cette app : c'est la que vivent deja l'identification
+# bancaire, le registre des mouvements et la carte technologique. La cloture mensuelle s'y range
+# naturellement — c'est le meme geste, le meme mois, et souvent la meme session de travail.
+WORKSPACE_BANQUE = "Banque"
+PAGE_CLOTURE = "facturation-mensuelle"
+LABEL_CLOTURE = "Facturation mensuelle"
+ENTETE_CLOTURE = "Clôture mensuelle"
+
+PAGE_PARTENAIRE = "partenaire-economiq"
+LABEL_PARTENAIRE = "Economiq Aqua Solution"
+
 
 def _ajouter_bloc(ws, type_bloc: str, nom: str, col: int = 3) -> bool:
     """Ajoute le bloc de MISE EN PAGE correspondant a un raccourci ou une carte.
@@ -45,9 +56,70 @@ def _ajouter_bloc(ws, type_bloc: str, nom: str, col: int = 3) -> bool:
     return True
 
 
+def _ajouter_entete(ws, texte: str) -> bool:
+    """Un titre de section dans la mise en page du workspace, pose une seule fois.
+
+    Sans lui, le raccourci de la cloture atterrirait sous le titre « Identification bancaire »
+    et passerait pour un ecran du rapprochement — ce qu'il n'est pas.
+    """
+    blocs = json.loads(ws.content or "[]")
+    if any(b.get("type") == "header" and texte in ((b.get("data") or {}).get("text") or "")
+           for b in blocs):
+        return False
+    blocs.append({"id": frappe.generate_hash(length=10), "type": "header",
+                  "data": {"text": '<span class="h4"><b>%s</b></span>' % texte, "col": 12}})
+    ws.content = json.dumps(blocs)
+    return True
+
+
+def _ajouter_raccourci_partenaire():
+    """Raccourci « Economiq Aqua Solution » dans l espace Banque.
+
+    Le tableau de bord du partenaire etait un onglet de « Facturation mensuelle ». Il n y avait
+    pas sa place : le dossier mensuel est une remise au comptable, ponctuelle et datee ; le compte
+    du partenaire se suit toute l annee. Deux gestes differents, deux ecrans.
+    """
+    return _poser_raccourci(PAGE_PARTENAIRE, LABEL_PARTENAIRE, ENTETE_CLOTURE, "Purple")
+
+
+def _poser_raccourci(page: str, label: str, entete: str, couleur: str):
+    """Un raccourci de Page dans l espace Banque, sous son en-tete de section.
+
+    ⚠️ UN RACCOURCI SANS SON BLOC N EXISTE PAS A L ECRAN. Depuis la v15 c est `content` qui rend
+    le workspace : la ligne dans `shortcuts` cree l objet, le bloc le POSE. Les deux, ou rien.
+    """
+    if not frappe.db.exists("Workspace", WORKSPACE_BANQUE):
+        return None
+    if not frappe.db.exists("Page", page):
+        return None
+
+    ws = frappe.get_doc("Workspace", WORKSPACE_BANQUE)
+    modifie = False
+    if not any(s.link_to == page for s in (ws.shortcuts or [])):
+        ws.append("shortcuts", {"type": "Page", "link_to": page, "label": label,
+                                "color": couleur})
+        modifie = True
+    modifie = _ajouter_entete(ws, entete) or modifie
+    modifie = _ajouter_bloc(ws, "shortcut", label, col=4) or modifie
+
+    if modifie:
+        ws.flags.ignore_permissions = True
+        ws.flags.ignore_links = True
+        ws.save()
+        frappe.db.commit()
+    return label
+
+
+def _ajouter_raccourci_cloture():
+    """Raccourci « Facturation mensuelle » dans l espace Banque."""
+    return _poser_raccourci(PAGE_CLOTURE, LABEL_CLOTURE, ENTETE_CLOTURE, "Green")
+
+
 def after_migrate():
     _ajouter_raccourci_paiements()
     _ajouter_carte_tresorerie()
+    _ajouter_raccourci_cloture()
+    _ajouter_raccourci_partenaire()
 
 
 def _ajouter_carte_tresorerie():

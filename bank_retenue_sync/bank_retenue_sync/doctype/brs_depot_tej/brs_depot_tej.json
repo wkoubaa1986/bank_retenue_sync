@@ -1,0 +1,210 @@
+{
+ "actions": [],
+ "autoname": "format:DEP-{YYYY}-{#####}",
+ "creation": "2026-08-15 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "facture",
+  "fournisseur",
+  "beneficiaire",
+  "column_break_head",
+  "numero_declarant",
+  "date_paiement",
+  "exercice",
+  "section_depot",
+  "statut",
+  "numero_depot",
+  "reference",
+  "column_break_depot",
+  "soumis_le",
+  "derniere_verification",
+  "verifications",
+  "section_suivi",
+  "suivi",
+  "job_creation",
+  "message"
+ ],
+ "fields": [
+  {
+   "fieldname": "facture",
+   "fieldtype": "Link",
+   "label": "Facture d'achat",
+   "options": "Purchase Invoice",
+   "in_list_view": 1,
+   "columns": 2,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "fournisseur",
+   "fieldtype": "Link",
+   "label": "Fournisseur",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "description": "Matricule fiscal du beneficiaire, normalise. Avec le numero chez le declarant, c'est le couple qui identifie le certificat chez TEJ.",
+   "fieldname": "beneficiaire",
+   "fieldtype": "Data",
+   "label": "Matricule beneficiaire",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Le n° de facture fournisseur. C'est la SEULE reference que nous maitrisons avant que TEJ n'attribue son identifiant, et le filtre de « Mes certificats generes ».",
+   "fieldname": "numero_declarant",
+   "fieldtype": "Data",
+   "label": "Numero chez le declarant",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "date_paiement",
+   "fieldtype": "Date",
+   "label": "Date de paiement",
+   "read_only": 1
+  },
+  {
+   "fieldname": "exercice",
+   "fieldtype": "Int",
+   "label": "Exercice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_depot",
+   "fieldtype": "Section Break",
+   "label": "Depot"
+  },
+  {
+   "default": "en_envoi",
+   "description": "en_envoi : la soumission est partie en tache de fond, on ne sait pas encore si le portail l'a acceptee. en_analyse : le depot existe chez l'administration, TEJ ne l'a pas encore analyse — RESOUMETTRE PRODUIRAIT UN DOUBLON. genere : le certificat existe, sa reference est renseignee. incertain : la tache ne s'est jamais conclue — A VERIFIER SUR LE PORTAIL AVANT TOUT NOUVEAU GESTE. echec / refuse / abandonne : tranches a la main.",
+   "fieldname": "statut",
+   "fieldtype": "Select",
+   "label": "Statut",
+   "options": "en_envoi\nen_analyse\ngenere\nincertain\nechec\nrefuse\nabandonne",
+   "in_list_view": 1,
+   "columns": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Le numero rendu par TEJ au clic sur « Valider » (ex. IN260051). Il existe AVANT le certificat, et c'est la seule preuve que la declaration est partie.",
+   "fieldname": "numero_depot",
+   "fieldtype": "Data",
+   "label": "Numero de depot",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "L'identifiant du certificat, une fois le depot analyse. C'est lui que la route PDF attend.",
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "label": "Reference du certificat",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_depot",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "soumis_le",
+   "fieldtype": "Datetime",
+   "label": "Soumis le",
+   "read_only": 1
+  },
+  {
+   "fieldname": "derniere_verification",
+   "fieldtype": "Datetime",
+   "label": "Derniere verification",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Nombre d'appels de suivi. TEJ analyse quand il veut ; un compteur qui s'emballe signale un depot bloque, pas une panne.",
+   "fieldname": "verifications",
+   "fieldtype": "Int",
+   "label": "Verifications",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_suivi",
+   "fieldtype": "Section Break",
+   "label": "Tracabilite"
+  },
+  {
+   "description": "Le corps a poster sur /jobs/tej/certificats-emis/statut, rendu tout pret par le job de creation. On le conserve verbatim : le reconstruire, c'est risquer de suivre un autre depot que celui qui a ete cree.",
+   "fieldname": "suivi",
+   "fieldtype": "Code",
+   "label": "Corps de suivi",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "job_creation",
+   "fieldtype": "Data",
+   "label": "Job de creation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "message",
+   "fieldtype": "Small Text",
+   "label": "Message",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-15 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Depot TEJ",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  }
+ ],
+ "search_fields": "facture,numero_declarant,numero_depot",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "facture",
+ "track_changes": 1
+}

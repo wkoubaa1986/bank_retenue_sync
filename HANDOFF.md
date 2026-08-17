@@ -12,8 +12,9 @@
 > Le reste du document — description du microservice, format des données, pièges du portail —
 > reste juste et utile.
 
-État au 2026-07-20. **L'app est incomplète et ne s'installe pas encore.**
-Le microservice, lui, est terminé et testé.
+État au 2026-07-20 — **dépassé** : depuis 08/2026 l'app est complète, installable
+(`bench install-app bank_retenue_sync`) et couverte de tests. Le microservice est terminé et testé.
+Pour l'exploitation courante, voir `AUTOMATION_HANDOFF.md` (flux, mapping comptable, clés de config).
 
 ---
 

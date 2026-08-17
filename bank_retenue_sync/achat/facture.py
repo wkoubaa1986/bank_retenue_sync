@@ -97,7 +97,8 @@ def extraction_de(nom):
     """
     e = frappe.db.get_value(DOCTYPE_EXTRACTION, {"purchase_invoice": nom},
                             ["name", "invoice_no", "invoice_date", "total_ht", "total_tva",
-                             "total_ttc", "coherent", "fichier", "modele"], as_dict=1)
+                             "total_ttc", "coherent", "fichier", "modele", "supplier_tax_id"],
+                            as_dict=1)
     return e
 
 
@@ -130,6 +131,7 @@ def extraire(nom, forcer=False) -> dict:
         "doctype": DOCTYPE_EXTRACTION, "purchase_invoice": nom, "supplier": doc.supplier,
         "fichier": fichier.file_name,
         "invoice_no": data.get("invoice_no"), "invoice_date": data.get("invoice_date"),
+        "supplier_tax_id": (data.get("supplier_tax_id") or "").strip() or None,
         "total_ht": flt(data.get("total_ht"), 3), "total_tva": flt(data.get("total_tva"), 3),
         "total_ttc": flt(data.get("total_ttc"), 3),
         "coherent": 1 if data.get("_balanced") else 0,
@@ -199,7 +201,43 @@ def completer(doc) -> dict:
             pose["bill_date"] = doc.bill_date
         else:
             pose["date_ecartee"] = str(lue["invoice_date"])
+    # Le matricule ne vit pas sur la facture mais sur la FICHE FOURNISSEUR : il est donc écrit en
+    # base tout de suite, et non posé en mémoire comme les deux champs ci-dessus.
+    mat = completer_matricule(doc.supplier, lue.get("supplier_tax_id"))
+    if mat.get("statut") == "pose":
+        pose["matricule"] = mat["tax_id"]
+    elif mat.get("statut") == "illisible":
+        pose["matricule_ecarte"] = mat["lu"]
     return {"statut": "complete", "pose": pose, **res}
+
+
+def completer_matricule(fournisseur, lu) -> dict:
+    """Pose sur la fiche fournisseur le matricule fiscal lu sur le scan. -> dict.
+
+    ⚠️ IL FIGURE SUR TOUTES LES FACTURES ET SUR 17 FICHES SUR 42. Sans lui, le certificat de
+    retenue a la source ne peut pas etre emis : le portail TEJ ne connait pas d'autre facon de
+    designer le beneficiaire. Le faire saisir a la main au moment d'emettre, c'est arreter le
+    geste pour une donnee qui etait sous les yeux depuis le debut.
+
+    ⚠️ ON N'ECRASE JAMAIS UN MATRICULE DEJA SAISI. Un humain a pu corriger une lecture douteuse,
+    et cette valeur-la vaut mieux qu'une relecture du modele. Meme regle que le n° et la date de
+    la facture fournisseur.
+
+    ⚠️ ET ON REFUSE CE QUI N'EST PAS UN MATRICULE. `matricule.normaliser` n'accepte que la forme
+    tunisienne — 7 chiffres et une lettre cle, cette lettre etant CALCULEE a partir des chiffres.
+    Un numero de telephone ou un registre de commerce mal lus n'y survivent pas : une fiche
+    fournisseur polluee par une lecture douteuse se propagerait ensuite a chaque certificat.
+    """
+    from bank_retenue_sync.tej import matricule
+
+    if not fournisseur or not lu:
+        return {}
+    if frappe.db.get_value("Supplier", fournisseur, "tax_id"):
+        return {"statut": "deja renseigne"}
+    if not matricule.normaliser(lu):
+        return {"statut": "illisible", "lu": lu}
+    frappe.db.set_value("Supplier", fournisseur, "tax_id", lu, update_modified=False)
+    return {"statut": "pose", "tax_id": lu}
 
 
 def magasin_par_defaut() -> str:
@@ -368,6 +406,16 @@ def a_l_enregistrement(doc, method=None):
         if pose.get("bill_date"):
             faits.append(_("Date de la facture fournisseur lue sur le scan : {0}.").format(
                 frappe.utils.formatdate(pose["bill_date"])))
+        if pose.get("matricule"):
+            # ⚠️ CETTE CORRECTION-LA SORT DE LA FACTURE. Les autres modifient le document qu'on
+            # est en train d'enregistrer ; celle-ci écrit sur la FICHE DU FOURNISSEUR, où elle
+            # servira à toutes ses factures suivantes. Raison de plus pour la dire.
+            faits.append(_("Matricule fiscal du fournisseur lu sur le scan et posé sur sa "
+                           "fiche : {0}.").format(pose["matricule"]))
+        if pose.get("matricule_ecarte"):
+            faits.append(_("Matricule fiscal lu ({0}) écarté : ce n'est pas une forme tunisienne "
+                           "valide, à saisir à la main sur la fiche fournisseur.").format(
+                               pose["matricule_ecarte"]))
         if pose.get("date_ecartee"):
             faits.append(_("Date lue sur le scan ({0}) écartée : trop éloignée de la "
                            "comptabilisation, à saisir à la main.").format(pose["date_ecartee"]))

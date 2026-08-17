@@ -15,3 +15,6 @@ bank_retenue_sync.patches.politique_achat_local #2026-08-13
 # pourcentage d'elle-meme), soit deux champs de plus. L'entree ci-dessus a deja ete jouee — c'est
 # la chaine entiere, commentaire compris, qui fait l'identite d'un patch, d'ou ce nouveau suffixe.
 bank_retenue_sync.patches.politique_achat_local #2026-08-13-ecarts
+# Et le vocabulaire TEJ, deux reglages de plus : sans eux le bouton « Certificat de retenue » refuse
+# d'emettre, et les libelles ne se devinent pas — ils ont ete arraches au portail en repetition.
+bank_retenue_sync.patches.politique_achat_local #2026-08-13-tej

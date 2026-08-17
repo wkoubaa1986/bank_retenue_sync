@@ -56,7 +56,11 @@
   "ecart_achat_taux",
   "ecart_achat_ttc",
   "ecart_achat_tva_taux",
-  "magasin_achat_defaut"
+  "magasin_achat_defaut",
+  "section_tej_emis",
+  "tej_emis_type_operation",
+  "column_break_tej_emis",
+  "tej_emis_operation"
  ],
  "fields": [
   {
@@ -388,6 +392,30 @@
    "fieldtype": "Percent",
    "label": "Ecart bloquant sur la TVA : pourcentage de la TVA lue",
    "description": "Serre a dessein : la TVA se lit au millime exact sur les scans deja traites. Un seuil calcule sur le TTC lui laissait 6,2 % de tolerance, par ou une TVA ramenee de 175,311 a 170,000 est passee sans un mot."
+  },
+  {
+   "fieldname": "section_tej_emis",
+   "fieldtype": "Section Break",
+   "label": "Certificats de retenue emis (TEJ)"
+  },
+  {
+   "fieldname": "tej_emis_type_operation",
+   "fieldtype": "Data",
+   "label": "TEJ — Type d'operation",
+   "description": "Libelle EXACT de la liste « Type d'operation » du portail TEJ. Les huit valeurs acceptees ont ete relevees sur le portail meme, en repetition : Remuneration des activites non commerciales / Revenus des capitaux mobiliers / Jeux de pari et loterie / Dividendes / Jetons de presences et tantiemes / Acquisitions des marchandises, materiel equipements et de services / Loyers / Cessions Fc et immeubles.",
+   "default": "Acquisitions des marchandises, matériel équipements et de services"
+  },
+  {
+   "fieldname": "column_break_tej_emis",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "tej_emis_operation",
+   "fieldtype": "Select",
+   "label": "TEJ — Operation",
+   "description": "⚠️ CE CHOIX FIXE LE TAUX, ET LE PORTAIL LE CALCULE LUI-MEME. Releve en repetition sur une facture reelle : « IS 15% » -> 1 %, « autres que 15% et 10% » -> 1,5 %, « personnes physiques 2/3 / IS 10% » -> 0,5 %. Le defaut est la variante a 1 %, celle qui correspond au taux que l'app calcule (ras_achat_taux) et au certificat deja emis a la main en juillet 2026. Elle depend en realite du REGIME FISCAL DU FOURNISSEUR : un fournisseur au regime de droit commun releve de 1,5 %, et la facture serait alors sous-retenue. La repetition avant soumission compare les deux montants.",
+   "options": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux autres que 15% et 10%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services auprès des personnes physiques bénéficiant de la déduction de 2/3 et des peronnes morales soumis à l'IS au taux de 10%",
+   "default": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%"
   }
  ],
  "issingle": 1,

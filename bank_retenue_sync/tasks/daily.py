@@ -106,6 +106,24 @@ def audit_quotidien():
     return _safe("audit_quotidien", lambda: orchestrator.run_audit_depenses())
 
 
+def depots_tej():
+    """Depots de certificats EMIS que TEJ n'a pas encore analyses.
+
+    ⚠️ C'EST LA SECONDE MOITIE DE L'EMISSION, ET ELLE NE PEUT PAS ETRE SYNCHRONE. Le clic sur
+    « Valider » enregistre un depot ; le certificat et sa reference n'existent que lorsque TEJ
+    l'analyse, quand il veut. Faire attendre le job de creation bloquerait le worker unique du
+    service pour tous les autres flux — le contrat le dit explicitement et rend, pour cette
+    raison, un corps de suivi tout pret.
+
+    Lecture seule : la route de statut ne resoumet rien, la rappeler est sans risque. Plusieurs
+    passages par jour, parce qu'un fournisseur attend son certificat et qu'un depot analyse le
+    matin n'a aucune raison d'attendre le lendemain.
+    """
+    from bank_retenue_sync.tej import emis
+
+    return _safe("depots_tej", lambda: emis.verifier_depots())
+
+
 def certificats_ras():
     """Certificats de retenue a la source recus du portail TEJ.
 

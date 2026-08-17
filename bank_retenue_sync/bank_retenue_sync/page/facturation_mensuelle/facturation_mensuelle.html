@@ -1,0 +1,173 @@
+<style>
+  .fm-wrap { padding: 0 0 40px; }
+
+  /* --- barre de periode ------------------------------------------------ */
+  .fm-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+            padding: 12px; margin-bottom: 14px;
+            border: 1px solid var(--border-color); border-radius: 8px; }
+  .fm-bar .f { display: flex; flex-direction: column; gap: 3px; }
+  .fm-bar label { font-size: 11px; color: var(--text-muted); }
+  .fm-bar select { height: 30px; font-size: 13px; padding: 2px 8px; border-radius: 6px;
+                   border: 1px solid var(--border-color); background: var(--control-bg);
+                   color: var(--text-color); min-width: 170px; }
+  .fm-bar .spacer { flex: 1; }
+  .fm-bar .periode { font-size: 12px; color: var(--text-muted); align-self: center; }
+
+  /* --- onglets --------------------------------------------------------- */
+  .fm-tabs { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color);
+             margin-bottom: 16px; }
+  .fm-tab { padding: 8px 14px; font-size: 13px; cursor: pointer; border: 0; background: none;
+            color: var(--text-muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+  .fm-tab:hover { color: var(--text-color); }
+  .fm-tab.actif { color: var(--text-color); font-weight: 600;
+                  border-bottom-color: var(--primary, #2490ef); }
+  .fm-tab .pastille { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 9px;
+                      font-size: 10.5px; background: var(--control-bg); color: var(--text-muted); }
+  .fm-tab .pastille.alerte { background: rgba(192,57,43,.14); color: #a93226; }
+  .fm-panneau { display: none; }
+  .fm-panneau.actif { display: block; }
+
+  /* --- KPI -------------------------------------------------------------- */
+  .fm-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+             gap: 10px; margin-bottom: 16px; }
+  .fm-kpi { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; }
+  .fm-kpi .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--text-muted); margin-bottom: 4px; }
+  .fm-kpi .val { font-size: 19px; font-weight: 600; line-height: 1.2;
+                 font-variant-numeric: tabular-nums; }
+  .fm-kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .fm-kpi.ok .val   { color: #1e7e34; }
+  .fm-kpi.warn .val { color: #9c6f00; }
+  .fm-kpi.bad .val  { color: #a93226; }
+
+  /* --- tableaux --------------------------------------------------------- */
+  .fm-scroll { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 8px; }
+  .fm-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .fm-tbl th, .fm-tbl td { padding: 6px 9px; border-bottom: 1px solid var(--border-color);
+                           text-align: left; vertical-align: top; }
+  .fm-tbl th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em;
+               color: var(--text-muted); white-space: nowrap; }
+  .fm-tbl td.num, .fm-tbl th.num { text-align: right; font-variant-numeric: tabular-nums;
+                                   white-space: nowrap; }
+  .fm-tbl tbody tr:hover { background: var(--highlight-color, rgba(0,0,0,.03)); }
+  .fm-tbl tfoot td { font-weight: 600; border-top: 2px solid var(--border-color); border-bottom: 0; }
+  .fm-tbl .muted { color: var(--text-muted); }
+
+  .fm-sous { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+             color: var(--text-muted); margin: 18px 0 8px; }
+
+  .fm-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px;
+              white-space: nowrap; }
+  .fm-badge.ok   { background: rgba(40,167,69,.13);  color: #1e7e34; }
+  .fm-badge.bad  { background: rgba(192,57,43,.13);  color: #a93226; }
+  .fm-badge.warn { background: rgba(224,168,0,.16);  color: #9c6f00; }
+  .fm-badge.neutre { background: rgba(154,160,166,.18); color: #5f6368; }
+
+  .fm-note { font-size: 12px; padding: 9px 12px; border-radius: 6px; margin-bottom: 12px;
+             border: 1px solid var(--border-color); background: var(--control-bg);
+             color: var(--text-color); }
+  .fm-note.alerte { border-color: rgba(192,57,43,.4); background: rgba(192,57,43,.07); }
+
+  .fm-vide, .fm-chargement { padding: 30px; text-align: center; color: var(--text-muted);
+                             font-size: 13px; }
+
+  /* --- caisse : la mise en page de la page « Caisse Espèces » ----------- */
+  .fm-kpi.vert   { background: rgba(40,167,69,.09);  border-color: rgba(40,167,69,.30); }
+  .fm-kpi.rouge  { background: rgba(192,57,43,.08);  border-color: rgba(192,57,43,.28); }
+  .fm-kpi.violet { background: rgba(126,87,194,.09); border-color: rgba(126,87,194,.30); }
+  .fm-kpi.bleu   { background: rgba(21,101,192,.08); border-color: rgba(21,101,192,.28); }
+  .fm-kpi.vert   .val { color: #1e7e34; }
+  .fm-kpi.rouge  .val { color: #a93226; }
+  .fm-kpi.violet .val { color: #5e35b1; }
+  .fm-kpi.bleu   .val { color: #1565c0; }
+
+  .fm-colonnes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                 gap: 14px; align-items: start; }
+  .fm-bloc { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+  .fm-bloc > h4 { margin: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 600;
+                  display: flex; justify-content: space-between; gap: 10px; }
+  .fm-bloc.vert   > h4 { background: rgba(40,167,69,.11);  color: #1e7e34; }
+  .fm-bloc.rouge  > h4 { background: rgba(192,57,43,.10);  color: #a93226; }
+  .fm-bloc.violet > h4 { background: rgba(126,87,194,.11); color: #5e35b1; }
+  .fm-bloc .fm-scroll { border: 0; border-radius: 0; max-height: 420px; overflow-y: auto; }
+  .fm-bloc .fm-tbl th { position: sticky; top: 0; background: var(--fg-color, #fff); z-index: 1; }
+  .fm-bloc .fm-sep td { background: var(--control-bg); font-size: 11px;
+                        text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+  .fm-bloc .ecarte td { opacity: .5; text-decoration: line-through; }
+
+  /* --- detail des factures reglees par un mouvement --------------------- */
+  .fm-regl { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px;
+             white-space: nowrap; }
+  .fm-regl .lbl { color: var(--text-muted); }
+  .fm-regl .tiers { font-weight: 600; }
+  .fm-regl .tiers::after { content: " ·"; font-weight: 400; color: var(--text-muted); }
+  .fm-regl .piece { color: var(--text-muted); font-size: 11px; }
+  .fm-regl .piece::before { content: "· "; }
+  .fm-regl .mt { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .fm-regl-ref { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase;
+                 letter-spacing: .03em; margin-bottom: 2px; }
+  /* ZERO APOSTROPHE DANS CE FICHIER, COMMENTAIRES COMPRIS.
+     frappe.build.scrub_html_template pretend echapper le caractere apostrophe mais le
+     remplace par lui-meme — un no-op — avant d envelopper le gabarit entier dans des
+     apostrophes simples. La premiere rencontree ferme la chaine et casse tout le script
+     de la page, qui cesse de s afficher sans le moindre message.
+     Les commentaires HTML sont retires avant ce traitement, pas les commentaires CSS :
+     celui-ci part donc en clair dans le gabarit.
+     Pour un texte visible qui en a besoin, utiliser l apostrophe typographique U+2019,
+     qui traverse sans rien casser — et qui est de toute facon la bonne forme.
+     Couvert par test_facturation.TestGabaritsDePage.
+     Ci-dessous : la note d une ecriture de journal tient sur plusieurs lignes, on la
+     laisse respirer mais bornee, pour ne pas decaler le tableau. */
+  .fm-regl-note { font-size: 11.5px; color: var(--text-muted); white-space: pre-line;
+                  max-width: 340px; max-height: 4.6em; overflow: hidden; }
+  .fm-regl-contrat { font-size: 11.5px; margin-bottom: 2px; white-space: nowrap; }
+  .fm-regl-contrat .fm-badge { margin-right: 5px; }
+
+  /* --- boutons de piece jointe et de controle --------------------------- */
+  .fm-act { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .fm-piece { font-size: 11px; line-height: 1.5; padding: 1px 7px; border-radius: 5px;
+              cursor: pointer; border: 1px solid var(--border-color);
+              background: var(--control-bg); color: var(--text-color); white-space: nowrap; }
+  .fm-piece:hover { background: var(--fg-hover-color, rgba(0,0,0,.05)); }
+  .fm-piece[disabled] { opacity: .45; cursor: default; }
+
+  /* --- dossier ---------------------------------------------------------- */
+  .fm-dossier { border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;
+                margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .fm-dossier .tete { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .fm-dossier .tete b { font-size: 13px; }
+  .fm-dossier button { font-size: 12px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+                       border: 1px solid var(--border-color); background: var(--control-bg);
+                       color: var(--text-color); }
+  .fm-dossier button[disabled] { opacity: .45; cursor: default; }
+  .fm-jauge { height: 8px; border-radius: 4px; background: var(--control-bg); overflow: hidden; }
+  .fm-jauge span { display: block; height: 100%; background: #2490ef; transition: width .3s; }
+  .fm-dossier .archives { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+</style>
+
+<div class="fm-wrap">
+
+  <div class="fm-bar">
+    <div class="f">
+      <label>Mois</label>
+      <select data-f="mois"></select>
+    </div>
+    <span class="periode" data-role="periode"></span>
+    <span class="spacer"></span>
+  </div>
+
+  <div class="fm-tabs" data-role="onglets">
+    <button class="fm-tab actif" data-onglet="caisse">Caisse espèces</button>
+    <button class="fm-tab" data-onglet="banque">Mouvements bancaires</button>
+    <button class="fm-tab" data-onglet="factures">Factures</button>
+    <button class="fm-tab" data-onglet="charges">Charges</button>
+    <button class="fm-tab" data-onglet="dossier">Dossier</button>
+  </div>
+
+  <div class="fm-panneau actif" data-panneau="caisse"><div class="fm-chargement">Chargement…</div></div>
+  <div class="fm-panneau" data-panneau="banque"><div class="fm-chargement">Chargement…</div></div>
+  <div class="fm-panneau" data-panneau="factures"><div class="fm-chargement">Chargement…</div></div>
+  <div class="fm-panneau" data-panneau="charges"><div class="fm-chargement">Chargement…</div></div>
+  <div class="fm-panneau" data-panneau="dossier"><div class="fm-chargement">Chargement…</div></div>
+
+</div>
