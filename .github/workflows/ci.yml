@@ -35,6 +35,13 @@ jobs:
           pip install --quiet "git+https://github.com/frappe/frappe.git@version-15"
           pip install --quiet -e .
 
+      # Hors bench, frappe.logger() écrit dans ../logs/frappe.log (relatif au
+      # workspace). Sans ce dossier, le premier `_()` qui échoue à charger les
+      # traductions (pas de redis ici) fait tomber le LOGGER au lieu d'être
+      # avalé — 37 erreurs identiques pour un simple dossier manquant.
+      - name: Create the logs dir frappe's fallback logger expects
+        run: mkdir -p "$(dirname "$GITHUB_WORKSPACE")/logs"
+
       - name: Run pure test modules
         env:
           MODULES: >-
