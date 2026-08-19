@@ -163,34 +163,34 @@ def _ajouter_carte_tresorerie():
 
 
 def _ajouter_raccourci_paiements():
-    """Raccourci « Paiements à faire » dans l'onglet Comptabilite, filtre sur les ordres en attente.
+    """Raccourci « Paiements à faire » dans l'onglet Comptabilite -> le RAPPORT du meme nom.
 
-    Le filtre fait tout le sens de la liste : un ordre passe a « Vire » des que le debit parait
-    au releve (`ordres.confirmer_par_banque`), il disparait donc du raccourci de lui-meme. La
-    liste ne montre que ce qui reste A FAIRE — c'est ce qui la rend consultable sans tri.
+    Demande utilisateur (19/08) : le raccourci ouvre le rapport « Paiements a faire » (les
+    virements que l'outil prepare), pas la liste des ordres. L'ancienne cible (liste
+    `BRS Ordre de Paiement` filtree « En attente ») est RETARGETEE en place si elle existe —
+    et son bloc de mise en page est repose s'il manque (sans bloc, rien ne s'affiche).
     """
-    if not frappe.db.exists("Workspace", WORKSPACE) or not frappe.db.exists("DocType", DOCTYPE):
+    if not frappe.db.exists("Workspace", WORKSPACE) or not frappe.db.exists("Report", REPORT):
         return None
     ws = frappe.get_doc("Workspace", WORKSPACE)
-    if any(s.link_to == DOCTYPE for s in (ws.shortcuts or [])):
-        # La ligne existe : il peut malgre tout manquer son bloc de mise en page.
-        if _ajouter_bloc(ws, "shortcut", LABEL):
-            ws.flags.ignore_permissions = True
-            ws.flags.ignore_links = True
-            ws.save()
-            frappe.db.commit()
-        return None
-
-    ws.append("shortcuts", {
-        "type": "DocType", "link_to": DOCTYPE, "label": LABEL,
-        "doc_view": "List", "color": "Orange",
-        # Le filtre est stocke en JSON par Frappe : c'est lui qui borne la liste aux ordres
-        # encore ouverts.
-        "stats_filter": frappe.as_json({"statut": "En attente"}),
-    })
-    _ajouter_bloc(ws, "shortcut", LABEL)
-    ws.flags.ignore_permissions = True
-    ws.flags.ignore_links = True
-    ws.save()
-    frappe.db.commit()
+    modifie = False
+    existant = next((s for s in (ws.shortcuts or []) if s.label == LABEL
+                     or s.link_to in (DOCTYPE, REPORT)), None)
+    if existant is None:
+        ws.append("shortcuts", {"type": "Report", "link_to": REPORT, "label": LABEL,
+                                "color": "Orange"})
+        modifie = True
+    elif existant.type != "Report" or existant.link_to != REPORT:
+        existant.type = "Report"
+        existant.link_to = REPORT
+        existant.label = LABEL
+        existant.doc_view = ""
+        existant.stats_filter = None
+        modifie = True
+    modifie = _ajouter_bloc(ws, "shortcut", LABEL) or modifie
+    if modifie:
+        ws.flags.ignore_permissions = True
+        ws.flags.ignore_links = True
+        ws.save()
+        frappe.db.commit()
     return LABEL
