@@ -162,6 +162,29 @@ def _ajouter_carte_tresorerie():
     return CARTE
 
 
+def _positionner_apres(ws, label: str, apres: str) -> bool:
+    """Deplace le bloc `shortcut` de `label` juste APRES celui de `apres`.
+
+    `_ajouter_bloc` ajoute en FIN de contenu : le raccourci se rendait alors sous les cartes,
+    hors de la grille « Vos raccourcis » (constate le 19/08 — la grille suit l'ordre des blocs).
+    """
+    blocs = json.loads(ws.content or "[]")
+
+    def idx(nom):
+        for i, b in enumerate(blocs):
+            if b.get("type") == "shortcut" and (b.get("data") or {}).get("shortcut_name") == nom:
+                return i
+        return None
+
+    i_moi, i_ref = idx(label), idx(apres)
+    if i_moi is None or i_ref is None or i_moi == i_ref + 1:
+        return False
+    bloc = blocs.pop(i_moi)
+    blocs.insert(idx(apres) + 1, bloc)
+    ws.content = json.dumps(blocs)
+    return True
+
+
 def _ajouter_raccourci_paiements():
     """Raccourci « Paiements à faire » dans l'onglet Comptabilite -> le RAPPORT du meme nom.
 
@@ -188,6 +211,8 @@ def _ajouter_raccourci_paiements():
         existant.stats_filter = None
         modifie = True
     modifie = _ajouter_bloc(ws, "shortcut", LABEL) or modifie
+    # Dans la grille « Vos raccourcis », juste apres « Facturation Auto » (demande utilisateur).
+    modifie = _positionner_apres(ws, LABEL, "Facturation Auto") or modifie
     if modifie:
         ws.flags.ignore_permissions = True
         ws.flags.ignore_links = True

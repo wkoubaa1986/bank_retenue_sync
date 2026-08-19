@@ -63,6 +63,18 @@ def execute(filters=None):
     return _colonnes(), lignes, None, _graphique(lignes), _synthese(lignes)
 
 
+@frappe.whitelist()
+def nb_a_faire() -> int:
+    """Nombre de virements a faire — pour le COMPTEUR du raccourci de l'espace Comptabilite.
+
+    Frappe n'affiche un badge que sur les raccourcis DocType (shortcut_widget.js) : celui-ci
+    etant un rapport, notre patch client (public/js/paiements_a_faire_compteur.js) appelle
+    cette methode. Memes roles que le rapport."""
+    frappe.only_for(("System Manager", "Accounts Manager", "Accounts User"))
+    filters = frappe._dict({})
+    return len(_virements_a_faire(filters)) + len(_alimentation_carte(filters))
+
+
 def _alimentation_carte(filters) -> list:
     """Ligne de recharge de la carte technologique, quand son solde passe sous le seuil.
 
