@@ -248,6 +248,47 @@ def extract_invoice_scan(pdf_bytes: bytes, extra_hint: str = None) -> dict:
     return data
 
 
+def extract_invoice_image(image_bytes: bytes, mimetype: str = "image/jpeg",
+                          extra_hint: str = None) -> dict:
+    """Extraction d'une facture PHOTOGRAPHIEE (caisse : photo de telephone). -> meme dict.
+
+    Meme voie que `extract_invoice_scan` (API Responses, prompt scan tunisien), mais l'image
+    part en `input_image` — un JPEG n'est pas un PDF, `input_file` le refuserait.
+    """
+    import base64
+
+    client, model, _temperature = _get_client_model_temp()
+    if not hasattr(client, "responses"):
+        frappe.throw("Le SDK OpenAI installe ne sait pas lire une image (API Responses absente).")
+
+    consigne = "Facture fournisseur photographiee." + (" %s" % extra_hint if extra_hint else "")
+    b64 = base64.b64encode(image_bytes).decode()
+    res = client.responses.create(
+        model=model,
+        instructions=_SCAN_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": [
+            {"type": "input_image",
+             "image_url": "data:%s;base64,%s" % (mimetype or "image/jpeg", b64)},
+            {"type": "input_text", "text": consigne}]}])
+
+    texte = (res.output_text or "").strip()
+    if texte.startswith("```"):
+        texte = texte.strip("`")
+        texte = texte.split("\n", 1)[1] if texte.lower().startswith("json") else texte
+        texte = texte.rsplit("```", 1)[0]
+    data = json.loads(texte)
+
+    for k in ("total_ht", "total_tva", "stamp_duty", "total_ttc", "vat_rate"):
+        data[k] = _to_float(data.get(k))
+    ht, tva, ttc = data.get("total_ht"), data.get("total_tva"), data.get("total_ttc")
+    stamp = data.get("stamp_duty") or 0.0
+    data["_balanced"] = (ht is not None and tva is not None and ttc is not None
+                         and abs((ht + tva + stamp) - ttc) < 0.01)
+    data["_model"] = model
+    data["_scan"] = True
+    return data
+
+
 def extract_invoice_any(pdf_bytes: bytes, extra_hint: str = None) -> dict:
     """Le texte d'abord, le scan ensuite. C'est l'entree a utiliser quand on ignore la nature du PDF.
 
