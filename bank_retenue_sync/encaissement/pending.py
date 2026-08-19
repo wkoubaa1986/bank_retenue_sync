@@ -362,3 +362,55 @@ def bank_refs_already_booked(references) -> set:
             if ref in ref_no:
                 booked.add(ref)
     return booked
+
+
+def etat_encaissements_par_cle() -> dict:
+    """Etat des Encaissement Paiement consommant chaque cle bancaire, pour l'identification :
+
+        {"docs":     {flux: {cle: nom de l'encaissement}},        # = documents_par_cle_bancaire
+         "etats":    {nom: {"docstatus": 0|1, "ecarts_bloquants": n}},
+         "montants_brouillon": {flux: {cle: somme des lignes du brouillon}}}
+
+    Pourquoi les montants de brouillon : `montants_par_cle_bancaire` mesure les PAYMENT ENTRY
+    postees sur le compte bancaire — or un encaissement encore en BROUILLON n'a rien poste. Pour
+    afficher « le montant trouve dans ERPNext » d'un mouvement couvert par un brouillon (demande
+    utilisateur 2026-08-18), la seule source est la somme de ses lignes. Le risque de double
+    ligne documente sur `montants_par_cle_bancaire` ne s'applique pas : on ne lit QUE des
+    brouillons, dont les PE n'ont pas encore ete remplacees."""
+    docs = documents_par_cle_bancaire()
+    noms = {n for par_cle in docs.values() for n in par_cle.values()}
+    etats, montants = {}, {"cheque": {}, "traite": {}, "aramex": {}, "virement": {}}
+    if not noms:
+        return {"docs": docs, "etats": etats, "montants_brouillon": montants}
+
+    for d in frappe.get_all("Encaissement Paiement",
+                            filters={"name": ["in", list(noms)]},
+                            fields=["name", "docstatus"]):
+        etats[d["name"]] = {"docstatus": d["docstatus"], "ecarts_bloquants": 0}
+    if frappe.db.exists("DocType", "BRS Ecart Encaissement"):
+        for e in frappe.get_all("BRS Ecart Encaissement",
+                                filters={"encaissement": ["in", list(noms)],
+                                         "bloquant": 1, "statut": "À traiter"},
+                                fields=["encaissement"]):
+            if e["encaissement"] in etats:
+                etats[e["encaissement"]]["ecarts_bloquants"] += 1
+
+    brouillons = [n for n, e in etats.items() if e["docstatus"] == 0]
+    if brouillons:
+        for doctype, cle_field, val_field, flux in (
+                ("Liste Cheque", "bon_remise", "valeur", "cheque"),
+                ("Liste Traite Bancaire", "bon_remise", "valeur", "traite"),
+                ("Liste Aramex", "n_virement", "valeur", "aramex"),
+                ("Liste des Dettes client", "n_chèque", "valeur_du_cheque", "virement")):
+            if not frappe.db.exists("DocType", doctype):
+                continue
+            for r in frappe.get_all(doctype,
+                                    filters={"parent": ["in", brouillons],
+                                             cle_field: ["is", "set"]},
+                                    fields=[cle_field, val_field]):
+                cle = str(r[cle_field]).strip()
+                if not cle:
+                    continue
+                montants[flux][cle] = round(
+                    montants[flux].get(cle, 0.0) + flt(r[val_field]), 3)
+    return {"docs": docs, "etats": etats, "montants_brouillon": montants}

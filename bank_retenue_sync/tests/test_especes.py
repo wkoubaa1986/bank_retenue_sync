@@ -5,6 +5,7 @@ ceux de l'export reel 09/06 -> 31/07.
 """
 import unittest
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 from bank_retenue_sync.encaissement import especes
 
@@ -83,6 +84,42 @@ class TestLibelle(unittest.TestCase):
 
     def test_libelle_sans_complement(self):
         self.assertEqual(especes._libelle("VERSEMENT ESPECES"), "Versement espèce")
+
+
+class TestSoumissionAutomatique(unittest.TestCase):
+    """`build_journal_entry` suit `auto_submit_journal_entries` (decision 2026-08-19) : c'est le
+    meme reglage que les contrats et le calendaire, PAS `encaissement_auto_submit` (qui ne
+    gouverne que le brouillon d'Encaissement Paiement)."""
+
+    ACTION = {"kind": "creation", "reference": "TT-NEW", "montant": 12000.0,
+              "date": date(2026, 7, 20), "operation": "VERSEMENT ESPECES RECETTE AGENCE AOUINA"}
+
+    def _build(self, auto_submit):
+        doc = MagicMock()
+        with patch.object(especes.frappe, "new_doc", return_value=doc), \
+             patch("bank_retenue_sync.expenses.journal._auto_submit_enabled",
+                   return_value=auto_submit):
+            especes.build_journal_entry(dict(self.ACTION), insert=True)
+        return doc
+
+    def test_option_cochee_soumet_l_ecriture(self):
+        doc = self._build(auto_submit=True)
+        doc.insert.assert_called_once()
+        doc.submit.assert_called_once()
+
+    def test_option_decochee_laisse_le_brouillon(self):
+        doc = self._build(auto_submit=False)
+        doc.insert.assert_called_once()
+        doc.submit.assert_not_called()
+
+    def test_sans_insertion_rien_ne_part_en_base(self):
+        doc = MagicMock()
+        with patch.object(especes.frappe, "new_doc", return_value=doc), \
+             patch("bank_retenue_sync.expenses.journal._auto_submit_enabled",
+                   return_value=True):
+            especes.build_journal_entry(dict(self.ACTION), insert=False)
+        doc.insert.assert_not_called()
+        doc.submit.assert_not_called()
 
 
 class TestApplyActionsEnModeConstat(unittest.TestCase):

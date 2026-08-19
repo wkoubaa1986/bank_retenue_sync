@@ -13,10 +13,11 @@ frappe.pages["identification-bancaire"].on_page_load = function (wrapper) {
 // Rendu pur : lignes, KPI et couverture viennent de
 // bank_retenue_sync.api.mouvements.get_data. Le JS ne calcule aucun montant.
 
-const IB_STATUTS = ["Identifie", "Orphelin", "A verifier", "Ignore"];
+const IB_STATUTS = ["Identifie", "Identifie non comptabilise", "Orphelin", "A verifier", "Ignore"];
 
 const IB_STATUT_LABEL = {
   Identifie: "Identifié",
+  "Identifie non comptabilise": "Identifié non comptabilisé",
   Orphelin: "Orphelin",
   "A verifier": "À vérifier",
   Ignore: "Ignoré",
@@ -931,6 +932,17 @@ class IdentificationBancaire {
           </div>`);
       });
     });
+    // Identifiés mais NON COMPTABILISÉS : la pièce existe (brouillon), le grand livre attend.
+    const bc = this._stat("Credit", "Identifie non comptabilise");
+    const bd = this._stat("Debit", "Identifie non comptabilise");
+    if (bc.nb + bd.nb) {
+      tiles.push(`
+        <div class="ib-kpi brouillon">
+          <div class="lbl">Identifiés non comptabilisés</div>
+          <div class="val">${this._money(bc.montant + bd.montant)}</div>
+          <div class="sub">${bc.nb + bd.nb} pièce(s) en brouillon — à soumettre</div>
+        </div>`);
+    }
     const av =
       this._stat("Credit", "A verifier").nb + this._stat("Debit", "A verifier").nb;
     const ig = this._stat("Credit", "Ignore").nb + this._stat("Debit", "Ignore").nb;
@@ -990,7 +1002,11 @@ class IdentificationBancaire {
         const b = this._bucket(sens);
         const total = IB_STATUTS.reduce((s, k) => s + ((b[k] || {}).montant || 0), 0);
         const nb = IB_STATUTS.reduce((s, k) => s + ((b[k] || {}).nb || 0), 0);
-        const ident = (b["Identifie"] || {}).montant || 0;
+        // Le « % identifié » compte aussi les brouillons (la pièce existe), mais le segment
+        // reste visuellement distinct : identifié ≠ comptabilisé.
+        const ident =
+          ((b["Identifie"] || {}).montant || 0) +
+          ((b["Identifie non comptabilise"] || {}).montant || 0);
         const pct = total ? Math.round((ident / total) * 100) : 0;
         const seg = (k, cls) => {
           const v = (b[k] || {}).montant || 0;
@@ -1008,11 +1024,13 @@ class IdentificationBancaire {
               <b>${pct}% identifié</b>
             </div>
             <div class="ib-bar">
-              ${seg("Identifie", "s-identifie")}${seg("Orphelin", "s-orphelin")}
+              ${seg("Identifie", "s-identifie")}${seg("Identifie non comptabilise", "s-brouillon")}
+              ${seg("Orphelin", "s-orphelin")}
               ${seg("A verifier", "s-averifier")}${seg("Ignore", "s-ignore")}
             </div>
             <div class="ib-legend">
               <i class="s-identifie" style="background:#28a745"></i>identifié
+              <i style="background:#20c997"></i>non comptabilisé
               <i style="background:#c0392b"></i>orphelin
               <i style="background:#e0a800"></i>à vérifier
               <i style="background:#9aa0a6"></i>ignoré
@@ -1044,6 +1062,7 @@ class IdentificationBancaire {
         ${this._th("operation", "Libellé")}
         ${this._th("reference", "Référence")}
         ${this._th("montant", "Montant", "num")}
+        <th class="num" title="Montant trouvé dans ERPNext pour ce mouvement (pièce ou encaissement rattaché)">Comptabilisé</th>
         <th class="num" title="Montant bancaire moins montant comptabilisé">Écart</th>
         ${this._th("categorie", "Catégorie")}
         ${this._th("statut", "Statut")}
@@ -1060,14 +1079,24 @@ class IdentificationBancaire {
   _row(r) {
     const esc = frappe.utils.escape_html;
     const statut_cls = (r.statut || "").replace(/\s/g, "");
+    // Encaissement encore en brouillon (voire avec écarts à résoudre) : badge à côté du lien,
+    // en plus du texte de la colonne Raison — demande utilisateur 2026-08-18.
+    let doc_badge = "";
+    if (/brouillon/i.test(r.raison || "")) {
+      const probleme = /écart/i.test(r.raison || "");
+      doc_badge = ` <span class="indicator-pill ${probleme ? "red" : "orange"}"
+        style="font-size:10px" title="${esc(r.raison)}">${
+        probleme ? __("écarts à résoudre") : __("brouillon")
+      }</span>`;
+    }
     const doc = r.document_name
       ? `<a href="/app/${frappe.router.slug(r.document_type)}/${encodeURIComponent(
           r.document_name
         )}" data-preview data-doctype="${esc(r.document_type)}" data-name="${esc(
           r.document_name
-        )}">${esc(r.document_name)}</a>`
+        )}">${esc(r.document_name)}</a>${doc_badge}`
       : r.document_type
-      ? `<span style="color:var(--text-muted)">${esc(r.document_type)}</span>`
+      ? `<span style="color:var(--text-muted)">${esc(r.document_type)}</span>${doc_badge}`
       : "";
     const groupe = r.groupe
       ? `<div class="ib-groupe" data-groupe="${esc(r.groupe)}">${esc(r.groupe)}</div>`
@@ -1079,6 +1108,9 @@ class IdentificationBancaire {
         <td class="op">${esc(r.operation || "")}${groupe}</td>
         <td>${esc(r.reference || "")}</td>
         <td class="num">${this._money(r.montant)}</td>
+        <td class="num">${
+      flt(r.montant_document) ? this._money(r.montant_document) : ""
+    }</td>
         <td class="num">${this._ecart_cell(r)}</td>
         <td>${esc(r.categorie || "")}${
       r.regle ? `<div style="font-size:11px;color:var(--text-muted)">${esc(r.regle)}</div>` : ""

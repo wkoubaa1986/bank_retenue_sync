@@ -8,7 +8,8 @@ Entry) : c'est un simple virement interne, saisi en ECRITURE DE JOURNAL
 Trois issues possibles par mouvement (cf. `match_versements`) :
   - `reference`  : une ecriture correspond ET porte deja la reference bancaire -> rien a faire.
   - `annotation` : une ecriture correspond mais SANS reference -> on ajoute 'Ref : <reference>'.
-  - `creation`   : aucune ecriture -> on en cree une en BROUILLON.
+  - `creation`   : aucune ecriture -> on en cree une, soumise si `auto_submit_journal_entries`
+                   est coche (meme reglage que les contrats et le calendaire), brouillon sinon.
 Plus deux cas ou l'on ne touche a rien : plusieurs ecritures candidates (ambigu), ou reference
 deja portee par une Payment Entry (le depot etait en fait un reglement client en especes, cf.
 'VERSEMENT ESPECES AGENCE DENDEN' 175 DT = ACC-PAY-2026-03787).
@@ -136,7 +137,11 @@ def _libelle(operation: str) -> str:
 
 
 def build_journal_entry(action: dict, insert: bool = True):
-    """Ecriture de journal BROUILLON `Dr banque / Cr caisse` pour un depot non saisi."""
+    """Ecriture de journal `Dr banque / Cr caisse` pour un depot non saisi. Inseree en brouillon,
+    puis soumise si `auto_submit_journal_entries` est coche — meme raisonnement que les contrats :
+    un versement constate au releve est un fait, pas une hypothese. Les cas douteux (ambiguite,
+    reglement client en especes) n'arrivent jamais ici, `match_versements` les ecarte en amont."""
+    from bank_retenue_sync.expenses import journal
     doc = frappe.new_doc("Journal Entry")
     doc.voucher_type = "Journal Entry"
     doc.company = COMPANY
@@ -149,7 +154,9 @@ def build_journal_entry(action: dict, insert: bool = True):
     doc.append("accounts", {"account": CASH_ACCOUNT, "credit_in_account_currency": action["montant"],
                             "cost_center": COST_CENTER})
     if insert:
-        doc.insert(ignore_permissions=True)      # BROUILLON : jamais submit
+        doc.insert(ignore_permissions=True)
+        if journal._auto_submit_enabled():
+            doc.submit()
     return doc
 
 

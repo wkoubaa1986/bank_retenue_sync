@@ -78,6 +78,11 @@ class TestAppariement(unittest.TestCase):
                                 consommes={"FT-X"})
         self.assertEqual(paires, [])
 
+    def test_une_reference_consommee_en_minuscules_est_aussi_ignoree(self):
+        paires, _ = AR.apparier([_facture("JV-1", 958.650)], [_vir(958.650, 5, reference="FT-X")],
+                                consommes={"ft-x"})
+        self.assertEqual(paires, [])
+
     def test_deux_factures_de_montants_distincts_se_reglent_chacune(self):
         paires, _ = AR.apparier(
             [_facture("JV-1", 958.650), _facture("JV-2", 945.280, mois=6, jour=30)],
@@ -98,6 +103,22 @@ class TestLibelleDeReglement(unittest.TestCase):
 
     def test_une_remarque_vide_ne_laisse_pas_de_separateur_orphelin(self):
         self.assertFalse(AR._remarque_reglee("", "FT-X").startswith("|"))
+
+
+class TestReferencesDejaUtilisees(unittest.TestCase):
+    """Le vivier des references consommees vient des libelles « Réf de paiement : FT... »
+    (decision 2026-08-19) : sans lui, un virement ayant regle la note du mois M pourrait regler
+    celle du mois M+1 au meme montant — la premiere piece a quitte le vivier, le controle des
+    rivales ne la voit plus."""
+
+    def test_extraction_des_references_dans_les_libelles(self):
+        from unittest.mock import patch
+        remarks = [("Fac ARAMEX au 30-06-2026 | Réf de paiement :FT26189PFRLK",),
+                   ("Note d'honoraire comptable 2026-05 | Réf de paiement : ft26210ftjjh",),
+                   ("Facture sans reglement",)]
+        with patch.object(AR.frappe.db, "sql", return_value=remarks):
+            refs = AR.references_deja_utilisees()
+        self.assertEqual(refs, {"FT26189PFRLK", "FT26210FTJJH"})
 
 
 class TestDeuxCycles(unittest.TestCase):

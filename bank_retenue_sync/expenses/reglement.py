@@ -117,9 +117,9 @@ def apparier(factures: list, mouvements: list, consommes: set = None,
     une facture qui voit deux virements possibles, ou un virement que deux factures revendiquent,
     ne produit rien. Mieux vaut un rapprochement manquant qu'une ecriture detruite a tort.
     """
-    consommes = consommes or set()
+    consommes = {str(r).strip().upper() for r in (consommes or set())}
     candidats = [m for m in virements_emis(mouvements)
-                 if (m.get("reference") or "") not in consommes]
+                 if (m.get("reference") or "").strip().upper() not in consommes]
     paires, diag = [], []
 
     for f in factures:
@@ -153,6 +153,25 @@ def apparier(factures: list, mouvements: list, consommes: set = None,
             continue
         paires.append({"facture": f, "mouvement": m})
     return paires, diag
+
+
+def references_deja_utilisees() -> set:
+    """References bancaires deja consommees par un reglement anterieur : celles citees
+    « Réf de paiement : FT... » dans le libelle d'une ecriture non annulee (la forme que
+    `_remarque_reglee` produit, et celle des saisies manuelles historiques).
+
+    Sans ce garde-fou, un virement ayant deja regle une piece pourrait en regler une seconde du
+    meme montant a un passage ulterieur — cas realiste : les notes d'honoraire se repetent d'un
+    mois a l'autre, et une piece deja reglee QUITTE le vivier, donc le controle des rivales
+    d'`apparier` ne voit plus la premiere."""
+    refs = set()
+    rows = frappe.db.sql(
+        """select user_remark from `tabJournal Entry`
+           where docstatus < 2 and user_remark like %s""", ("%Réf de paiement%",))
+    for (remark,) in rows:
+        for m in re.finditer(r"R[ée]f de paiement\s*:?\s*([A-Za-z0-9]+)", remark or ""):
+            refs.add(m.group(1).strip().upper())
+    return refs
 
 
 def _fichiers_de(nom_je: str) -> list:
@@ -233,8 +252,13 @@ def regler(facture: dict, mouvement: dict, insert: bool = True,
 
 def process_reglements(movements: list, insert: bool = True, consommes: set = None,
                        only=None) -> list:
-    """Point d'entree : pour chaque cycle, apparie puis regle."""
+    """Point d'entree : pour chaque cycle, apparie puis regle.
+
+    `consommes=None` (le defaut) charge les references deja utilisees par un reglement
+    anterieur — passer un set explicite (tests) court-circuite la lecture en base."""
     out = []
+    if consommes is None:
+        consommes = references_deja_utilisees()
     for cyc in CYCLES:
         if only and cyc["cle"] not in ({only} if isinstance(only, str) else set(only)):
             continue

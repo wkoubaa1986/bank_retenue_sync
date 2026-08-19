@@ -106,7 +106,7 @@ def get_filtres() -> dict:
     bornes = frappe.db.sql("select min(`date`), max(`date`) from `tab%s`" % DOCTYPE)[0]
     return {
         "categories": sorted({r.c for r in cats if r.c}),
-        "statuts": ["Identifie", "Orphelin", "A verifier", "Ignore"],
+        "statuts": ["Identifie", "Identifie non comptabilise", "Orphelin", "A verifier", "Ignore"],
         "sens": ["Debit", "Credit"],
         "date_min": bornes[0], "date_max": bornes[1],
         "ecarts": [{"valeur": k, "libelle": v} for k, v in ECART_CHOIX.items()],

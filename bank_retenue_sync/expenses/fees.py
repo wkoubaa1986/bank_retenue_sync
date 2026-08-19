@@ -337,6 +337,18 @@ def sync_ecriture_mensuelle(movements: list, periode: str = None, insert: bool =
             "je": (je.name if insert and je else "(dry-run)"), "remplacee": remplacee}
 
 
+def periode_debut_gestion() -> str:
+    """Plancher de prise en charge ('AAAA-MM', Settings). Les mois anterieurs appartiennent aux
+    saisies MANUELLES de l'utilisateur : l'ecriture cumulative ne doit JAMAIS les recalculer —
+    le remplacement a une fois ecrase ses frais d'avril-juin 2026 (restaures depuis la
+    corbeille, decision utilisateur 2026-08-19)."""
+    try:
+        return (frappe.db.get_single_value("Bank Retenue Sync Settings",
+                                           "periode_debut_gestion") or "").strip()
+    except Exception:
+        return ""
+
+
 def process_fees(movements: list, insert: bool = True, context=None, force: bool = False,
                  periodes=None) -> list:
     """Met a jour l'ecriture cumulative de chaque mois represente dans le releve."""
@@ -345,4 +357,12 @@ def process_fees(movements: list, insert: bool = True, context=None, force: bool
         return []
     if periodes is None:
         periodes = sorted({periode_de(g.jour) for g in jours if g.jour})
-    return [sync_ecriture_mensuelle(movements, p, insert=insert, force=force) for p in periodes]
+    debut = periode_debut_gestion()
+    out = []
+    if debut:
+        out = [{"periode": p, "statut": "avant prise en charge",
+                "raison": "mois anterieur au plancher %s : saisies manuelles conservees" % debut}
+               for p in periodes if p < debut]
+        periodes = [p for p in periodes if p >= debut]
+    return out + [sync_ecriture_mensuelle(movements, p, insert=insert, force=force)
+                  for p in periodes]

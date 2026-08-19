@@ -160,7 +160,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Statut",
-   "options": "Identifie\nOrphelin\nIgnore\nA verifier",
+   "options": "Identifie\nIdentifie non comptabilise\nOrphelin\nIgnore\nA verifier",
    "search_index": 1
   },
   {

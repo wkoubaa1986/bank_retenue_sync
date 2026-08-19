@@ -383,7 +383,7 @@ BANQUE = "STE430127B - Zitouna - A&S"
 
 CONTRATS_DEFAUT = (
     {"cle": "pret_nantissement", "libelle": "Pret nantissement", "type": "Pret",
-     "date_debut": "2026-01-26", "date_fin": "2026-10-26", "nb_echeances": 10,
+     "date_debut": "2026-01-26", "date_fin": "2026-09-26", "nb_echeances": 10,
      "total_mensuel": 17705.228, "tolerance": 0.01,
      "compte_banque": BANQUE, "compte_principal": "Prêts garantis - A&S",
      "compte_interet": "Frais bancaire Emprunt - A&S", "mode_paiement": "Virement",

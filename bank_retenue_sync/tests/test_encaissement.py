@@ -110,11 +110,17 @@ class TestTraiteMatching(unittest.TestCase):
         self.assertEqual(rows[0]["n_cheque"], "011289089405")
 
     def test_effet_no_pending_is_diagnostic(self):
+        # depuis la politique d'ecart du 2026-08-18, le credit sans PE produit le diagnostic
+        # historique ET un ecart bloquant « Sans pièce » (flux traite).
         movements = [{"credit": 100, "debit": 0, "operation": "ENCAISSEMENT EFFET 999999999999",
                       "reference": "FT", "date": None}]
         rows, diag = matching.match_traites(movements, [], consumed=set())
         self.assertEqual(rows, [])
-        self.assertEqual(len(diag), 1)
+        self.assertTrue(any("aucune PE" in (d.get("reason") or "") for d in diag))
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual(len(ecarts), 1)
+        self.assertEqual((ecarts[0]["flux"], ecarts[0]["sous_type"], ecarts[0]["bloquant"]),
+                         ("traite", "Sans pièce", 1))
 
     def test_already_encaissed_reference_is_skipped_silently(self):
         """Un effet deja encaisse ne doit produire ni ligne ni diagnostic : la fenetre d'export
@@ -257,3 +263,134 @@ class TestBuilder(unittest.TestCase):
         self.assertEqual(doc.livraison_aramex_a_encaisser[0].type, "Virement")
         self.assertAlmostEqual(doc.total_des_chèques, 100.0)
         self.assertAlmostEqual(doc.total_virement_a, 106.4)
+
+
+def _adv_lignes(net, lignes, frais=None):
+    """Fabrique un PaymentAdvice AVEC montants par ligne (chemin nominal de match_aramex).
+    `lignes` : [(numero, montant), ...] ; `frais` : [(description, montant_negatif), ...]."""
+    ls = [types.SimpleNamespace(document_number=n, reference="", invoice_amount=m,
+                                withholding_tax=0.0, description="")
+          for n, m in lignes]
+    for desc, m in (frais or []):
+        ls.append(types.SimpleNamespace(document_number="", reference="", invoice_amount=m,
+                                        withholding_tax=0.0, description=desc))
+    return types.SimpleNamespace(net_total=net, lines=ls, payment_date=None)
+
+
+class TestAramexEcarts(unittest.TestCase):
+    """Politique d'ecart du 2026-08-18 : tolerance <= 1 DT, frais absorbes, deltas et lignes
+    sans piece INCLUS/traces au lieu de refuser le lot (cas reel FT26224F6S40)."""
+
+    MOVE = {"credit": 0, "debit": 0, "operation": "VIR TN AUTRE BQ ARAMEX TUNISIE",
+            "reference": "FT26224F6S40", "date": None}
+
+    def _run(self, credit, advice, pes):
+        m = dict(self.MOVE, credit=credit)
+        return matching.match_aramex([m], pes, [advice], consumed=set())
+
+    def test_frais_et_tolerance_ne_bloquent_plus(self):
+        # Fillali : PE 106,4 / advice 106,0 (+0,4 <= 1 DT) ; frais TRFREVENUE -2,38.
+        adv = _adv_lignes(103.62, [("48812240654", 106.0)], frais=[("TRFREVENUE", -2.38)])
+        pes = [{"name": "PE-FIL", "numero": "48812240654", "paid_amount": 106.4, "party": "Fillali"}]
+        rows, diag = self._run(103.62, adv, pes)
+        self.assertEqual([r["ref_paiement"] for r in rows], ["PE-FIL"])
+        self.assertAlmostEqual(rows[0]["valeur"], 106.4)
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual({e["sous_type"] for e in ecarts}, {"Toléré", "Frais"})
+        self.assertTrue(all(not e["bloquant"] for e in ecarts))
+        self.assertFalse(any("garde-fou" in (d.get("reason") or "") for d in diag))
+
+    def test_delta_superieur_a_1dt_inclut_mais_bloque(self):
+        # Baccari : PE 440, Aramex reverse 265 (retour article defectueux) -> ligne INCLUSE
+        # a 440 + ecart BLOQUANT ; l'autre ligne exacte passe sans ecart.
+        adv = _adv_lignes(296.0, [("48812240606", 265.0), ("48812240643", 31.0)])
+        pes = [{"name": "PE-BAC", "numero": "48812240606", "paid_amount": 440.0, "party": "Baccari"},
+               {"name": "PE-B", "numero": "48812240643", "paid_amount": 31.0, "party": "Ayadi"}]
+        rows, diag = self._run(296.0, adv, pes)
+        self.assertEqual({r["ref_paiement"] for r in rows}, {"PE-BAC", "PE-B"})
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual(len(ecarts), 1)
+        self.assertEqual(ecarts[0]["sous_type"], "Delta paiement")
+        self.assertEqual(ecarts[0]["bloquant"], 1)
+        self.assertEqual(ecarts[0]["ref_paiement"], "PE-BAC")
+        self.assertAlmostEqual(ecarts[0]["ecart"], 175.0)
+
+    def test_ligne_advice_sans_pe_devient_ecart_bloquant(self):
+        # suivi 51330112142 (36 DT) paye par Aramex mais jamais saisi -> ecart « Sans pièce ».
+        adv = _adv_lignes(67.0, [("51330112142", 36.0), ("48812240643", 31.0)])
+        pes = [{"name": "PE-B", "numero": "48812240643", "paid_amount": 31.0, "party": "Ayadi"}]
+        rows, diag = self._run(67.0, adv, pes)
+        self.assertEqual([r["ref_paiement"] for r in rows], ["PE-B"])
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual(len(ecarts), 1)
+        self.assertEqual(ecarts[0]["sous_type"], "Sans pièce")
+        self.assertEqual(ecarts[0]["bloquant"], 1)
+        self.assertAlmostEqual(ecarts[0]["montant_advice"], 36.0)
+
+    def test_lot_entier_sans_pe_reste_un_diagnostic(self):
+        # rien d'encaissable -> pas de brouillon possible, donc pas d'ecarts : diagnostic
+        # historique conserve (le lot reste visible).
+        adv = _adv_lignes(1.0, [("51330112186", 1.0)])
+        rows, diag = self._run(1.0, adv, [])
+        self.assertEqual(rows, [])
+        self.assertFalse([d for d in diag if d.get("type") == "ecart"])
+        self.assertTrue(any("aucune PE" in (d.get("reason") or "") for d in diag))
+
+    def test_fake_advice_sans_montants_suit_l_ancien_garde_fou(self):
+        # les advices sans montants par ligne (parse degrade) gardent le refus strict.
+        adv = _adv(137.4, ["48812240654", "48812240643"])
+        pes = [{"name": "PE-B", "numero": "48812240643", "paid_amount": 31.0, "party": "X"}]
+        rows, diag = matching.match_aramex(
+            [dict(self.MOVE, credit=137.4)], pes, [adv], consumed=set())
+        self.assertEqual(rows, [])
+        self.assertTrue(any("garde-fou" in (d.get("reason") or "") for d in diag))
+
+
+class TestChequeTraiteEcarts(unittest.TestCase):
+    """Extension de la politique d'ecart aux flux cheques et traites (decision 2026-08-18) :
+    ligne de bordereau sans PE / montant PE != bordereau -> ecart persiste, lot conserve."""
+
+    def test_cheque_sans_pe_emet_un_ecart_bloquant(self):
+        movements = [{"credit": 1506.0, "debit": 0, "operation": "ENC CHEQ TN NUM 90028317",
+                      "reference": "FT26230HK6Z5", "date": None}]
+        loader = lambda bon: {"cheques": [
+            {"numero_cheque": "0001111", "montant": 506.0, "emetteur": "A"},
+            {"numero_cheque": "0002222", "montant": 1000.0, "emetteur": "B"}]}
+        pes = [{"name": "PE-A", "numero": "0001111", "paid_amount": 506.0, "party": "A"}]
+        rows, diag = matching.match_cheques(movements, pes, remise_loader=loader, consumed=set())
+        self.assertEqual([r["ref_paiement"] for r in rows], ["PE-A"])
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual(len(ecarts), 1)
+        self.assertEqual((ecarts[0]["flux"], ecarts[0]["sous_type"], ecarts[0]["bloquant"]),
+                         ("cheque", "Sans pièce", 1))
+        self.assertEqual(ecarts[0]["bon"], "90028317")
+        self.assertAlmostEqual(ecarts[0]["montant_advice"], 1000.0)
+
+    def test_cheque_delta_montant_bordereau(self):
+        movements = [{"credit": 1053.001, "debit": 0, "operation": "ENC CHEQ TN NUM 90028321",
+                      "reference": "FT", "date": None}]
+        loader = lambda bon: {"cheques": [{"numero_cheque": "0003333", "montant": 1053.001}]}
+        pes = [{"name": "PE-C", "numero": "0003333", "paid_amount": 1052.0, "party": "C"}]
+        rows, diag = matching.match_cheques(movements, pes, remise_loader=loader, consumed=set())
+        self.assertEqual(len(rows), 1)
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual(len(ecarts), 1)
+        self.assertEqual(ecarts[0]["sous_type"], "Delta paiement")
+        self.assertEqual(ecarts[0]["bloquant"], 1)
+        self.assertAlmostEqual(ecarts[0]["ecart"], -1.001)
+
+    def test_traite_toleree_et_sans_pe(self):
+        movements = [
+            {"credit": 990.0, "debit": 0, "operation": "ENCAISSEMENT EFFET 011289089405",
+             "reference": "FT-T1", "date": None},
+            {"credit": 500.0, "debit": 0, "operation": "ENCAISSEMENT EFFET 011289089999",
+             "reference": "FT-T2", "date": None},
+        ]
+        pes = [{"name": "PE-T", "numero": "011289089405", "paid_amount": 990.4, "party": "T"}]
+        rows, diag = matching.match_traites(movements, pes, consumed=set())
+        self.assertEqual([r["ref_paiement"] for r in rows], ["PE-T"])
+        ecarts = {d["sous_type"]: d for d in diag if d.get("type") == "ecart"}
+        self.assertEqual(ecarts["Toléré"]["bloquant"], 0)
+        self.assertAlmostEqual(ecarts["Toléré"]["ecart"], 0.4)
+        self.assertEqual(ecarts["Sans pièce"]["bloquant"], 1)
+        self.assertAlmostEqual(ecarts["Sans pièce"]["montant_advice"], 500.0)

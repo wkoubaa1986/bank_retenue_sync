@@ -126,9 +126,12 @@ RULES = (
         patterns=("FRAIS", "COMPTE"),
         action=ACTION_AGREGAT, groupe="jour", priorite=15),
     BankRule(
+        # « ENC » est REQUIS (libelle reel : « COM ENC CHEQUE TN AC-… ») : avec le seul couple
+        # COM+CHEQUE, « REGLEMENT CHEQUE 4000965 SOUID TRADE COMPANY » matchait par le COM de
+        # COMPANY — 1 785,277 DT de reglement fournisseur comptes en frais bancaires (04/2026).
         key="com_enc_cheque", label="Commission de remise de cheques", sens="debit",
         categorie="frais_bancaires", sous_categorie="commission",
-        patterns=("COM", "CHEQUE"),
+        patterns=("COM", "ENC", "CHEQUE"),
         action=ACTION_AGREGAT, groupe="jour", priorite=20),
     BankRule(
         key="com_effet", label="Commission de remise d'effets", sens="debit",
@@ -179,10 +182,16 @@ RULES = (
         action=ACTION_FLUX, flux="cnss", priorite=30),
 
     # -- alimentation d'une carte depuis le compte : virement INTERNE, pas une charge --
+    # Deux formes reelles (constate le 2026-08-18) : l'ancien virement interne « CHARGEMENT
+    # CARTE » et, depuis 06/2026, un paiement en ligne « PAIEMENT INTERNET 1808TOTAL TUNISI ».
+    # Priorite 40 < 55 : la forme TOTAL est reprise a `paiement_internet` (qui ne sait que
+    # categoriser), sinon la recharge restait « a verifier » et la depense recurrente
+    # « Recharge carte Total » ne se declenchait jamais (son garde-fou bank_rule re-applique
+    # cette regle au mouvement).
     BankRule(
         key="chargement_carte", label="Chargement de carte", sens="debit",
         categorie="virement_interne",
-        patterns=("CHARGEMENT", "CARTE"),
+        matcher="rules.is_chargement_carte",
         action=ACTION_JOURNAL, priorite=40),
 
     # -- virements emis : salaires, loyer, fournisseurs. Le detail vient des lignes
@@ -206,10 +215,13 @@ RULES = (
         patterns=("CHEQUE", "EMIS", "PREAVISE"),
         action=ACTION_INFORMATIF, extractor="cheque", priorite=40),
     BankRule(
+        # Priorite 18 < 20 : un libelle portant REGLEMENT est un cheque emis, jamais une
+        # commission — le nom du beneficiaire peut contenir n'importe quoi (COMPANY, ENC...),
+        # cette regle doit donc passer AVANT toutes les com_*.
         key="reglement_cheque", label="Reglement de cheque emis", sens="debit",
         categorie="cheque_emis",
         patterns=("REGLEMENT", "CHEQUE"),
-        action=ACTION_INFORMATIF, extractor="cheque", priorite=45),
+        action=ACTION_INFORMATIF, extractor="cheque", priorite=18),
 
     # -- mise en place des financements (mai 2026) : provisions, acomptes, frais de dossier.
     #
@@ -268,6 +280,16 @@ RULES = (
 RULES_BY_KEY = {r.key: r for r in RULES}
 
 
+def is_chargement_carte(m: dict) -> bool:
+    """Recharge de la carte Total, sous ses DEUX formes bancaires reelles :
+    « CHARGEMENT CARTE » (virement interne historique) et « PAIEMENT INTERNET …TOTAL … »
+    (forme constatee depuis 06/2026 : 22/06 et 18/08 a 603, 20/07 et 31/07 a 703,5)."""
+    op = _norm_op(m.get("operation"))
+    if "CHARGEMENT" in op and "CARTE" in op:
+        return True
+    return "PAIEMENT" in op and "INTERNET" in op and "TOTAL" in op
+
+
 def _resolve_matcher(dotted: str):
     """Resout 'module.fonction' vers le predicat. Import differe : `matching` importe `movements`,
     qui importerait ce module — la resolution a l'appel casse le cycle."""
@@ -278,6 +300,8 @@ def _resolve_matcher(dotted: str):
     if mod == "especes":
         from bank_retenue_sync.encaissement import especes
         return getattr(especes, fn)
+    if mod == "rules":
+        return globals()[fn]
     raise ValueError(f"matcher inconnu : {dotted}")
 
 

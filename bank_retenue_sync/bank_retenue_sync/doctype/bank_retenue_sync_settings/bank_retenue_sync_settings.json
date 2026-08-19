@@ -5,6 +5,7 @@
  "engine": "InnoDB",
  "field_order": [
   "enabled",
+  "encaissement_auto_submit",
   "column_break_conn",
   "company",
   "section_service",
@@ -20,6 +21,7 @@
   "secrets_help",
   "section_ecritures",
   "auto_submit_journal_entries",
+  "periode_debut_gestion",
   "seuil_ecart_paiement",
   "frais_bancaires_actifs",
   "pertes_non_paiement_actives",
@@ -29,6 +31,7 @@
   "ecart_ouverture_date",
   "column_break_ouverture",
   "ecart_ouverture",
+  "ecart_ouverture_piece",
   "section_sources",
   "sources_email",
   "section_contrats",
@@ -69,6 +72,13 @@
    "fieldname": "enabled",
    "fieldtype": "Check",
    "label": "Active"
+  },
+  {
+   "default": "0",
+   "description": "Decision utilisateur 2026-08-18 : la verification bancaire cree les brouillons d'encaissement ; avec cette option, un brouillon SANS ecart bloquant est soumis automatiquement. Un brouillon avec ecarts reste bloque jusqu'a resolution humaine (boutons du formulaire).",
+   "fieldname": "encaissement_auto_submit",
+   "fieldtype": "Check",
+   "label": "Validation automatique des encaissements"
   },
   {
    "fieldname": "column_break_conn",
@@ -152,6 +162,13 @@
    "fieldname": "auto_submit_journal_entries",
    "fieldtype": "Check",
    "label": "Soumettre automatiquement les ecritures"
+  },
+  {
+   "default": "2026-07",
+   "description": "Plancher de prise en charge (AAAA-MM). Les mois ANTERIEURS appartiennent aux saisies manuelles : l'ecriture mensuelle de frais ne les recalcule jamais, et les depenses email (Total, Aramex, honoraire) n'y creent rien. Decision utilisateur 2026-08-19 : frais et honoraires geres a la main jusqu'a 06-2026 inclus.",
+   "fieldname": "periode_debut_gestion",
+   "fieldtype": "Data",
+   "label": "Prise en charge a partir de (AAAA-MM)"
   },
   {
    "default": "0",
@@ -297,7 +314,14 @@
    "fieldtype": "Currency",
    "precision": "3",
    "label": "Ecart residuel accepte a cette date",
-   "description": "Ecart (solde banque moins solde ERPNext) constate a la date de depart, accepte tel quel. Il est soustrait de l'ecart affiche, de sorte que le rapprochement reparte de zero. Le bouton « Mesurer » des Reglages calcule la valeur du jour."
+   "description": "Ecart (solde banque moins solde ERPNext) constate a la date de depart, accepte tel quel. Il est soustrait de l'ecart affiche, de sorte que le rapprochement reparte de zero. Le bouton « Mesurer » des Reglages calcule la valeur du jour. Alternative : comptabiliser le residu (compte temporaire) et lier l'ecriture ci-dessous — l'ecart accepte reste alors a 0."
+  },
+  {
+   "fieldname": "ecart_ouverture_piece",
+   "fieldtype": "Link",
+   "options": "Journal Entry",
+   "label": "Ecriture d'alignement du residu",
+   "description": "Ecriture de journal qui a COMPTABILISE le residu de rapprochement (banque vers compte temporaire). Le rapprochement la reconnait comme piece de constat : elle n'attend aucun mouvement bancaire et ne pese jamais dans la projection."
   },
   {
    "default": "700",

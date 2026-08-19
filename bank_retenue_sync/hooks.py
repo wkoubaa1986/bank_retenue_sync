@@ -24,9 +24,13 @@ required_apps = ["erpnext"]
 scheduler_events = {
     "cron": {
         # CINQ VERIFICATIONS BANCAIRES PAR JOUR, aux heures ouvrables. Chacune est complete :
-        # nouvel export, capture du solde, identification, puis l'ecriture mensuelle de frais si
-        # de nouveaux mouvements sont apparus. L'ecriture etant CUMULATIVE et recalculee depuis
-        # zero, cinq passages ne produisent qu'une seule ecriture par mois, toujours a jour.
+        # nouvel export, capture du solde, identification, puis — si du nouveau est importe —
+        # les creations declenchees par le releve (brouillons d'ENCAISSEMENT a soumission
+        # humaine, versements d'especes, declaration fiscale et CNSS verifies par l'email du
+        # comptable, depenses recurrentes actives, echeances de contrats, reglement des dettes
+        # Aramex/honoraire au virement emis) et l'ecriture mensuelle de frais. L'ecriture etant
+        # CUMULATIVE et recalculee depuis zero, cinq passages ne produisent qu'une seule
+        # ecriture par mois, toujours a jour.
         "0 9,11,13,15,17 * * *": ["bank_retenue_sync.tasks.daily.verification_bancaire"],
         # Factures recues par EMAIL (Total, Aramex, note d'honoraire) : lues et comptabilisees
         # avant la premiere verification bancaire, pour que la dette fournisseur existe deja
@@ -209,6 +213,15 @@ fixtures = []
 # corriger.
 doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
 
+# Boutons « Écarts Aramex » (perte / ajustement / avoir) sur le brouillon d'encaissement.
+# ⚠️ PAS via doctype_js : « Encaissement Paiement » est un DocType CUSTOM et FormMeta.add_code
+# (frappe/desk/form/meta.py) commence par `if self.custom: return` — le hook doctype_js est
+# silencieusement ignore pour les doctypes custom. Le fichier est donc charge globalement ;
+# il ne fait qu'enregistrer un frappe.ui.form.on("Encaissement Paiement"), inerte ailleurs.
+# Le parametre ?v= force le navigateur a recharger le fichier a chaque evolution (les assets
+# bruts n'ont pas le hash de build des bundles) — INCREMENTER a chaque modification du JS.
+app_include_js = "/assets/bank_retenue_sync/js/encaissement_paiement.js?v=3"
+
 # Vue liste : l'etat du certificat TEJ de chaque facture. Charge APRES le fichier d'ERPNext, ce
 # qui permet d'etendre `listview_settings` au lieu de l'ecraser (cf. le fichier).
 doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}
@@ -217,6 +230,11 @@ doc_events = {
     "Purchase Invoice": {
         "before_validate": "bank_retenue_sync.achat.facture.a_l_enregistrement",
         "before_submit": "bank_retenue_sync.achat.facture.avant_validation",
+    },
+    # Un lot Aramex porteur d'ecarts bloquants (delta de paiement, ligne d'advice sans piece)
+    # ne peut pas etre soumis tant qu'un humain n'a pas resolu — cf. encaissement/ecarts.py.
+    "Encaissement Paiement": {
+        "before_submit": "bank_retenue_sync.encaissement.ecarts.before_submit",
     },
 }
 

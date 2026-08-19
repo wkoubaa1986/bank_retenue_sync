@@ -161,6 +161,12 @@ def etat_controle(lignes: list = None, refresh: bool = False) -> dict:
             refresh_cartes()
         except Exception:
             pass          # non fatal : le dernier export vaut mieux qu'un controle qui echoue
+        try:
+            # Sans ce job, `/banque/cartes/solde/latest` n'a JAMAIS rien a servir (404 depuis
+            # toujours, constate le 19/08) : la capture du solde ne se declenche pas seule.
+            refresh_solde()
+        except Exception:
+            pass          # meme contrat : un solde manquant degrade le controle, ne le tue pas
     lignes = lignes if lignes is not None else fetch_latest_cartes()
     ecritures = _ecritures_par_reference(
         [reference_ecriture(l) for l in lignes if est_approuve(l)])
@@ -261,14 +267,25 @@ def build_journal_entry(ligne: dict, insert: bool = True):
     return je
 
 
+def refresh_solde(timeout: int = 300) -> dict:
+    """Declenche la CAPTURE du solde de carte chez le service (`POST /jobs/banque/cartes/solde`)
+    et attend le resultat. Sans ce job, `/banque/cartes/solde/latest` ne sert jamais rien :
+    la capture ne se produit pas d'elle-meme."""
+    from bank_retenue_sync.bank import movements
+
+    job = movements.start_job("/jobs/banque/cartes/solde")
+    return movements.wait_job(job, timeout=timeout)
+
+
 def solde_carte() -> dict:
     """Solde REEL de la carte et plafonds annuels, lus chez tej-bank-service.
 
     -> {solde, numero, masque, lu_le, plafond_paiement_restant, plafond_paiement_consomme}
 
-    ⚠️ Ces routes (`/banque/cartes/solde`, `/banque/cartes/solde/latest`) NE FIGURENT PAS dans
-    l'`openapi.json` du service — elles repondent pourtant en 200. On ne peut donc pas les
-    decouvrir par le schema : c'est un point a signaler cote TEJ.
+    Les routes (`/banque/cartes/solde`, `/latest`, `/{filename}`) figurent dans l'openapi du
+    service depuis aout 2026, avec le job `POST /jobs/banque/cartes/solde` qui produit la
+    capture — c'est `refresh_solde()` qui le declenche (contra le commentaire d'origine, qui
+    les croyait absentes du schema).
 
     Le solde comptable, lui, se DEDUIT (recharges − depenses). Avoir les deux permet de les
     confronter : c'est ce que fait le rapport de suivi, et c'est ainsi qu'on a vu qu'il manquait

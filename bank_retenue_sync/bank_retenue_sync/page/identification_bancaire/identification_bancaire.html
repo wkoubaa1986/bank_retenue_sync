@@ -16,6 +16,7 @@
   .ib-kpi .val { font-size: 19px; font-weight: 600; line-height: 1.2; }
   .ib-kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
   .ib-kpi.identifie .val { color: var(--text-on-green, #28a745); }
+  .ib-kpi.brouillon .val { color: #0c9c7c; }
   .ib-kpi.orphelin  .val { color: var(--text-on-red, #c0392b); }
   .ib-kpi.averifier .val { color: var(--text-on-orange, #b9770e); }
 
@@ -30,6 +31,7 @@
             background: var(--control-bg, #eee); }
   .ib-bar span { display: block; height: 100%; }
   .ib-bar .s-identifie { background: #28a745; }
+  .ib-bar .s-brouillon { background: #20c997; }
   .ib-bar .s-orphelin  { background: #c0392b; }
   .ib-bar .s-averifier { background: #e0a800; }
   .ib-bar .s-ignore    { background: #9aa0a6; }
@@ -66,6 +68,7 @@
   .ib-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
               white-space: nowrap; border: 1px solid transparent; }
   .ib-badge.Identifie  { background: rgba(40,167,69,.13);  color: #1e7e34; }
+  .ib-badge.Identifienoncomptabilise { background: rgba(32,201,151,.15); color: #0c7a63; }
   .ib-badge.Orphelin   { background: rgba(192,57,43,.13);  color: #a93226; }
   .ib-badge.Averifier  { background: rgba(224,168,0,.16);  color: #9c6f00; }
   .ib-badge.Ignore     { background: rgba(154,160,166,.18); color: #5f6368; }

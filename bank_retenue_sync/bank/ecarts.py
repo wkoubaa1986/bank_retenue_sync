@@ -266,9 +266,20 @@ def rapprochement(date_from=None, date_to=None, compte: str = None) -> dict:
     cles = cles_du_releve(tous)
     cites = {m["document_name"] for m in tous if m.get("document_name")}
 
+    # L'ecriture d'ALIGNEMENT du residu (Reglages) est un constat : elle n'attend aucun
+    # mouvement bancaire, la compter « en attente de credit » projetterait un ecart fictif.
+    try:
+        piece_alignement = frappe.db.get_single_value("Bank Retenue Sync Settings",
+                                                      "ecart_ouverture_piece")
+    except Exception:
+        piece_alignement = None
+
     # ---- cote ERPNext : la piece est-elle reliee au releve ?
     restants_pieces, liees = [], {}
     for p in pieces:
+        if piece_alignement and p["voucher_no"] == piece_alignement:
+            liees[p["voucher_no"]] = "ecriture d'alignement du residu (Reglages)"
+            continue
         if p["voucher_no"] in cites:
             liees[p["voucher_no"]] = "citee par le registre"
             continue

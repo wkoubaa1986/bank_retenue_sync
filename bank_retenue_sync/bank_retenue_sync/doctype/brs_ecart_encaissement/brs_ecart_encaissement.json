@@ -1,0 +1,192 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-08-18 17:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "encaissement",
+  "reference_bancaire",
+  "suivi",
+  "flux",
+  "bon",
+  "column_break_head",
+  "type_ecart",
+  "bloquant",
+  "statut",
+  "section_montants",
+  "client",
+  "ref_paiement",
+  "column_break_montants",
+  "montant_advice",
+  "montant_piece",
+  "ecart",
+  "section_resolution",
+  "resolution",
+  "piece_resolution",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "encaissement",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Encaissement",
+   "reqd": 1,
+   "description": "Nom du brouillon Encaissement Paiement porteur du lot (Data et non Link : un brouillon peut être supprimé/renommé sans casser l'écart)"
+  },
+  {
+   "fieldname": "reference_bancaire",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Référence bancaire"
+  },
+  {
+   "fieldname": "suivi",
+   "fieldtype": "Data",
+   "label": "N° de suivi / de chèque / d'effet"
+  },
+  {
+   "default": "aramex",
+   "fieldname": "flux",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Flux",
+   "options": "aramex\ncheque\ntraite\nvirement"
+  },
+  {
+   "fieldname": "bon",
+   "fieldtype": "Data",
+   "label": "Bon de remise",
+   "description": "Flux chèque : n° du bordereau de remise porteur de la ligne"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "type_ecart",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Type d'écart",
+   "options": "Frais\nToléré\nDelta paiement\nSans pièce",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "bloquant",
+   "fieldtype": "Check",
+   "label": "Bloque la soumission"
+  },
+  {
+   "default": "À traiter",
+   "fieldname": "statut",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Statut",
+   "options": "À traiter\nRésolu\nAuto"
+  },
+  {
+   "fieldname": "section_montants",
+   "fieldtype": "Section Break",
+   "label": "Montants"
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Data",
+   "label": "Client / libellé"
+  },
+  {
+   "fieldname": "ref_paiement",
+   "fieldtype": "Data",
+   "label": "Payment Entry",
+   "description": "PE en attente concernée (Data : la branche aramex du script de soumission supprime les PE)"
+  },
+  {
+   "fieldname": "column_break_montants",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "montant_advice",
+   "fieldtype": "Currency",
+   "label": "Montant advice Aramex",
+   "precision": "3"
+  },
+  {
+   "fieldname": "montant_piece",
+   "fieldtype": "Currency",
+   "label": "Montant de la pièce",
+   "precision": "3"
+  },
+  {
+   "fieldname": "ecart",
+   "fieldtype": "Currency",
+   "label": "Écart (pièce - advice)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "section_resolution",
+   "fieldtype": "Section Break",
+   "label": "Résolution"
+  },
+  {
+   "fieldname": "resolution",
+   "fieldtype": "Select",
+   "label": "Résolution choisie",
+   "options": "\nPerte de non paiement\nAjustement livraison-dette\nPaiement par avoir\nIgnoré"
+  },
+  {
+   "fieldname": "piece_resolution",
+   "fieldtype": "Data",
+   "label": "Pièce(s) créée(s)"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-08-18 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Ecart Encaissement",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "client"
+}

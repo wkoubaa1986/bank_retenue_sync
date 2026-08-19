@@ -119,6 +119,18 @@ def _deja_comptabilise(periode: str, compte: str, sens: str = "credit",
     return None
 
 
+def _periode_debut_gestion() -> str:
+    """Plancher 'AAAA-MM' des Settings : en dessous, les depenses email ne creent rien (les
+    mois anterieurs sont saisis a la main — cas reel : la note d'honoraire « 05-06-2026 »
+    groupait deux mois sous un titre que l'idempotence ne reconnaissait pas, deux doublons
+    crees puis supprimes le 19/08)."""
+    try:
+        return (frappe.db.get_single_value("Bank Retenue Sync Settings",
+                                           "periode_debut_gestion") or "").strip()
+    except Exception:
+        return ""
+
+
 def _hors_perimetre(periode: str, depuis: str) -> bool:
     """`periode` ('YYYY-MM') est-elle anterieure au plancher `depuis` ?
 
@@ -219,6 +231,7 @@ def process_total(limit=None, insert: bool = True, depuis: str = None):
     blanc est le seul moyen de voir ce qui serait recree en double avant de l'ecrire.
     """
     out = []
+    depuis = depuis or _periode_debut_gestion()
     for msg in mail_config.fetch("total_invoice", limit=limit):
         zip_att = mail_config.attachment_of("total_invoice", msg)
         if not zip_att:
@@ -254,6 +267,7 @@ def process_aramex(limit=None, insert: bool = True, depuis: str = None):
     """`insert=False` : essai a blanc. Attention, l'extraction OpenAI du PDF a lieu QUAND MEME —
     elle precede la decision de creer, donc un essai a blanc coute autant qu'un vrai run."""
     out = []
+    depuis = depuis or _periode_debut_gestion()
     for msg in mail_config.fetch("aramex_invoice", limit=limit):
         pdf = mail_config.attachment_of("aramex_invoice", msg)
         if not pdf:
@@ -289,8 +303,9 @@ def process_aramex(limit=None, insert: bool = True, depuis: str = None):
     return out
 
 
-def process_honoraire(limit=None):
+def process_honoraire(limit=None, depuis: str = None):
     out = []
+    depuis = depuis or _periode_debut_gestion()
     seen = set()
     src = mail_config.get_source("comptable_honoraire")
     # `pj_*` et non `ext` : plus bas, `ext = extract_honoraire(data)` reutilise ce nom.
@@ -306,6 +321,9 @@ def process_honoraire(limit=None):
             if not mo:
                 continue
             period = f"{mo.group(2)}-{mo.group(1)}"
+            if _hors_perimetre(period, depuis):
+                out.append({"flux": "honoraire", "periode": period, "status": "hors perimetre"})
+                continue
             if period in seen:
                 continue
             seen.add(period)
@@ -509,6 +527,12 @@ def process_encaissements(insert=True, refresh=True, use_ai=True, movements=None
         out.update(cheques=len(chq_rows), traites=len(tra_rows), aramex=len(ara_rows),
                    virements=len(vir_lots),
                    encaissement=(doc.name if insert else "(dry-run)"))
+        if insert:
+            # Les ecarts Aramex (frais, toleres, deltas, sans piece) emis par match_aramex sont
+            # rattaches au brouillon : les BLOQUANTS empechent sa soumission tant qu'un humain
+            # n'a pas resolu (cf. encaissement/ecarts.py, decision utilisateur 2026-08-18).
+            from bank_retenue_sync.encaissement import ecarts as _ecarts
+            out["ecarts"] = _ecarts.persister(doc.name, out["diagnostics"])
     frappe.db.commit()
     return out
 
@@ -557,7 +581,12 @@ def process_versements_especes(insert=True, annotate=True, refresh=False):
            "erreurs": [], "diagnostics": []}
     if refresh:
         _ensure_fresh_bank_data(out["diagnostics"])
-    movements = fetch_latest_movements()
+    # Meme source que les encaissements : le REGISTRE, pas `/export/latest` — le dernier export
+    # ne couvre que sa fenetre, alors qu'un depot plus ancien reste rapprochable. Idempotent de
+    # bout en bout (reference deja portee -> `reference`, ecriture existante -> au pire une
+    # annotation deja presente ignoree), donc rejouable a chaque verification.
+    from bank_retenue_sync.bank import registry as _reg
+    movements = _reg.registry_as_movements() or fetch_latest_movements()
     depots = [m for m in movements if especes.is_versement_espece(m)]
     # Un 'VERSEMENT ESPECES' peut aussi etre un client reglant en liquide au guichet : dans ce cas
     # une Payment Entry porte deja la reference, et il n'y a pas de mouvement de caisse a saisir.
@@ -659,6 +688,25 @@ def run_audit_depenses(date_from=None, date_to=None):
 
 
 @frappe.whitelist()
+def _auto_submit_encaissement(resultat):
+    """Soumission automatique du brouillon cree par la verification (decision utilisateur
+    2026-08-18) : SEULEMENT si l'option `encaissement_auto_submit` des Settings est cochee ET
+    qu'aucun ecart bloquant ne reste a traiter. Sinon le brouillon attend l'humain — et le hook
+    before_submit (encaissement/ecarts.py) re-verifie de toute facon au moment de soumettre."""
+    nom = (resultat or {}).get("encaissement")
+    if not nom or nom == "(dry-run)":
+        return None
+    if not frappe.utils.cint(frappe.db.get_single_value(
+            "Bank Retenue Sync Settings", "encaissement_auto_submit")):
+        return "option désactivée : soumission manuelle"
+    bloquants = frappe.db.count("BRS Ecart Encaissement",
+                                {"encaissement": nom, "bloquant": 1, "statut": "À traiter"})
+    if bloquants:
+        return "bloquée : {0} écart(s) à résoudre".format(bloquants)
+    frappe.get_doc("Encaissement Paiement", nom).submit()
+    return "soumis automatiquement"
+
+
 def run_verification_bancaire(capture_solde=True, ecritures=True):
     """UN passage de verification bancaire, tel qu'il tourne cinq fois par jour.
 
@@ -670,7 +718,12 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
          n'a de sens qu'apres l'import, pour etre comparee au meme instant ;
       3. **identification** : classification de TOUT le registre, pas seulement des nouveautes —
          une piece saisie entre deux passages rapproche des mouvements deja connus ;
-      4. **ecritures** : les frais bancaires et les ecarts de paiement du mois sont recalcules
+      4. **creations declenchees par le releve** (seulement si du nouveau a ete importe) :
+         brouillons d'encaissement (soumission humaine), versements d'especes, declaration
+         fiscale et CNSS (avec verification par l'email du comptable), depenses recurrentes
+         actives, echeances de contrats, reglement des dettes Aramex/honoraire au virement
+         emis — puis une reclassification pour lier les pieces creees ;
+      5. **ecritures** : les frais bancaires et les ecarts de paiement du mois sont recalcules
          depuis zero et l'ecriture mensuelle est refaite si le total a bouge.
 
     L'etape 4 ne part QUE si de nouveaux mouvements sont apparus : sans releve neuf, il n'y a par
@@ -682,7 +735,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
     """
     frappe.only_for("System Manager")
     from bank_retenue_sync.bank import registry, solde as S
-    from bank_retenue_sync.expenses import fees
+    from bank_retenue_sync.expenses import fees, reglement
 
     out = run_identification(refresh=True)
 
@@ -693,6 +746,60 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
             # Un solde illisible ne doit jamais faire perdre l'import ni la classification :
             # ce sont eux qui portent le travail de la journee.
             out["solde"] = {"erreur": str(e)[:200]}
+
+    # Decision utilisateur 2026-08-18 : quand la verification importe DU NOUVEAU, elle enchaine
+    # elle-meme les creations declenchees par le releve — brouillons d'ENCAISSEMENT
+    # (cheques/traites/aramex/virements), versements d'especes, depenses recurrentes actives,
+    # echeances de contrats.
+    # Tout est idempotent (cles bancaires consommees, idempotence par reference, appariement
+    # d'echeances) : un passage sans nouveaute ne cree rien. La SOUMISSION des encaissements
+    # reste humaine — before_submit bloque tant que des ecarts sont a resoudre. `refresh=False`
+    # partout : `run_identification(refresh=True)` vient de rafraichir mouvements ET bordereaux.
+    # Chaque etape est isolee : son echec n'empeche ni les suivantes ni l'ecriture de frais.
+    out["encaissements"] = out["depenses"] = out["contrats"] = out["especes"] = None
+    out["declarations"] = out["cnss"] = out["reglements"] = None
+    if out.get("crees"):
+        try:
+            out["encaissements"] = process_encaissements(insert=True, refresh=False)
+            # Decision utilisateur 2026-08-18 (2e volet) : si l'option « validation automatique »
+            # est cochee, un brouillon SANS ecart bloquant est soumis dans la foulee ; avec
+            # ecarts, il reste en brouillon jusqu'a resolution humaine.
+            out["encaissements"]["soumission"] = _auto_submit_encaissement(out["encaissements"])
+        except Exception as e:
+            out["encaissements"] = {"erreur": str(e)[:200]}
+        # Versements d'especes (decision utilisateur 2026-08-19) : meme declencheur que les
+        # encaissements. L'ecriture creee suit `auto_submit_journal_entries` (cf. especes.py) ;
+        # les cas douteux (ambiguite, reglement client au guichet) ne creent jamais rien.
+        # Declaration fiscale et CNSS (decision utilisateur 2026-08-19) : leur declencheur est
+        # le PRELEVEMENT au registre, ils appartiennent donc a cette chaine — ils n'etaient
+        # atteignables que par run_all() (manuel). La creation reste conditionnee au PDF du
+        # comptable (`no_email_verif` sinon) et, pour la declaration, a l'egalite au centime
+        # avec le debit bancaire ; un email indisponible fait echouer la seule etape concernee.
+        for cle, fn in (("especes", lambda: process_versements_especes(
+                            insert=True, annotate=True, refresh=False)),
+                        ("declarations", lambda: process_declarations(insert=True)),
+                        ("cnss", lambda: process_cnss(insert=True)),
+                        ("depenses", lambda: run_depenses_recurrentes(insert=True)),
+                        ("contrats", lambda: run_contrats(insert=True)),
+                        # Reglement des dettes Aramex / honoraire (decision utilisateur
+                        # 2026-08-19) : quand le virement emis parait au releve, l'ecriture
+                        # d'attente est remplacee par son equivalent sur la banque. En DERNIER :
+                        # il lit le registre (a jour) et ses ambiguites sont refusees, donc
+                        # rejouable a chaque passage. N'etait atteignable que par run_all().
+                        ("reglements", lambda: reglement.process_reglements(
+                            registry.registry_as_movements(), insert=True))):
+            try:
+                out[cle] = fn()
+            except Exception as e:
+                out[cle] = {"erreur": str(e)[:200]}
+        # Les pieces creees a l'instant doivent apparaitre LIEES sur la page identification
+        # (document, montant comptabilise, mention brouillon) sans attendre le passage suivant :
+        # une passe de reclassification, sans nouvel export.
+        try:
+            reclass = run_identification(refresh=False)
+            out["reclassification"] = {k: reclass.get(k) for k in ("revus",)}
+        except Exception as e:
+            out["reclassification"] = {"erreur": str(e)[:200]}
 
     out["ecritures"] = None
     if frappe.utils.cint(ecritures) and out.get("crees"):
@@ -723,6 +830,12 @@ def run_cartes(insert=True, refresh=True, depuis=None):
         except Exception as e:
             # Le dernier export reste exploitable : on le dit, on ne s'arrete pas.
             out["refresh"] = "export indisponible : %s" % str(e)[:120]
+        try:
+            # Le SOLDE aussi : sans capture fraiche, `sync_frais_carte` comparerait le comptable
+            # du jour a un solde d'hier et fabriquerait un faux frais (ou en raterait un vrai).
+            cartes.refresh_solde()
+        except Exception as e:
+            out["refresh_solde"] = "capture indisponible : %s" % str(e)[:120]
     # `depuis` non renseigne -> reprise a la derniere ecriture ; le passer explicitement a vide
     # relache la borne pour un rattrapage, l'idempotence par numero restant le garde-fou.
     out["ecritures"] = cartes.process_cartes(
@@ -870,6 +983,19 @@ def run_reglements(insert=True, only=None):
 
     res = reglement.process_reglements(
         registry.registry_as_movements(), insert=frappe.utils.cint(insert), only=only)
+    frappe.db.commit()
+    return res
+
+
+@frappe.whitelist()
+def run_ecritures_frais():
+    """Ecritures mensuelles cumulatives (frais bancaires + deltas de paiement) recalculees
+    depuis le registre. Meme geste que l'etape 5 de la verification bancaire, declenchable a la
+    main — la verification ne la fait que si son propre import a rapporte du nouveau."""
+    frappe.only_for("System Manager")
+    from bank_retenue_sync.bank import registry
+    from bank_retenue_sync.expenses import fees
+    res = fees.process_fees(registry.registry_as_movements(), insert=True)
     frappe.db.commit()
     return res
 

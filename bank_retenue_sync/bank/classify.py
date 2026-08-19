@@ -47,6 +47,9 @@ from frappe.utils import flt, getdate
 from bank_retenue_sync.bank import registry, rules as R
 
 STATUT_IDENTIFIE = "Identifie"
+# La piece existe mais elle est en BROUILLON : identifiee, PAS encore au grand livre. Statut
+# distinct (demande utilisateur 2026-08-19) pour que la page montre ce qui attend une soumission.
+STATUT_IDENTIFIE_BROUILLON = "Identifie non comptabilise"
 STATUT_ORPHELIN = "Orphelin"
 STATUT_IGNORE = "Ignore"
 STATUT_A_VERIFIER = "A verifier"
@@ -114,6 +117,19 @@ class LinkContext:
     # {cle bancaire -> montant impute} : sert a mesurer l'ecart de paiement quand le mouvement est
     # rattache a un Encaissement Paiement, dont le total groupe plusieurs operations bancaires.
     montants_par_cle: dict = field(default_factory=dict)
+    # Etat des Encaissement Paiement par cle bancaire (pending.etat_encaissements_par_cle) :
+    # docs (flux -> cle -> nom), etats (nom -> docstatus + ecarts bloquants), montants_brouillon.
+    # Demande utilisateur 2026-08-18 : le mouvement identifie doit dire PAR QUEL encaissement,
+    # mentionner s'il est encore en brouillon, et signaler ses ecarts a resoudre.
+    encaissements: dict = field(default_factory=dict)
+    # Noms des Journal Entry encore en BROUILLON : une piece identifiee qui figure ici n'est pas
+    # au grand livre -> statut « Identifie non comptabilise » (post-controle de classify_one).
+    je_brouillons: set = field(default_factory=set)
+    # {(flux, cle) -> somme des credits du RELEVE partageant cette cle}. Un bordereau peut etre
+    # credite en PLUSIEURS fois (bon 90028275 : 67 + 135) : l'ecart d'un mouvement isole doit se
+    # mesurer sur le GROUPE (somme banque vs somme pieces), pas ligne contre total — sinon la
+    # page affichait -68 et -136 la ou l'ecart reel du bordereau est -1.
+    banque_par_cle: dict = field(default_factory=dict)
 
 
 def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
@@ -127,27 +143,45 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
     # journal, qui portent le numero dans leur remarque — cas reels « Achat quincaillerie …
     # Chq N° 4000969 bq Zitouna » et « Vidange voiture CHERY Chq N° 4001008-Bq Zitouna ».
     # Sans eux, ces reglements restaient introuvables des deux cotes.
+    banque_par_cle = {}
     for m in (movements or []):
         rule = R.find_rule(m)
         numero = R.extract_numero(rule, m) if rule else None
         if numero:
             refs.append(numero)
+        if rule is not None and rule.flux:
+            cle = _cle_bancaire(rule, m, numero)
+            if cle:
+                k = (rule.flux, cle)
+                banque_par_cle[k] = round(
+                    banque_par_cle.get(k, 0.0)
+                    + (flt(m.get("credit"), 3) or flt(m.get("debit"), 3)), 3)
     dates = [m["date"] for m in (movements or []) if m.get("date")]
     date_from = date_from or (min(dates) if dates else None)
     date_to = date_to or (max(dates) if dates else None)
+    # MARGE AMONT sur les index de PIECES : les operations du bord de fenetre ont leurs pieces
+    # datees AVANT le premier mouvement du registre (salaires du 31/03 debites le 01/04,
+    # honoraire du 25/03 vire le 02/04). Sans elle, chaque debut de registre fabrique des
+    # orphelins artificiels — constate en reel au passage du registre a « depuis le 01/04 ».
+    from datetime import timedelta
+    pieces_from = (getdate(date_from) - timedelta(days=45)) if date_from else None
 
-    cheque_index = lookup.cheque_no_index(date_from, date_to)
+    cheque_index = lookup.cheque_no_index(pieces_from, date_to)
     return LinkContext(
         consumed=pending.consumed_bank_keys(),
         booked=pending.bank_refs_already_booked(refs),
         je_par_reference=_sans_ecritures_de_frais(
-            lookup.journal_entries_by_bank_reference(refs, date_from, date_to), cheque_index),
+            lookup.journal_entries_by_bank_reference(refs, pieces_from, date_to), cheque_index),
         cheque_no_index=cheque_index,
-        pe_bancaires=lookup.payment_entries_bancaires(date_from, date_to),
-        ecritures_bancaires=lookup.ecritures_bancaires_cumulees(date_from, date_to),
-        pieces=lookup.pieces_bancaires(date_from, date_to),
+        pe_bancaires=lookup.payment_entries_bancaires(pieces_from, date_to),
+        ecritures_bancaires=lookup.ecritures_bancaires_cumulees(pieces_from, date_to),
+        pieces=lookup.pieces_bancaires(pieces_from, date_to),
         je_finder=especes.find_journal_entries,
         montants_par_cle=pending.montants_par_cle_bancaire(),
+        encaissements=pending.etat_encaissements_par_cle(),
+        je_brouillons=set(frappe.get_all("Journal Entry", filters={"docstatus": 0},
+                                         pluck="name")),
+        banque_par_cle=banque_par_cle,
     )
 
 
@@ -219,7 +253,33 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
         ctx.statut = STATUT_IDENTIFIE
         ctx.document_type = "Encaissement Paiement"
         ctx.raison = ""
-        _mesurer_ecart(ctx, m, (context.montants_par_cle or {}).get(cle))
+        enc = context.encaissements or {}
+        nom = ((enc.get("docs") or {}).get(rule.flux) or {}).get(cle)
+        ctx.document_name = nom
+        montant = (context.montants_par_cle or {}).get(cle)
+        etat = (enc.get("etats") or {}).get(nom) if nom else None
+        if etat and etat.get("docstatus") == 0:
+            # BROUILLON : rien n'est encore poste sur le compte bancaire — le montant vient des
+            # lignes du brouillon lui-meme, et l'utilisateur doit savoir qu'une soumission reste
+            # a faire (voire des ecarts a resoudre avant elle).
+            ctx.statut = STATUT_IDENTIFIE_BROUILLON
+            if montant is None:
+                montant = ((enc.get("montants_brouillon") or {})
+                           .get(rule.flux) or {}).get(cle)
+            n_ecarts = etat.get("ecarts_bloquants") or 0
+            if n_ecarts:
+                ctx.raison = ("encaissement en BROUILLON avec {0} écart(s) à résoudre — "
+                              "soumission bloquée".format(n_ecarts))
+            else:
+                ctx.raison = "encaissement en brouillon — à soumettre"
+        # Plusieurs credits peuvent partager la cle (bordereau credite en deux fois) : l'ecart
+        # se mesure alors somme banque vs somme pieces — le meme pour chaque ligne du groupe.
+        banque_groupe = (context.banque_par_cle or {}).get((rule.flux, cle))
+        if montant is not None and banque_groupe is not None:
+            ctx.montant_document = round(flt(montant), 3)
+            ctx.ecart = round(flt(banque_groupe) - ctx.montant_document, 3)
+        else:
+            _mesurer_ecart(ctx, m, montant)
         return
 
     ref = (m.get("reference") or "").strip()
@@ -234,11 +294,28 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
         montant = round(m.get("credit") or 0.0, 3)
         candidats = context.je_finder(m.get("date"), montant) or []
         if len(candidats) == 1:
-            ctx.statut = STATUT_IDENTIFIE
+            brouillon = candidats[0].get("docstatus") == 0
+            ctx.statut = STATUT_IDENTIFIE_BROUILLON if brouillon else STATUT_IDENTIFIE
             ctx.document_type = "Journal Entry"
             ctx.document_name = candidats[0]["name"]
+            if brouillon:
+                ctx.raison = "écriture en brouillon — à soumettre"
             return
         if len(candidats) > 1:
+            # Deux depots du meme montant dans la fenetre : le montant ne tranche pas, mais une
+            # ANNOTATION le peut — si UNE seule candidate cite la reference bancaire du
+            # mouvement (« Ref : TT... », posee par especes.annotate ou a la main), c'est elle.
+            # Cas reel : les deux transferts de 20 000 du 06/05 (recette / compte associe).
+            from bank_retenue_sync.encaissement import especes as _esp
+            citants = [c for c in candidats if _esp._reference_presente(c, ref)]
+            if len(citants) == 1:
+                ctx.statut = STATUT_IDENTIFIE_BROUILLON if citants[0].get("docstatus") == 0 \
+                    else STATUT_IDENTIFIE
+                ctx.document_type = "Journal Entry"
+                ctx.document_name = citants[0]["name"]
+                ctx.raison = "" if citants[0].get("docstatus") != 0 \
+                    else "écriture en brouillon — à soumettre"
+                return
             ctx.statut = STATUT_A_VERIFIER
             ctx.raison = "plusieurs ecritures caisse -> banque du meme montant : non tranche"
             return
@@ -601,6 +678,14 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
     # differe de quelques dinars n'est pas un rapprochement en attente, c'est un residu.
     if c.statut == STATUT_A_VERIFIER and c.document_name and not c.groupe:
         _absorber_ecart(c, m, context)
+
+    # Post-controle transversal : identifie par une ecriture de journal encore en BROUILLON
+    # -> « Identifie non comptabilise ». Toutes les voies (reference, numero de cheque,
+    # citation) passent ici, inutile de le repeter dans chaque branche.
+    if (c.statut == STATUT_IDENTIFIE and c.document_type == "Journal Entry"
+            and c.document_name in (context.je_brouillons or set())):
+        c.statut = STATUT_IDENTIFIE_BROUILLON
+        c.raison = ((c.raison + " — ") if c.raison else "") + "écriture en brouillon, à soumettre"
 
     return c
 
