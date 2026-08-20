@@ -105,14 +105,30 @@ class TestAllocation(unittest.TestCase):
         self.assertEqual(res["mode"], "exact")
         self.assertEqual(res["lignes"][0]["part"], 5323.230)
 
-    def test_frais_de_virement_dans_la_tolerance_soldent_la_dette(self):
-        """Cas reel : 5 322,240 credites pour 5 323,230 dus (0,99 de frais). La dette est soldee
-        au montant COMPTABLE, sinon un residu de 0,99 traine sur le Sales Order."""
+    def test_frais_de_virement_dans_la_tolerance_laissent_le_reliquat_en_dette(self):
+        """Cas reel : 5 322,240 credites pour 5 323,230 dus (0,99 de frais). La tolerance
+        IDENTIFIE la dette, mais la PE porte le montant CREDITE — le manque reste en dette
+        (decision utilisateur 2026-08-20, cas COMOSACC : 1 557,523 credites / 1 564,225 dus)."""
         d = _dette("PE-1", "STE TAURUS", 5323.230, so="SAL-ORD-2026-02413")
         res = allocation.allocate(5322.240, [d])
         self.assertEqual(res["mode"], "exact")
-        self.assertEqual(res["total_alloue"], 5323.230)
-        self.assertAlmostEqual(res["ecart"], 0.99, places=3)
+        self.assertEqual(res["total_alloue"], 5322.240)
+        self.assertEqual(res["lignes"][0]["part"], 5322.240)
+        self.assertEqual(res["ecart"], 0.0)
+        self.assertAlmostEqual(res["reliquat"], 0.99, places=3)
+
+    def test_cas_comosacc_groupe_plafonne_au_credit(self):
+        """1 557,523 credites pour 3 dettes 531,600 + 930,625 + 102,000 = 1 564,225 : le groupe
+        est reconnu (ecart 6,702 sous la tolerance 7,787), les deux premieres dettes sont
+        soldees pleines, la troisieme imputee partiellement — jamais plus que le credit."""
+        dettes = [_dette("PE-1", "C", 531.600, jour=1),
+                  _dette("PE-2", "C", 930.625, jour=2),
+                  _dette("PE-3", "C", 102.000, jour=3)]
+        res = allocation.allocate(1557.523, dettes)
+        self.assertEqual(res["mode"], "groupe")
+        self.assertEqual(res["total_alloue"], 1557.523)
+        self.assertEqual([l["part"] for l in res["lignes"]], [531.600, 930.625, 95.298])
+        self.assertAlmostEqual(res["reliquat"], 6.702, places=3)
 
     def test_tolerance_plafonnee_sur_les_gros_montants(self):
         """0,5 % d'un virement de 30 000 DT ferait 150 DT : un impaye, pas un frais."""
@@ -188,9 +204,10 @@ class TestMatchVirements(unittest.TestCase):
         self.assertEqual(lot["client"], "STE TAURUS")
         self.assertEqual(lot["n_virement"], "FT26211D5NMC")
         self.assertEqual(lot["banque"], matching.BANQUE)
-        self.assertEqual(lot["total"], 5323.230)
+        self.assertEqual(lot["total"], 5322.240)
         self.assertEqual(lot["lignes"][0]["bl"], "SAL-ORD-2026-02413")
-        self.assertTrue(any(d.get("ecart") for d in diag), "l'ecart de frais doit etre signale")
+        self.assertTrue(any(d.get("reliquat") for d in diag),
+                        "le reliquat laisse en dette doit etre signale")
 
     def test_reference_deja_encaissee_est_ignoree(self):
         mvts = [_credit("VIR TN AUTRE BQ TAURUS SARL", 5323.230, "FT26211D5NMC")]

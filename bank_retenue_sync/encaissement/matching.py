@@ -559,19 +559,26 @@ def match_virements(movements, pending_dettes, consumed=None, booked=None,
             "n_virement": ref,
             "banque": BANQUE,
             "date": m.get("date"),
-            # Total de l'EN-TETE = somme des parts allouees, pas le credit bancaire : le server
-            # script calcule part/total, et une PE dont les references allouent plus que son
-            # montant est refusee par ERPNext. L'ecart eventuel est remonte en diagnostic.
+            # Total de l'EN-TETE = somme des parts allouees = au plus le credit bancaire
+            # (allocation plafonne les parts au montant credite ; le manque reste en dette).
             "total": repartition["total_alloue"],
             "credit_bancaire": round(m.get("credit") or 0.0, 3),
             "mode": repartition["mode"],
             "methode_client": ident["method"],
             "lignes": lignes,
         })
-        if abs(repartition["ecart"]) >= 0.001:
+        if repartition.get("reliquat", 0) >= 0.001:
+            diag.append({"type": "virement", "ref": ref, "client": client,
+                         "credit": round(m.get("credit") or 0.0, 3),
+                         "comptable": repartition["total_alloue"],
+                         "reliquat": repartition["reliquat"],
+                         "reason": "credit inferieur au du (frais de virement ou impaye) : la PE "
+                                   "porte le montant credite, le reliquat reste en "
+                                   "« Dette non payée »"})
+        elif abs(repartition["ecart"]) >= 0.001:
             diag.append({"type": "virement", "ref": ref, "client": client,
                          "credit": round(m.get("credit") or 0.0, 3),
                          "comptable": repartition["total_alloue"], "ecart": repartition["ecart"],
-                         "reason": "dette soldee malgre un ecart (frais de virement) : la PE "
-                                   "portera le montant comptable, pas le montant credite"})
+                         "reason": "credit superieur au du tolere : la PE porte le du, le "
+                                   "surplus n'est pas impute"})
     return lots, diag

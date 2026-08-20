@@ -12,10 +12,13 @@ Ordre de certitude decroissante (`allocate`) :
                 qu'une commande manque en base, pas qu'il faut repartir le surplus au hasard.
 
 TOLERANCE (`tolerance`) : les frais de virement rognent le credit de ~1 DT (cas reel : 5 322,240
-recus pour 5 323,230 dus). Dans la tolerance, la dette est consideree SOLDEE et on alloue son
-montant PLEIN, pas le montant recu. C'est ce qui evite un residu de 0,99 DT tra1nant sur le
-Sales Order, et c'est aussi ce que fait la saisie manuelle aujourd'hui (la PE porte le montant
-comptable, pas le montant bancaire). L'ecart est remonte en diagnostic, jamais absorbe en silence.
+recus pour 5 323,230 dus). La tolerance sert a l'IDENTIFICATION seulement : dans la tolerance,
+la dette (ou le groupe) est reconnue comme la contrepartie du virement. Mais la PE porte
+TOUJOURS le montant CREDITE par la banque, jamais plus (decision utilisateur 2026-08-20, cas
+COMOSACC : 1 557,523 credites pour 1 564,225 dus — l'ancienne regle gonflait la PE de 6,702) :
+la derniere ligne est imputee partiellement et le manque RESTE EN DETTE (le server script
+recree la ligne « Dette non payée » residuelle tout seul), a trancher ensuite — frais bancaire
+ou impaye a reclamer. Le reliquat est remonte en diagnostic, jamais absorbe en silence.
 """
 from __future__ import annotations
 
@@ -44,8 +47,8 @@ def allocate(amount: float, dettes: list) -> dict:
     """Repartit `amount` (credit bancaire) sur `dettes` (PE en attente sur 'Dettes - A&S',
     triees par anciennete). Chaque dette est un dict {name, paid_amount, reference_no, ...}.
 
-    Retourne {'mode', 'lignes': [{'dette', 'part'}], 'total_alloue', 'ecart', 'raison'} —
-    `lignes` vide si rien n'a pu etre tranche."""
+    Retourne {'mode', 'lignes': [{'dette', 'part'}], 'total_alloue', 'ecart', 'reliquat',
+    'raison'} — `lignes` vide si rien n'a pu etre tranche."""
     amount = round(float(amount or 0.0), 3)
     dettes = [d for d in (dettes or []) if (d.get("paid_amount") or 0) > 0]
     tol = tolerance(amount)
@@ -96,16 +99,30 @@ def allocate(amount: float, dettes: list) -> dict:
 
 
 def _ok(mode: str, paires: list, amount: float) -> dict:
-    total_alloue = round(sum(p for _, p in paires), 3)
+    # La PE ne porte JAMAIS plus que le credit bancaire : les parts sont plafonnees en FIFO au
+    # montant credite. Quand les frais rognent le credit, la derniere ligne devient partielle et
+    # le manque (`reliquat`) reste en « Dette non payée » — le server script recree la ligne
+    # residuelle a la soumission (decision utilisateur 2026-08-20, cas COMOSACC).
+    du = round(sum(p for _, p in paires), 3)
+    lignes, reste = [], round(float(amount), 3)
+    for d, p in paires:
+        part = round(min(p, reste), 3)
+        reste = round(reste - part, 3)
+        if part > 0:
+            lignes.append({"dette": d, "part": part})
+    total_alloue = round(sum(l["part"] for l in lignes), 3)
     return {
         "mode": mode,
-        "lignes": [{"dette": d, "part": round(p, 3)} for d, p in paires],
+        "lignes": lignes,
         "total_alloue": total_alloue,
-        # ecart > 0 : la banque a credite MOINS que le montant comptable (frais de virement).
+        # ecart < 0 : la banque a credite PLUS que le du tolere (la PE porte quand meme le du).
         "ecart": round(total_alloue - amount, 3),
+        # reliquat > 0 : la banque a credite MOINS que le du — le manque reste en dette.
+        "reliquat": round(du - total_alloue, 3),
         "raison": "",
     }
 
 
 def _none(raison: str) -> dict:
-    return {"mode": "aucun", "lignes": [], "total_alloue": 0.0, "ecart": 0.0, "raison": raison}
+    return {"mode": "aucun", "lignes": [], "total_alloue": 0.0, "ecart": 0.0,
+            "reliquat": 0.0, "raison": raison}
