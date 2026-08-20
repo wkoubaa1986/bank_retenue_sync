@@ -510,3 +510,104 @@ class TestProseDeterministe(unittest.TestCase):
         p = rapport.prose_deterministe(d)
         self.assertIn("2026-06-30", p["echeances_couvertes"])
         self.assertIn("1 470,294", p["echeances_couvertes"])
+
+
+class TestPaiementsEntreEcheances(unittest.TestCase):
+    """§4 : les paiements reçus fenêtre par fenêtre, entre deux échéances.
+
+    Le tableau du mois répond à « qu'a-t-on reçu ce mois-ci ? » ; le partenaire, lui, demande
+    « qu'a-t-on reçu entre deux échéances ? » à chaque date de versement. Les fenêtres doivent
+    couvrir TOUS les versements — un paiement hors fenêtre serait un paiement que le rapport tait.
+    """
+
+    def setUp(self):
+        self.d = donnees_juin()
+        self.d["depuis"] = "2026-07-15"
+        self.d["paiements_entre_echeances"] = [
+            {"de": "2026-07-15", "a": "2026-07-31", "echeance": 4266.616,
+             "paiements": [{"payment_entry": "ACC-PAY-2026-04654", "date": "2026-07-14",
+                            "montant": 2700.0, "mode": "Espèces", "reference": "TT26195XXX"}],
+             "total": 2700.0},
+            {"de": "2026-08-01", "a": "2026-08-31", "echeance": 3061.240,
+             "paiements": [], "total": 0.0},
+        ]
+        self.d["total_recu"] = 2700.0
+        self.texte = rapport.rendre(self.d)
+
+    def test_la_section_existe_sous_les_paiements_du_mois(self):
+        self.assertIn("### Paiements reçus entre les échéances", self.texte)
+        self.assertLess(self.texte.find("### Tableau des Paiements Reçus"),
+                        self.texte.find("### Paiements reçus entre les échéances"))
+
+    def test_la_fenetre_nomme_ses_bornes_et_son_echeance(self):
+        self.assertIn("**Du 2026-07-15 au 2026-07-31 — échéance du 2026-07-31** — "
+                      "1 paiement(s), total 2 700,000 TND :", self.texte)
+
+    def test_le_paiement_de_la_fenetre_est_liste(self):
+        self.assertIn("| TT26195XXX | Espèces | 2 700,000 | 2026-07-14 |", self.texte)
+
+    def test_une_fenetre_vide_se_dit(self):
+        self.assertIn("**Du 2026-08-01 au 2026-08-31 — échéance du 2026-08-31** : "
+                      "aucun paiement reçu.", self.texte)
+
+    def test_le_total_depuis_l_ancrage(self):
+        self.assertIn("- *Total reçu depuis l’ancrage du 2026-07-15* : 2 700,000 TND", self.texte)
+
+    def test_la_fenetre_ouverte_apres_la_derniere_echeance(self):
+        self.d["paiements_entre_echeances"].append(
+            {"de": "2026-09-01", "a": None, "echeance": None,
+             "paiements": [{"payment_entry": "ACC-PAY-2026-09001", "date": "2026-09-03",
+                            "montant": 11.0, "mode": "Virement", "reference": ""}],
+             "total": 11.0})
+        texte = rapport.rendre(self.d)
+        self.assertIn("**Depuis le 2026-09-01 — après la dernière échéance** — "
+                      "1 paiement(s), total 11,000 TND :", texte)
+
+    def test_ces_montants_sont_des_montants_autorises(self):
+        autorises = rapport.valeurs_autorisees(self.d)
+        for v in (2700.0, 4266.616, 0.0):
+            self.assertIn(v, autorises)
+
+    def test_sans_fenetres_le_rapport_d_avant_est_intact(self):
+        d = donnees_juin()
+        self.assertNotIn("Paiements reçus entre les échéances", rapport.rendre(d))
+
+    def test_aucun_nombre_du_rendu_n_est_sans_source(self):
+        import re
+        autorises = rapport.valeurs_autorisees(self.d)
+        propre = "\n".join(re.sub(r"^(?:#+\s*)?\d+\.\s", "", l.strip())
+                           for l in self.texte.splitlines())
+        # « 1 paiement(s) » : le décompte est de la structure, pas de l'arithmétique.
+        propre = re.sub(r"\d+ paiement\(s\)", "", propre)
+        inconnus = rapport.nombres(propre) - autorises
+        self.assertEqual(inconnus, set(), "montants sans source : %s" % sorted(inconnus))
+
+
+class TestDiminutionParLeBilan(unittest.TestCase):
+    """§1 : une commande diminuée par l'écriture de bilan doit le dire, sous le tableau.
+
+    ⚠️ LE CAS REEL DE JUILLET 2026. SAL-ORD-2026-02304 affichait 1 506,926 non payés sur
+    1 919,556, sans dire que les 412,630 d'écart étaient absorbés par l'écriture de bilan :
+    le lecteur additionnait Encaissé + Non payé, ne retombait pas sur le Total, et concluait
+    à une erreur.
+    """
+
+    def setUp(self):
+        self.d = donnees_juin()
+        self.d["commandes"][0]["diminue_bilan"] = 412.630
+        self.d["commandes"][0]["pieces_bilan"] = ["ACC-JV-2026-00500"]
+        self.texte = rapport.rendre(self.d)
+
+    def test_la_diminution_est_annoncee(self):
+        self.assertIn("*Diminution par le bilan* : 1 commande(s) ont une part absorbée par "
+                      "l’écriture de bilan d’activité", self.texte)
+
+    def test_la_commande_le_montant_et_la_piece_sont_nommes(self):
+        self.assertIn("SAL-ORD-2026-01980 : diminuée de 412,630 TND sur 9 183,720 TND — "
+                      "écriture ACC-JV-2026-00500", self.texte)
+
+    def test_le_montant_est_autorise(self):
+        self.assertIn(412.63, rapport.valeurs_autorisees(self.d))
+
+    def test_sans_diminution_aucune_mention(self):
+        self.assertNotIn("Diminution par le bilan", rapport.rendre(donnees_juin()))

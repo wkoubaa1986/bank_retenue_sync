@@ -142,11 +142,30 @@ def commandes(mois: str) -> list:
                     reglements[so].append(_ligne(r.parent, piece, montant,
                                                  via=r.reference_name))
 
+    # ⚠️ UNE COMMANDE DIMINUEE PAR LE BILAN DOIT LE DIRE. L'ecriture de bilan credite les
+    # Debiteurs en reference a la commande (liberation de dette) : le total reste affiche, mais
+    # une part n'est plus reclamee au partenaire. Sans mention, le lecteur cherche un encaissement
+    # qui n'existe pas — juillet 2026 : 412,630 d'ecart muet sur SAL-ORD-2026-02304. `is_advance`
+    # est exclu : une avance en JV est de l'argent recu, pas une diminution.
+    bilan_par_commande = {}
+    for l in frappe.get_all("Journal Entry Account",
+                            filters={"reference_type": "Sales Order",
+                                     "reference_name": ["in", noms], "docstatus": 1,
+                                     "is_advance": ["!=", "Yes"],
+                                     "credit_in_account_currency": [">", 0]},
+                            fields=["parent", "reference_name", "credit_in_account_currency"],
+                            limit_page_length=0):
+        b = bilan_par_commande.setdefault(l.reference_name, {"montant": 0.0, "pieces": []})
+        b["montant"] = flt(b["montant"] + flt(l.credit_in_account_currency), PRECISION)
+        if l.parent not in b["pieces"]:
+            b["pieces"].append(l.parent)
+
     out = []
     for o in ordres:
         lignes = reglements.get(o.name, [])
         encaisse = flt(sum(l["montant"] for l in lignes if l["paye"]), PRECISION)
         du = flt(sum(l["montant"] for l in lignes if not l["paye"]), PRECISION)
+        bilan = bilan_par_commande.get(o.name) or {}
         out.append({
             "sales_order": o.name,
             "date": str(o.transaction_date or ""),
@@ -156,6 +175,8 @@ def commandes(mois: str) -> list:
             "non_paye": du,
             "restant": flt(flt(o.grand_total, PRECISION) - encaisse, PRECISION),
             "reglements": lignes,
+            "diminue_bilan": flt(bilan.get("montant"), PRECISION),
+            "pieces_bilan": bilan.get("pieces") or [],
         })
     return out
 

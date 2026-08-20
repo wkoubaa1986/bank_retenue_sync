@@ -198,6 +198,28 @@ def donnees(mois: str = None) -> dict:
         })
     total_avances_futures = flt(sum(a["montant"] for a in avances_futures), PRECISION)
 
+    # ⚠️ LE MOIS CALENDAIRE NE REPOND PAS A « QU'A-T-ON RECU ENTRE DEUX ECHEANCES ? ». Le §4 ne
+    # montre que les reglements du mois du rapport ; or les echeances tombent en fin de mois et un
+    # reglement arrive n'importe quand. Chaque fenetre court du lendemain de l'echeance precedente
+    # (la premiere part de l'ancrage) a l'echeance courante, incluse ; ce qui arrive apres la
+    # derniere echeance forme une fenetre ouverte. Les fenetres couvrent TOUS les versements de
+    # `recus` : un paiement hors fenetre serait un paiement que le rapport tait.
+    fenetres = []
+    borne = amorce.DEPUIS
+    for ligne in lignes:  # `consolider` trie deja par date
+        date_ech = ligne["date"]
+        pris = [v for v in versements if borne <= (v.get("date") or "") <= date_ech]
+        fenetres.append({"de": borne, "a": date_ech,
+                         "echeance": flt(ligne.get("montant"), PRECISION),
+                         "paiements": pris,
+                         "total": flt(sum(p["montant"] for p in pris), PRECISION)})
+        borne = max(borne, str(frappe.utils.add_days(date_ech, 1)))
+    apres = [v for v in versements if (v.get("date") or "") >= borne]
+    if apres:
+        fenetres.append({"de": borne, "a": None, "echeance": None, "paiements": apres,
+                         "total": flt(sum(p["montant"] for p in apres), PRECISION)})
+    total_recu = flt(sum(v["montant"] for v in versements), PRECISION)
+
     total_paiements = flt(sum(p["montant"] for p in paiements), PRECISION)
     total_couvert = flt(sum(c["impute"] for c in couvertes), PRECISION)
     annee_s, numero_s = periode.suivant(annee, numero)
@@ -233,6 +255,9 @@ def donnees(mois: str = None) -> dict:
         "report": tableau["report"],
         "paiements": paiements,
         "total_paiements": total_paiements,
+        "paiements_entre_echeances": fenetres,
+        "total_recu": total_recu,
+        "depuis": amorce.DEPUIS,
         "echeances_couvertes": couvertes,
         "total_couvert": total_couvert,
         "avance": avance,
@@ -344,7 +369,7 @@ def valeurs_autorisees(d: dict) -> set:
             out.add(round(flt(e.get("montant")), PRECISION))
             out.add(round(flt(e.get("deduit")), PRECISION))
     for c in d["commandes"] or []:
-        for cle in ("total", "encaisse", "non_paye", "restant"):
+        for cle in ("total", "encaisse", "non_paye", "restant", "diminue_bilan"):
             out.add(round(flt(c.get(cle)), PRECISION))
     for cle in ("total", "encaisse", "non_paye", "restant", "nombre"):
         out.add(round(flt((d.get("totaux_commandes") or {}).get(cle)), PRECISION))
@@ -352,6 +377,12 @@ def valeurs_autorisees(d: dict) -> set:
         out.add(round(flt(c.get("montant")), PRECISION))
     for p in d["paiements"] or []:
         out.add(round(flt(p.get("montant")), PRECISION))
+    for f in d.get("paiements_entre_echeances") or []:
+        out.add(round(flt(f.get("total")), PRECISION))
+        out.add(round(flt(f.get("echeance")), PRECISION))
+        for p in f.get("paiements") or []:
+            out.add(round(flt(p.get("montant")), PRECISION))
+    out.add(round(flt(d.get("total_recu")), PRECISION))
     for c in d["echeances_couvertes"] or []:
         out.add(round(flt(c.get("impute")), PRECISION))
         out.add(round(flt(c.get("montant")), PRECISION))
@@ -515,7 +546,8 @@ def _pour_le_modele(d: dict) -> dict:
         "mois", "libelle", "mois_suivant", "total_commandes", "totaux_commandes",
         "commandes_en_dette", "tiers", "bilan", "charges_libres",
         "total_charges", "solde_net", "ajustement", "echeancier_brut", "echeancier_corrige",
-        "paiements", "total_paiements", "echeances_couvertes", "total_couvert", "avance",
+        "paiements", "total_paiements", "paiements_entre_echeances", "total_recu",
+        "echeances_couvertes", "total_couvert", "avance",
         "avances_futures", "total_avances_futures", "report", "consolide")}
 
 
@@ -588,6 +620,23 @@ def rendre(d: dict, prose: dict = None) -> str:
                 L += ["   - %s : %s TND non encaissés sur %s TND%s"
                       % (c["sales_order"], montant(c.get("non_paye")), montant(c.get("total")),
                          " — %s" % modes if modes else "")]
+        # ⚠️ UNE COMMANDE DIMINUEE PAR LE BILAN DOIT LE DIRE ICI, SOUS LE TABLEAU QUI INTRIGUE.
+        # L'ecriture de bilan credite les Debiteurs en reference a la commande : une part du
+        # total n'est plus reclamee, sans qu'aucun encaissement n'existe. Sans cette phrase, le
+        # lecteur additionne Encaissé + Non payé, ne retombe pas sur le Total, et conclut a une
+        # erreur — juillet 2026 : 412,630 d'ecart muet sur SAL-ORD-2026-02304.
+        diminuees = [c for c in d["commandes"] if flt(c.get("diminue_bilan"))]
+        if diminuees:
+            L += ["",
+                  "- *Diminution par le bilan* : %d commande(s) ont une part absorbée par "
+                  "l’écriture de bilan d’activité — cette part n’est plus réclamée, elle est "
+                  "déduite par le bilan, pas encaissée." % len(diminuees)]
+            for c in diminuees:
+                pieces = ", ".join(c.get("pieces_bilan") or [])
+                L += ["   - %s : diminuée de %s TND sur %s TND%s"
+                      % (c["sales_order"], montant(c.get("diminue_bilan")),
+                         montant(c.get("total")),
+                         " — écriture %s" % pieces if pieces else "")]
     else:
         L += ["| (Aucune commande ce mois-ci) |", "|---|"]
     L += ["", "### Calcul Échéancier Brut", "",
@@ -660,6 +709,34 @@ def rendre(d: dict, prose: dict = None) -> str:
                        for p_ in d["paiements"]])
     else:
         L += ["| (Aucun paiement reçu ce mois-ci) |", "|---|"]
+
+    # Le meme argent, decoupe autrement : fenetre par fenetre entre deux echeances. Le tableau
+    # ci-dessus repond a « qu'a-t-on recu ce mois-ci ? », celui-ci a « qu'a-t-on recu entre deux
+    # echeances ? » — c'est la question que le partenaire pose a chaque date de versement.
+    fenetres = d.get("paiements_entre_echeances") or []
+    if fenetres:
+        L += ["", "### Paiements reçus entre les échéances", "",
+              "Chaque fenêtre court du lendemain de l’échéance précédente (la première part de "
+              "l’ancrage du %s) à l’échéance indiquée, incluse." % (d.get("depuis") or "")]
+        for f in fenetres:
+            if f.get("a"):
+                titre = "Du %s au %s — échéance du %s" % (f["de"], f["a"], f["a"])
+            elif any(w.get("a") for w in fenetres):
+                titre = "Depuis le %s — après la dernière échéance" % f["de"]
+            else:
+                # Aucune échéance au consolidé : « après la dernière échéance » mentirait.
+                titre = "Depuis le %s (ancrage)" % f["de"]
+            if not f.get("paiements"):
+                L += ["", "**%s** : aucun paiement reçu." % titre]
+                continue
+            L += ["", "**%s** — %d paiement(s), total %s TND :" % (
+                titre, len(f["paiements"]), montant(f["total"])), ""]
+            L += _tableau(["Référence", "Mode", "Montant (TND)", "Date"],
+                          [[p_.get("reference") or p_.get("payment_entry") or "",
+                            p_.get("mode") or "", montant(p_.get("montant")), p_.get("date") or ""]
+                           for p_ in f["paiements"]])
+        L += ["", "- *Total reçu depuis l’ancrage du %s* : %s TND"
+              % (d.get("depuis") or "", montant(d.get("total_recu")))]
 
     # 5 — consolide
     L += ["", "## 5. 📊 État Consolidé Final", "", "### Tableau État Consolidé", ""]
