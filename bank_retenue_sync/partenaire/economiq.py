@@ -86,19 +86,61 @@ def commandes(mois: str) -> list:
             fields=["name", "mode_of_payment", "paid_to", "posting_date", "reference_no"],
             limit_page_length=0)}
 
+    def _ligne(pe_nom: str, piece, montant: float, via: str = "") -> dict:
+        mode = piece.mode_of_payment or ""
+        paye = not (mode == MODE_PERTE
+                    or (mode == MODE_DETTE and (piece.paid_to or "") == COMPTE_DETTES))
+        return {"payment_entry": pe_nom, "montant": flt(montant, PRECISION),
+                "mode": mode, "compte": piece.paid_to or "", "paye": paye,
+                "date": str(piece.posting_date or ""), "via": via}
+
     reglements = defaultdict(list)
+    deja = defaultdict(set)     # commande -> PE deja comptees (par la reference directe)
     for r in refs:
         piece = pieces.get(r.parent)
         if not piece:
             continue
-        mode = piece.mode_of_payment or ""
-        paye = not (mode == MODE_PERTE
-                    or (mode == MODE_DETTE and (piece.paid_to or "") == COMPTE_DETTES))
-        reglements[r.reference_name].append({
-            "payment_entry": r.parent, "montant": flt(r.allocated_amount, PRECISION),
-            "mode": mode, "compte": piece.paid_to or "", "paye": paye,
-            "date": str(piece.posting_date or ""),
-        })
+        reglements[r.reference_name].append(_ligne(r.parent, piece, r.allocated_amount))
+        deja[r.reference_name].add(r.parent)
+
+    # ⚠️ UNE COMMANDE FACTUREE PERD SES REGLEMENTS. A la facturation (auto ou soumission d'un
+    # encaissement), la Payment Entry est REALLOUEE a la facture : la reference Sales Order
+    # disparait et la commande paraissait « non encaissee » a tort. Decision utilisateur
+    # 2026-08-20 : un paiement lie a la facture d'une commande compte comme encaisse sur la
+    # commande. Une facture peut couvrir PLUSIEURS commandes (facturation auto groupee) :
+    # l'allocation est repartie au prorata du poids des articles de chaque commande.
+    items = frappe.get_all("Sales Invoice Item",
+                           filters={"sales_order": ["in", noms], "docstatus": 1},
+                           fields=["parent", "sales_order", "amount"], limit_page_length=0)
+    if items:
+        poids = defaultdict(lambda: defaultdict(float))     # facture -> commande -> montant
+        for it in items:
+            poids[it.parent][it.sales_order] = flt(
+                poids[it.parent][it.sales_order] + flt(it.amount), PRECISION)
+        refs_fact = frappe.get_all("Payment Entry Reference",
+                                   filters={"reference_doctype": "Sales Invoice",
+                                            "reference_name": ["in", list(poids)],
+                                            "docstatus": 1},
+                                   fields=["parent", "reference_name", "allocated_amount"],
+                                   limit_page_length=0)
+        pieces_fact = {p.name: p for p in frappe.get_all(
+            "Payment Entry", filters={"name": ["in", list({r.parent for r in refs_fact})],
+                                      "docstatus": 1},
+            fields=["name", "mode_of_payment", "paid_to", "posting_date", "reference_no"],
+            limit_page_length=0)} if refs_fact else {}
+        for r in refs_fact:
+            piece = pieces_fact.get(r.parent)
+            if not piece:
+                continue
+            repartition = poids[r.reference_name]
+            total_poids = sum(repartition.values()) or 1.0
+            for so, part in repartition.items():
+                if r.parent in deja[so]:
+                    continue        # deja comptee par sa reference directe a la commande
+                montant = flt(flt(r.allocated_amount) * part / total_poids, PRECISION)
+                if montant:
+                    reglements[so].append(_ligne(r.parent, piece, montant,
+                                                 via=r.reference_name))
 
     out = []
     for o in ordres:
