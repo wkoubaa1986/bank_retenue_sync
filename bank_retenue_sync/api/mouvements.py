@@ -22,7 +22,7 @@ SETTINGS = "Bank Retenue Sync Settings"
 
 _FIELDS = ["name as cle", "date", "operation", "reference", "debit", "credit", "montant", "sens",
            "categorie", "regle", "groupe", "statut", "raison", "document_type", "document_name",
-           "montant_document", "ecart", "ignore_manuel", "ignore_motif", "note"]
+           "montant_document", "ecart", "ignore_manuel", "ignore_motif", "note", "reglement"]
 
 # En deca de ce seuil, un ecart est repute correspondre aux frais bancaires preleves a la source.
 SEUIL_ECART_DEFAUT = 5.0
@@ -395,3 +395,37 @@ def get_solde(date_max=None, capture=False) -> dict:
 
     out["projection"] = E.projection_ecart()
     return out
+
+
+@frappe.whitelist()
+def generer_descriptions(date_from=None, date_to=None) -> dict:
+    """Genere et FIGE sur chaque mouvement la description de ce qu'il a REELLEMENT paye
+    (client, facture, Total TTC, montant alloue, bordereau / n° de cheque, contrat...).
+
+    C'est la meme logique que la colonne « Règlement » de la Facturation mensuelle
+    (facturation/reglement.py), mais PERSISTEE dans le champ `reglement` du registre :
+    visible sur la fiche du mouvement, dans les listes et les exports, sans recalcul.
+
+    Idempotent et rejouable : une piece saisie apres coup enrichit le mouvement au
+    passage suivant ; seul un texte qui CHANGE est reecrit (update_modified=False —
+    la description est un derive, pas une modification du mouvement)."""
+    _guard(write=True)
+    frappe.only_for("System Manager")
+    from bank_retenue_sync.facturation import reglement
+
+    filters, _ignore = _filters(date_from=date_from, date_to=date_to)
+    lignes = frappe.db.get_all(DOCTYPE, filters=filters, fields=_FIELDS + ["reglement as reglement_fige"],
+                               order_by="`date` asc", limit_page_length=0)
+    details = reglement.details_par_mouvement(lignes)
+    maj = 0
+    for l in lignes:
+        detail = details.get(l["cle"])
+        texte = reglement.texte(detail) if detail else ""
+        if (l.get("reglement_fige") or "") != texte:
+            frappe.db.set_value(DOCTYPE, l["cle"], "reglement", texte,
+                                update_modified=False)
+            maj += 1
+    frappe.db.commit()
+    return {"mouvements": len(lignes),
+            "decrits": sum(1 for l in lignes if details.get(l["cle"])),
+            "maj": maj}

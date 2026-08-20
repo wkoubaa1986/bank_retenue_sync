@@ -187,6 +187,7 @@ class IdentificationBancaire {
       "refresh"
     );
     this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
+    this.page.add_menu_item(__("Générer les règlements"), () => this._reglements());
     this.page.add_menu_item(__("Rafraîchir l'export bancaire"), () => this._rafraichir());
     this.page.add_menu_item(__("Exporter en Excel"), () => this._excel());
     this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
@@ -1067,6 +1068,7 @@ class IdentificationBancaire {
         ${this._th("categorie", "Catégorie")}
         ${this._th("statut", "Statut")}
         <th>Document</th>
+        <th title="Ce que le mouvement a réellement payé : client, facture, TTC, alloué, bordereau/chèque. Se génère par le menu « Générer les règlements ».">Règlement</th>
         <th>Raison</th>
         <th></th>
       </tr>`;
@@ -1119,6 +1121,9 @@ class IdentificationBancaire {
       IB_STATUT_LABEL[r.statut] || r.statut || ""
     )}</span></td>
         <td>${doc}</td>
+        <td class="raison" style="white-space:pre-line;font-size:11px;max-width:260px">${esc(
+      r.reglement || ""
+    )}</td>
         <td class="raison">${esc(r.raison || r.ignore_motif || "")}</td>
         <td>${this._actions_cell(r)}</td>
       </tr>`;
@@ -1180,6 +1185,29 @@ class IdentificationBancaire {
   }
 
   // ------------------------------------------------------------------ actions
+
+  /** Génère et fige la colonne Règlement (client · facture · TTC · alloué · bordereau/chèque)
+      pour tous les mouvements de la période filtrée — même logique que l'onglet Banque de la
+      Facturation mensuelle, mais persistée sur le registre. */
+  async _reglements() {
+    const f = this._filters();
+    const r = await frappe.call({
+      method: this._m("generer_descriptions"),
+      args: { date_from: f.date_from || null, date_to: f.date_to || null },
+      freeze: true,
+      freeze_message: __("Description des règlements…"),
+    });
+    const m = r.message || {};
+    frappe.show_alert({
+      message: __("{0} mouvement(s), {1} décrits, {2} mis à jour", [
+        m.mouvements || 0,
+        m.decrits || 0,
+        m.maj || 0,
+      ]),
+      indicator: "green",
+    });
+    this.load();
+  }
 
   async _reclassifier() {
     const f = this._filters();

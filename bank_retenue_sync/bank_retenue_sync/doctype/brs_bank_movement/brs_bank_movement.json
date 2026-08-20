@@ -30,6 +30,7 @@
   "document_name",
   "montant_document",
   "ecart",
+  "reglement",
   "ignore_manuel",
   "ignore_motif",
   "note",
@@ -263,11 +264,18 @@
    "label": "Ecart de paiement",
    "precision": "3",
    "read_only": 1
+  },
+  {
+   "description": "Ce que le mouvement a paye : client, facture, TTC, alloue, bordereau/cheque. Genere par api.mouvements.generer_descriptions (bouton de la page Identification bancaire).",
+   "fieldname": "reglement",
+   "fieldtype": "Small Text",
+   "label": "Règlement",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-08 10:00:00.000000",
+ "modified": "2026-08-20 03:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Bank Movement",
