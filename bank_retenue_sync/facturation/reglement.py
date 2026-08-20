@@ -51,8 +51,14 @@ def details_par_mouvement(mouvements: list) -> dict:
     """
     par_piece = details_par_piece(
         [(m.get("document_type"), m.get("document_name")) for m in mouvements or []])
+    # ⚠️ « SANS NOM » NE SUFFIT PLUS. Le registre nomme desormais l'Encaissement Paiement dans
+    # `document_name` — or un nom d'ENC ne dit toujours pas QUI a paye QUELLES factures :
+    # `details_par_piece` ne couvre que PE et JE, et ces mouvements restaient sans description
+    # (constate le 20/08 sur la Facturation mensuelle : « — » sur toutes les remises). On
+    # descend donc au bordereau pour TOUT mouvement rattache a un encaissement, nomme ou pas.
     sans_nom = _encaissements([m for m in mouvements or []
-                               if not m.get("document_name") and m.get("document_type")])
+                               if (not m.get("document_name") and m.get("document_type"))
+                               or m.get("document_type") == "Encaissement Paiement"])
     contrats = _contrats_du_releve(mouvements)
 
     out = {}
@@ -275,6 +281,10 @@ def _encaissements(mouvements: list) -> dict:
 
         bordereau = (par_flux.get(flux_du_mouvement) or {}).get(cle_bancaire) \
             if flux_du_mouvement else None
+        # Le registre nomme deja le bordereau : autant le garder quand l'index des cles ne le
+        # retrouve pas (bon de remise plus liste au portail, cle recyclee...).
+        if not bordereau and m.get("document_type") == "Encaissement Paiement":
+            bordereau = m.get("document_name")
 
         if not lignes and not bordereau:
             continue
