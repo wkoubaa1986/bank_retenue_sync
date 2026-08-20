@@ -363,6 +363,25 @@ def avant_validation(doc, method=None):
             frappe.log_error(title="Extraction facture achat %s" % doc.name,
                              message=frappe.get_traceback())
 
+    # ⚠️ LA DATE S'ALIGNE AUSSI ICI, ET C'EST INDISPENSABLE. `a_l_enregistrement`
+    # ne tourne que sur un BROUILLON (`docstatus != 0` -> il sort) : une date
+    # fournisseur saisie juste avant de valider, ou arrivee apres le premier
+    # enregistrement, n'etait donc JAMAIS suivie — la facture partait avec la date
+    # du jour. Vu le 20/08/2026 sur ACC-PINV-2026-00095 (facture du 29/07,
+    # comptabilisee au 20/08, `set_posting_time` reste a 0, preuve que
+    # l'alignement n'avait pas eu lieu). Meme fonction, memes garde-fous : une
+    # date invraisemblable est toujours ecartee.
+    dates = aligner_dates(doc)
+    if dates.get("statut") == "aligne":
+        frappe.msgprint(_("Date de comptabilisation alignée sur la facture fournisseur : "
+                          "{0} au lieu de {1}.").format(dates["apres"], dates["avant"]),
+                        indicator="blue", alert=True)
+    elif dates.get("statut") == "ecartee":
+        frappe.msgprint(_("Date de comptabilisation LAISSÉE au {0} : la date fournisseur ({1}) "
+                          "en est trop éloignée pour être suivie sans relecture.").format(
+                              dates["posting_date"], dates["bill_date"]),
+                        indicator="orange", alert=True)
+
     refus = regles.bloquants(facture, pieces, extraction, *_seuils())
     if refus:
         frappe.throw(_("Facture d'achat locale :<br>• {0}").format(
