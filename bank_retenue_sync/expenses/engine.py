@@ -174,6 +174,20 @@ def _deja_comptabilise(row: dict, m: dict, reference_je: str, context) -> str:
     mode = row.get("idempotence") or "Les deux"
     ref_banque = (m.get("reference") or "").strip().upper()
 
+    # ⚠️ LE REGISTRE FAIT FOI AVANT TOUT INDEX. Un mouvement deja RATTACHE a une piece
+    # (classification « Identifié », document_name pose) est deja comptabilise — meme si la
+    # piece ne porte ni la reference bancaire ni le cheque_no du gabarit, cas de toute saisie
+    # anterieure au registre. Le 20/08/2026, le backfill d'avril a fait recomptabiliser deux
+    # recharges de carte Total (ACC-JV-2026-00612/00613) que le registre savait pourtant deja
+    # liees aux JV d'avril : 500 DT de doublons sur la banque.
+    if ref_banque:
+        lie = frappe.db.get_value(
+            "BRS Bank Movement",
+            {"reference": ref_banque, "document_name": ["is", "set"]},
+            "document_name")
+        if lie:
+            return lie
+
     if mode in ("Les deux", "Reference bancaire") and ref_banque and context:
         noms = (context.je_par_reference or {}).get(ref_banque) or []
         if noms:
