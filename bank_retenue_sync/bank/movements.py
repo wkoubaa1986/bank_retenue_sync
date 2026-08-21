@@ -194,10 +194,55 @@ def wait_job(job_id: str, timeout: int = 900, interval: int = 5) -> dict:
         time.sleep(interval)
 
 
+# Plafond de l'extension vers le futur : les dates de valeur bancaires portent a quelques jours
+# ouvres, jamais plus. Au-dela, l'horizon lu serait une donnee aberrante, pas une information.
+_HORIZON_MAX_JOURS = 7
+
+
+def _horizon_portail():
+    """Date de la derniere operation ANNONCEE par le portail (lue sur les captures de solde),
+    None si inconnue. C'est la seule source qui voit les operations a date de valeur FUTURE."""
+    try:
+        return frappe.db.get_value("BRS Solde Bancaire", {}, "max(derniere_operation)")
+    except Exception:
+        return None
+
+
+def _fenetre_export(lookback_days: int, horizon=None, aujourd_hui=None) -> tuple:
+    """[date_from, date_to] de l'export.
+
+    `date_to` = aujourd'hui — ETENDU jusqu'a l'horizon du portail quand il est FUTUR. Cas reel
+    du 22/08/2026 (un samedi) : la banque poste « COMMISSION TAWASSOL » et sa TVA avec une date
+    de valeur au LUNDI 24/08. Son solde les deduit DEJA, mais l'export borne a aujourd'hui ne
+    les voyait pas → ecart banque/ERPNext gonfle de 11,9 DT tout le week-end.
+
+    POURQUOI C'EST SANS DANGER : le risque historique d'une fenetre touchant le futur est la
+    tranche VIDE qui tue le bot (« Timeout waiting for download »). Ici l'extension n'a lieu QUE
+    quand la capture du solde annonce des operations jusqu'a cette date — le portail lui-meme
+    garantit la tranche non vide. Et l'horizon est plafonne (`_HORIZON_MAX_JOURS`) contre une
+    date aberrante.
+
+    LA LARGEUR NE CHANGE PAS : lookback_days reste tel quel, la fenetre GLISSE vers l'avant
+    ([11/08 → 24/08] au lieu de [09/08 → 22/08]) — toujours 7n jours pleins, decoupage du
+    service sans residu. Les jours perdus a l'arriere sont deja au registre, qui cumule.
+    """
+    aujourd_hui = aujourd_hui or date.today()
+    date_to = aujourd_hui
+    if horizon:
+        try:
+            horizon = frappe.utils.getdate(horizon)
+        except Exception:
+            horizon = None
+        if horizon and horizon > date_to:
+            date_to = min(horizon, aujourd_hui + timedelta(days=_HORIZON_MAX_JOURS))
+    return date_to - timedelta(days=lookback_days), date_to
+
+
 def export_movements(lookback_days: int, timeout: int = 900) -> dict:
-    """Un export de mouvements sur [today - lookback_days, today], attendu jusqu'a son terme."""
-    date_to = date.today()
-    date_from = date_to - timedelta(days=lookback_days)
+    """Un export de mouvements sur [date_to - lookback_days, date_to], attendu jusqu'a son
+    terme — `date_to` vaut aujourd'hui, ou l'horizon du portail s'il annonce des operations a
+    date de valeur future (cf. `_fenetre_export`)."""
+    date_from, date_to = _fenetre_export(lookback_days, _horizon_portail())
     job_id = start_job("/jobs/banque/mouvements/export", {
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),

@@ -48,6 +48,36 @@ class TestOrdreDesFenetres(unittest.TestCase):
         self.assertEqual(set(mv._ordered_windows(date.today())), set(mv._EXPORT_WINDOWS))
 
 
+class TestFenetreExportHorizon(unittest.TestCase):
+    """La fenetre d'export s'etend jusqu'a l'horizon du portail quand il est FUTUR (cas reel
+    22/08 : commission Tawassol + TVA a date de valeur du lundi 24/08, deduites du solde mais
+    invisibles a un export borne a aujourd'hui). La fenetre GLISSE, sa largeur 7n ne change pas
+    — et l'extension n'a lieu que si le portail annonce des operations, donc tranche non vide."""
+
+    AUJOURD_HUI = date(2026, 8, 22)      # un samedi
+
+    def test_sans_horizon_la_fenetre_finit_aujourd_hui(self):
+        date_from, date_to = mv._fenetre_export(13, None, self.AUJOURD_HUI)
+        self.assertEqual((str(date_from), str(date_to)), ("2026-08-09", "2026-08-22"))
+
+    def test_horizon_futur_fait_glisser_la_fenetre(self):
+        date_from, date_to = mv._fenetre_export(13, date(2026, 8, 24), self.AUJOURD_HUI)
+        self.assertEqual((str(date_from), str(date_to)), ("2026-08-11", "2026-08-24"))
+        self.assertEqual((date_to - date_from).days, 13)     # largeur intacte : 14 jours pleins
+
+    def test_horizon_passe_ne_change_rien(self):
+        _, date_to = mv._fenetre_export(13, date(2026, 8, 20), self.AUJOURD_HUI)
+        self.assertEqual(str(date_to), "2026-08-22")
+
+    def test_horizon_aberrant_est_plafonne(self):
+        _, date_to = mv._fenetre_export(13, date(2027, 1, 1), self.AUJOURD_HUI)
+        self.assertEqual(str(date_to), "2026-08-29")         # aujourd'hui + 7, pas 2027
+
+    def test_horizon_illisible_ne_plante_pas(self):
+        _, date_to = mv._fenetre_export(13, "n'importe quoi", self.AUJOURD_HUI)
+        self.assertEqual(str(date_to), "2026-08-22")
+
+
 class TestKillScheduler(unittest.TestCase):
     """Le timeout rq doit remonter ; les erreurs applicatives restent des diagnostics."""
 
