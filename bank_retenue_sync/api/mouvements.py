@@ -394,6 +394,13 @@ def get_solde(date_max=None, capture=False) -> dict:
     from bank_retenue_sync.bank import ecarts as E
 
     out["projection"] = E.projection_ecart()
+    # Solde CALCULE : derniere capture + net du registre depuis sa derniere operation. Sert la
+    # continuite quand la capture est en panne — le registre, lui, continue d'arriver. La page
+    # ne l'affiche que s'il apporte quelque chose (mouvements posterieurs a la capture).
+    try:
+        out["derive"] = S.solde_derive(date_max=date_max)
+    except Exception:
+        out["derive"] = None
     return out
 
 

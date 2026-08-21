@@ -23,19 +23,23 @@ required_apps = ["erpnext"]
 # ---------------------------------------------------------------------------
 scheduler_events = {
     "cron": {
-        # CINQ VERIFICATIONS BANCAIRES PAR JOUR, aux heures ouvrables. Chacune est complete :
-        # nouvel export, capture du solde, identification, puis — si du nouveau est importe —
-        # les creations declenchees par le releve (brouillons d'ENCAISSEMENT a soumission
+        # SEPT VERIFICATIONS BANCAIRES PAR JOUR (5h et 7h ajoutees le 2026-08-21 a la demande
+        # de l'utilisateur — les depots de la veille au soir sont traites des l'aube).
+        # Chacune est complete : nouvel export, capture du solde, identification, puis les
+        # creations declenchees par le releve (brouillons d'ENCAISSEMENT a soumission
         # humaine, versements d'especes, declaration fiscale et CNSS verifies par l'email du
         # comptable, depenses recurrentes actives, echeances de contrats, reglement des dettes
         # Aramex/honoraire au virement emis) et l'ecriture mensuelle de frais. L'ecriture etant
-        # CUMULATIVE et recalculee depuis zero, cinq passages ne produisent qu'une seule
-        # ecriture par mois, toujours a jour.
-        "0 9,11,13,15,17 * * *": ["bank_retenue_sync.tasks.daily.verification_bancaire"],
-        # Factures recues par EMAIL (Total, Aramex, note d'honoraire) : lues et comptabilisees
-        # avant la premiere verification bancaire, pour que la dette fournisseur existe deja
-        # quand le prelevement paraitra au releve.
-        "0 8 * * *": ["bank_retenue_sync.tasks.daily.factures_email"],
+        # CUMULATIVE et recalculee depuis zero, sept passages ne produisent qu'une seule
+        # ecriture par mois, toujours a jour. Le tick ne fait que METTRE EN FILE le travail
+        # (queue longue, dedup par job_id) : deux passages ne s'empilent jamais.
+        "0 5,7,9,11,13,15,17 * * *": ["bank_retenue_sync.tasks.daily.verification_bancaire"],
+        # Factures recues par EMAIL (Total, Aramex, note d'honoraire) : CINQ passages par jour a
+        # partir de 8h (demande utilisateur 2026-08-21). L'ingestion est idempotente (reference
+        # periodisee), relire la boite ne cree jamais deux fois. Les passages banque de 5h et 7h
+        # peuvent voir un prelevement AVANT la facture email du jour : sans piece, ils ne creent
+        # rien et le passage suivant rattrape — c'est le fonctionnement nominal, pas un defaut.
+        "0 8,10,12,14,16 * * *": ["bank_retenue_sync.tasks.daily.factures_email"],
         # Les depenses a date fixe sont creees TOT, avant la banque : c'est tout leur interet.
         # Salaires (2 j avant la fin du mois), loyer (le 15, un mois sur deux), honoraire
         # comptable (le 25). Elles anticipent le prelevement au lieu de le subir.
@@ -45,14 +49,19 @@ scheduler_events = {
         # Carte technologique : son releve est un flux a part, la carte n'etant pas la banque.
         "40 9 * * *": ["bank_retenue_sync.tasks.daily.paiements_carte"],
         # Certificats de retenue a la source : le portail TEJ est alimente par nos clients, pas
-        # par nous. Un passage par jour, avant les factures email, suffit largement.
-        "20 7 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras"],
-        # Depots de certificats EMIS en attente d'analyse chez TEJ. Trois passages : un depot
-        # soumis le matin doit devenir un PDF remis au fournisseur dans la journee, pas le
-        # lendemain. L'appel est court et en LECTURE SEULE — il ne resoumet jamais rien — et les
-        # heures sont decalees de celles de la banque pour ne pas se disputer le worker unique
-        # du service, qui pilote un navigateur.
-        "10 10,14,18 * * *": ["bank_retenue_sync.tasks.daily.depots_tej"],
+        # par nous. TROIS passages par jour (demande utilisateur 2026-08-21), aux minutes :20
+        # dans les CREUX entre les passages banque (heures pile) et les depots TEJ (:10) — le
+        # service n'a qu'un worker navigateur, les jobs se font la queue, pas la guerre.
+        # L'empreinte du fichier coupe court si le portail n'a pas bouge depuis le passage
+        # precedent ; seul le rapprochement est rejoue, et il est bon marche.
+        "20 7,12,16 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras"],
+        # Depots de certificats EMIS en attente d'analyse chez TEJ. CINQ passages (12h10 et
+        # 16h10 ajoutes le 2026-08-21 a la demande de l'utilisateur) : un depot soumis le matin
+        # doit devenir un PDF remis au fournisseur dans la journee, pas le lendemain. L'appel
+        # est court et en LECTURE SEULE — il ne resoumet jamais rien — et les heures :10 sont
+        # decalees de la banque (heures pile) et des certificats recus (:20) pour ne pas se
+        # disputer le worker unique du service, qui pilote un navigateur.
+        "10 10,12,14,16,18 * * *": ["bank_retenue_sync.tasks.daily.depots_tej"],
         "35 9 * * *": ["bank_retenue_sync.tasks.daily.contrats_financement"],
         # Confirmation des ordres : en fin de journee, une fois les cinq passages faits.
         "30 17 * * *": ["bank_retenue_sync.tasks.daily.confirmation_ordres"],

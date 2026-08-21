@@ -4,6 +4,10 @@ Chaque tache est gardee par le coupe-circuit `Bank Retenue Sync Settings.enabled
 try/except global et journalisee : un incident cote service bancaire ne doit jamais faire echouer
 le scheduler du site.
 
+Les taches qui pilotent un navigateur via tej-bank-service (verification bancaire, factures
+email, carte, certificats RAS) sont en DEUX temps : le tick planifie (`<nom>`) met le vrai
+travail (`<nom>_job`) en file sur la queue `long` — cf. `_dispatch` pour le pourquoi.
+
 Aucune tache ne SOUMET quoi que ce soit. Les ecritures restent en brouillon tant que
 `auto_submit_journal_entries` n'est pas coche.
 """
@@ -32,6 +36,28 @@ def _safe(nom, fn):
         return None
 
 
+def _dispatch(nom: str, timeout: int = 3600):
+    """Le tick du scheduler ne fait que METTRE EN FILE le vrai travail, sur la queue `long`.
+
+    POURQUOI : les jobs de frequence « Cron » partent sur la queue default de Frappe, tuee a
+    300 s (`ScheduledJobType.get_queue_name` ne reserve la queue long qu'aux frequences
+    « Long »/« Maintenance »). Or un passage bancaire complet pilote un navigateur a travers
+    tej-bank-service : plusieurs minutes des que le portail rame. Constate en prod le
+    2026-08-21 : TOUS les passages du jour tues en plein vol (« Task exceeded maximum timeout
+    value (300 seconds) »), import parfois commite mais classification et creations jamais
+    atteintes. Le tick, lui, revient en quelques millisecondes.
+
+    `job_id` + `deduplicate` : un passage encore en cours ou deja en file n'est pas double par
+    le tick suivant — cinq crons par jour ne peuvent pas s'empiler quand la banque est lente.
+    """
+    if not _enabled():
+        return None
+    frappe.enqueue("bank_retenue_sync.tasks.daily." + nom + "_job",
+                   queue="long", timeout=timeout,
+                   job_id="brs-" + nom, deduplicate=True)
+    return "en file (long)"
+
+
 def factures_email():
     """Factures recues par email : Total, Aramex, note d'honoraire comptable.
 
@@ -40,6 +66,10 @@ def factures_email():
     qui devrait deviner ces composantes. L'idempotence tient au numero de reference periodise
     (« Facture Aramex MM-YYYY »), donc relire la meme boite ne cree rien deux fois.
     """
+    return _dispatch("factures_email")
+
+
+def factures_email_job():
     from bank_retenue_sync import orchestrator
 
     return _safe("factures_email", lambda: orchestrator.run_email_ingestion())
@@ -52,6 +82,10 @@ def paiements_carte():
     par vagues de quelques lignes. L'idempotence tient au numero de paiement, donc un passage
     supplementaire ne cree jamais de doublon.
     """
+    return _dispatch("paiements_carte")
+
+
+def paiements_carte_job():
     from bank_retenue_sync import orchestrator
 
     return _safe("paiements_carte", lambda: orchestrator.run_cartes())
@@ -65,6 +99,10 @@ def verification_bancaire():
     l'ecriture mensuelle de frais est recalculee depuis zero puis refaite seulement si son total
     a change. Un passage sans nouveaute ne laisse aucune trace comptable.
     """
+    return _dispatch("verification_bancaire")
+
+
+def verification_bancaire_job():
     from bank_retenue_sync import orchestrator
 
     return _safe("verification_bancaire", lambda: orchestrator.run_verification_bancaire())
@@ -132,6 +170,10 @@ def certificats_ras():
     celui de la veille s'arrete avant tout traitement. Le rapprochement, lui, est rejoue a chaque
     passage : une facture saisie hier peut expliquer un certificat d'avant-hier.
     """
+    return _dispatch("certificats_ras")
+
+
+def certificats_ras_job():
     from bank_retenue_sync import orchestrator
 
     return _safe("certificats_ras", lambda: orchestrator.run_certificats_ras())

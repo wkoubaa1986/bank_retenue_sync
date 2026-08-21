@@ -14,6 +14,8 @@
   "column_break_service",
   "webhook_user",
   "enable_request_log",
+  "derniere_synchro_bancaire",
+  "alerte_synchro_envoyee",
   "section_secrets",
   "push_secret",
   "column_break_secrets",
@@ -124,6 +126,19 @@
    "fieldname": "enable_request_log",
    "fieldtype": "Check",
    "label": "Journaliser les appels sortants"
+  },
+  {
+   "fieldname": "derniere_synchro_bancaire",
+   "fieldtype": "Datetime",
+   "label": "Derniere synchro bancaire reussie",
+   "read_only": 1,
+   "description": "Dernier export de mouvements reussi. Mis a jour par la verification bancaire ; sert de base a l'alerte de panne."
+  },
+  {
+   "fieldname": "alerte_synchro_envoyee",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Alerte synchro envoyee"
   },
   {
    "fieldname": "section_secrets",

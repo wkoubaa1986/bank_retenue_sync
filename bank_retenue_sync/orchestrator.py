@@ -131,6 +131,42 @@ def _periode_debut_gestion() -> str:
         return ""
 
 
+def _movements_geres(movements) -> list:
+    """Ecarte les mouvements ANTERIEURS au debut de gestion (`periode_debut_gestion`).
+
+    POUR LES FLUX QUI CREENT DES PIECES — jamais pour la classification, qui doit continuer de
+    montrer tout l'historique. Les mois anterieurs au plancher sont equilibres A LA MAIN (ecart
+    d'ouverture accepte au 01/07/2026) : y creer une piece detruit un equilibre deja arbitre.
+
+    Cas reel du 2026-08-21 : un backfill fait entrer au registre un versement d'especes du
+    31/03 ; le flux especes, aveugle au plancher, cree `ACC-JV-2026-00621` (1 150 DT) date de
+    MARS — en dev ET en prod, chacun par son propre run. La mecanique etait juste (caisse
+    couverte, aucun doublon), mais l'ecriture est fausse PAR CONSTRUCTION : la periode
+    n'appartient pas a l'app. Seuls les frais mensuels et les depenses email respectaient le
+    plancher ; ce filtre l'impose a tous les flux de creation.
+    """
+    debut = _periode_debut_gestion()
+    if not debut:
+        return movements
+    try:
+        plancher = frappe.utils.getdate(debut + "-01")
+    except Exception:
+        return movements
+    return [m for m in (movements or [])
+            if m.get("date") and frappe.utils.getdate(m["date"]) >= plancher]
+
+
+def _recharge_carte_importee(depuis) -> bool:
+    """True si le run en cours a importe un CHARGEMENT de la carte technologique.
+
+    `premiere_vue >= depuis` et non les `cles` de l'upsert : celles-ci contiennent aussi les
+    mouvements simplement REVUS — une vieille recharge re-vue a chaque export redeclencherait
+    la carte cinq fois par jour pour rien. La regle `chargement_carte` est posee par la
+    classification, qui tourne dans le meme passage, avant cet appel."""
+    return bool(frappe.db.exists("BRS Bank Movement", {
+        "regle": "chargement_carte", "premiere_vue": [">=", depuis]}))
+
+
 def _hors_perimetre(periode: str, depuis: str) -> bool:
     """`periode` ('YYYY-MM') est-elle anterieure au plancher `depuis` ?
 
@@ -199,11 +235,27 @@ def _ensure_fresh_bank_data(diagnostics: list = None, lookback_days: int = None)
         try:
             fn()
         except Exception as e:
+            # Le kill du scheduler (JobTimeoutException) N'EST PAS un incident du service : le
+            # ravaler ici laissait le job continuer dans un worker deja condamne (constate en
+            # prod le 2026-08-21 : « refresh mouvements echoue | Task exceeded maximum timeout »
+            # puis import a 13:06 dans un horse mort). On le laisse remonter pour que rq
+            # constate l'echec proprement.
+            if _est_kill_scheduler(e):
+                raise
             ok = False
             if diagnostics is not None:
                 diagnostics.append({"type": "refresh", "source": label, "reason": str(e)[:160]})
             frappe.log_error(f"bank_retenue_sync : refresh {label} echoue\n{e}", "brs refresh")
     return ok
+
+
+def _est_kill_scheduler(e: Exception) -> bool:
+    """True si l'exception est le timeout d'un job rq (kill), pas une erreur applicative."""
+    try:
+        from rq.timeouts import BaseTimeoutException
+        return isinstance(e, BaseTimeoutException)
+    except ImportError:
+        return False
 
 
 def _mmyyyy(period: str) -> str:
@@ -366,7 +418,8 @@ def process_declarations(insert: bool = True, movements: list = None):
     from bank_retenue_sync.bank import registry
 
     out = []
-    movements = movements if movements is not None else registry.registry_as_movements()
+    movements = _movements_geres(
+        movements if movements is not None else registry.registry_as_movements())
     comptable_msgs = mail_config.fetch("comptable_declaration")
     for mov in find_debits_by_keywords(["PRELEVEMENT", "FINANCES"], movements=movements):
         period = _prev_month(str(mov["date"]))            # decl. payee le mois suivant
@@ -404,7 +457,8 @@ def process_cnss(insert: bool = True, movements: list = None):
     from bank_retenue_sync.bank import registry
 
     out = []
-    movements = movements if movements is not None else registry.registry_as_movements()
+    movements = _movements_geres(
+        movements if movements is not None else registry.registry_as_movements())
     comptable_msgs = mail_config.fetch("comptable_cnss")
     for mov in find_debits_by_keywords(["PRELEVEMENT", "CNSS"], movements=movements):
         quarter = journal.cnss_quarter_label(mov["date"])
@@ -463,7 +517,7 @@ def process_encaissements(insert=True, refresh=True, use_ai=True, movements=None
     # mois reste rapprochable. `movements=` permet d'injecter une liste (tests, rejeu cible).
     if movements is None:
         from bank_retenue_sync.bank import registry as _reg
-        movements = _reg.registry_as_movements() or fetch_latest_movements()
+        movements = _movements_geres(_reg.registry_as_movements() or fetch_latest_movements())
     asof = mv.movements_asof(movements)
     out["bank_data_asof"] = asof.isoformat() if asof else None
     out["bank_stale"] = mv.is_stale(movements)
@@ -586,7 +640,7 @@ def process_versements_especes(insert=True, annotate=True, refresh=False):
     # bout en bout (reference deja portee -> `reference`, ecriture existante -> au pire une
     # annotation deja presente ignoree), donc rejouable a chaque verification.
     from bank_retenue_sync.bank import registry as _reg
-    movements = _reg.registry_as_movements() or fetch_latest_movements()
+    movements = _movements_geres(_reg.registry_as_movements() or fetch_latest_movements())
     depots = [m for m in movements if especes.is_versement_espece(m)]
     # Un 'VERSEMENT ESPECES' peut aussi etre un client reglant en liquide au guichet : dans ce cas
     # une Payment Entry porte deja la reference, et il n'y a pas de mouvement de caisse a saisir.
@@ -666,7 +720,7 @@ def run_depenses_recurrentes(insert=True, only=None):
     from bank_retenue_sync.bank import classify, registry
     from bank_retenue_sync.expenses import engine
 
-    movements = registry.registry_as_movements()
+    movements = _movements_geres(registry.registry_as_movements())
     context = classify.build_context(movements)
     res = engine.process_all_rules(movements, context=context,
                                    insert=frappe.utils.cint(insert), only=only)
@@ -737,28 +791,44 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
     from bank_retenue_sync.bank import registry, solde as S
     from bank_retenue_sync.expenses import fees, reglement
 
+    debut_run = frappe.utils.now_datetime()
     out = run_identification(refresh=True)
 
     if frappe.utils.cint(capture_solde):
         try:
             out["solde"] = S.capturer_solde()
         except Exception as e:
+            if _est_kill_scheduler(e):
+                raise
             # Un solde illisible ne doit jamais faire perdre l'import ni la classification :
-            # ce sont eux qui portent le travail de la journee.
-            out["solde"] = {"erreur": str(e)[:200]}
+            # ce sont eux qui portent le travail de la journee. Et capture en panne n'est pas
+            # solde perdu : si l'export des mouvements est passe, le solde du jour se DEDUIT de
+            # la derniere capture + le net du registre depuis sa derniere operation.
+            derive = None
+            try:
+                derive = S.solde_derive()
+            except Exception:
+                pass
+            out["solde"] = {"erreur": str(e)[:200], "derive": derive}
 
-    # Decision utilisateur 2026-08-18 : quand la verification importe DU NOUVEAU, elle enchaine
-    # elle-meme les creations declenchees par le releve — brouillons d'ENCAISSEMENT
-    # (cheques/traites/aramex/virements), versements d'especes, depenses recurrentes actives,
-    # echeances de contrats.
-    # Tout est idempotent (cles bancaires consommees, idempotence par reference, appariement
-    # d'echeances) : un passage sans nouveaute ne cree rien. La SOUMISSION des encaissements
-    # reste humaine — before_submit bloque tant que des ecarts sont a resoudre. `refresh=False`
-    # partout : `run_identification(refresh=True)` vient de rafraichir mouvements ET bordereaux.
+    # Decision utilisateur 2026-08-18 : la verification enchaine elle-meme les creations
+    # declenchees par le releve — brouillons d'ENCAISSEMENT (cheques/traites/aramex/virements),
+    # versements d'especes, depenses recurrentes actives, echeances de contrats.
+    # ⚠️ SANS CONDITION sur `crees` (correctif du 2026-08-21). L'ancienne garde `if out.get
+    # ("crees")` supposait que tout mouvement nouveau arrivait PAR CE RUN. Faux en pratique :
+    # un rafraichissement manuel depuis la page (qui classe mais ne cree jamais) ou un run tue
+    # en plein vol laisse des mouvements au registre qu'aucun passage suivant ne traite — cas
+    # reel du virement SPH Khamsa (1 812,700 DT, FT26232TQ2GZ) importe le 20/08 a 20h08 et reste
+    # orphelin alors que la dette existait. Le registre fait foi : chaque passage tente les
+    # creations, et l'idempotence (cles bancaires consommees — brouillons compris —, idempotence
+    # par reference, appariement d'echeances) garantit qu'un passage sans nouveaute ne cree rien.
+    # La SOUMISSION des encaissements reste humaine — before_submit bloque tant que des ecarts
+    # sont a resoudre. `refresh=False` partout : le refresh vient d'etre tente ci-dessus, et son
+    # echec n'est pas une raison de laisser dormir le registre.
     # Chaque etape est isolee : son echec n'empeche ni les suivantes ni l'ecriture de frais.
     out["encaissements"] = out["depenses"] = out["contrats"] = out["especes"] = None
     out["declarations"] = out["cnss"] = out["reglements"] = None
-    if out.get("crees"):
+    if frappe.db.count("BRS Bank Movement"):     # registre vide = rien a creer, pas d'exception
         try:
             out["encaissements"] = process_encaissements(insert=True, refresh=False)
             # Decision utilisateur 2026-08-18 (2e volet) : si l'option « validation automatique »
@@ -787,7 +857,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
                         # il lit le registre (a jour) et ses ambiguites sont refusees, donc
                         # rejouable a chaque passage. N'etait atteignable que par run_all().
                         ("reglements", lambda: reglement.process_reglements(
-                            registry.registry_as_movements(), insert=True))):
+                            _movements_geres(registry.registry_as_movements()), insert=True))):
             try:
                 out[cle] = fn()
             except Exception as e:
@@ -801,11 +871,111 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
         except Exception as e:
             out["reclassification"] = {"erreur": str(e)[:200]}
 
+    # Decision utilisateur 2026-08-21 : un CHARGEMENT de la carte technologique detecte au
+    # releve declenche IMMEDIATEMENT la mise a jour de la carte (releve carte + ecritures de
+    # ses paiements), au lieu d'attendre le cron dedie de 9h40. La recharge n'arrive jamais par
+    # hasard : elle repond a des paiements en attente sur la carte — c'est donc le moment exact
+    # ou son releve a du nouveau. `run_cartes` est idempotent (numero de paiement) : au pire le
+    # releve carte n'a pas encore bouge et le passage ne cree rien.
+    out["carte"] = None
+    if _recharge_carte_importee(debut_run):
+        try:
+            out["carte"] = run_cartes(insert=True, refresh=True)
+        except Exception as e:
+            if _est_kill_scheduler(e):
+                raise
+            out["carte"] = {"erreur": str(e)[:200]}
+
+    # Meme logique que l'etape 4 : l'ecriture mensuelle est un CUMUL recalcule depuis le
+    # registre et refaite seulement si son total a change — la rejouer sans mouvement neuf ne
+    # produit rien. La conditionner a `crees` laissait des frais importes par un autre canal
+    # sans ecriture jusqu'au prochain run « chanceux ».
     out["ecritures"] = None
-    if frappe.utils.cint(ecritures) and out.get("crees"):
-        out["ecritures"] = fees.process_fees(registry.registry_as_movements(), insert=True)
+    if frappe.utils.cint(ecritures) and frappe.db.count("BRS Bank Movement"):
+        try:
+            out["ecritures"] = fees.process_fees(registry.registry_as_movements(), insert=True)
+        except Exception as e:
+            out["ecritures"] = {"erreur": str(e)[:200]}
+
+    _marquer_synchro(refresh_ok=_export_mouvements_ok(out.get("refresh")))
     frappe.db.commit()
     return out
+
+
+def _export_mouvements_ok(refresh) -> bool:
+    """True si l'export des MOUVEMENTS a reussi — c'est lui que l'alerte surveille.
+
+    `refresh` vaut "ok", une chaine d'erreur ("export illisible : ..."), ou la liste des
+    diagnostics de `_ensure_fresh_bank_data`. Un echec des seules REMISES ne compte pas comme
+    une panne : les mouvements continuent d'arriver, le registre vit — constate le 2026-08-21,
+    ou le scraper de remises etait casse (« Champ identifiant introuvable ») pendant que
+    l'export de mouvements passait."""
+    if refresh == "ok":
+        return True
+    if isinstance(refresh, list):
+        return not any(d.get("source") == "mouvements" for d in refresh)
+    return False
+
+
+# Au-dela de ce silence (aucune synchro bancaire reussie), on alerte : cinq passages par jour,
+# 24 h sans succes = au moins cinq echecs consecutifs, ce n'est plus un caprice du portail.
+_ALERTE_SYNCHRO_HEURES = 24
+
+
+def _marquer_synchro(refresh_ok: bool):
+    """Trace la derniere synchro bancaire reussie et alerte quand la panne s'installe.
+
+    Constat prod du 2026-08-21 : le login Zitouna echouait depuis le 20/08 au soir et personne
+    ne l'a su avant de chercher un virement manquant. La panne se lisait pourtant dans les
+    Error Log — mais personne ne les lit tous les jours. D'ou ce marqueur persistant :
+      - refresh reussi -> `derniere_synchro_bancaire` = maintenant, drapeau d'alerte remis a 0 ;
+      - refresh echoue depuis plus de `_ALERTE_SYNCHRO_HEURES` -> UNE notification Desk aux
+        System Managers (le drapeau `alerte_synchro_envoyee` evite de notifier a chaque passage ;
+        il se re-arme au premier succes).
+    Jamais bloquant : une erreur ici ne doit pas faire echouer la verification elle-meme.
+    """
+    try:
+        if refresh_ok:
+            frappe.db.set_single_value("Bank Retenue Sync Settings", {
+                "derniere_synchro_bancaire": frappe.utils.now_datetime(),
+                "alerte_synchro_envoyee": 0,
+            })
+            return
+        if frappe.utils.cint(frappe.db.get_single_value(
+                "Bank Retenue Sync Settings", "alerte_synchro_envoyee")):
+            return
+        derniere = frappe.db.get_single_value(
+            "Bank Retenue Sync Settings", "derniere_synchro_bancaire")
+        if derniere and frappe.utils.time_diff_in_hours(
+                frappe.utils.now_datetime(), derniere) < _ALERTE_SYNCHRO_HEURES:
+            return
+        depuis = frappe.utils.format_datetime(derniere) if derniere else "plus de 24 h"
+        for user in _system_managers():
+            frappe.get_doc({
+                "doctype": "Notification Log",
+                "for_user": user,
+                "type": "Alert",
+                "subject": "Synchronisation bancaire en panne",
+                "email_content": (
+                    "Aucun export bancaire n'a reussi depuis {0}. Le portail ou la session "
+                    "Zitouna de tej-bank-service est probablement a verifier (profil a "
+                    "re-semer ?). Les rapprochements continuent sur le registre existant, "
+                    "mais sans mouvements nouveaux.".format(depuis)),
+            }).insert(ignore_permissions=True)
+        frappe.db.set_single_value(
+            "Bank Retenue Sync Settings", "alerte_synchro_envoyee", 1)
+    except Exception as e:
+        frappe.log_error(f"marquage synchro bancaire echoue\n{e}", "brs refresh")
+
+
+def _system_managers() -> list:
+    """Utilisateurs actifs porteurs du role System Manager (Administrator exclu : personne ne
+    lit ses notifications)."""
+    porteurs = set(frappe.get_all("Has Role", filters={"role": "System Manager",
+                                                       "parenttype": "User"}, pluck="parent"))
+    actifs = frappe.get_all("User", filters={"enabled": 1, "user_type": "System User"},
+                            pluck="name")
+    return [u for u in actifs if u in porteurs and u != "Administrator"]
 
 
 @frappe.whitelist()
@@ -940,7 +1110,7 @@ def run_contrats(insert=True):
     from bank_retenue_sync.bank import classify, registry
     from bank_retenue_sync.expenses import contrats
 
-    movements = registry.registry_as_movements()
+    movements = _movements_geres(registry.registry_as_movements())
     context = classify.build_context(movements)
     # L'appariement de GROUPE (reference, jour) est l'idempotence des deux flux : il reconnait les
     # saisies manuelles, dont le libelle ne ressemble a aucune cle generee. Sans lui, une reference
@@ -982,7 +1152,8 @@ def run_reglements(insert=True, only=None):
     from bank_retenue_sync.expenses import reglement
 
     res = reglement.process_reglements(
-        registry.registry_as_movements(), insert=frappe.utils.cint(insert), only=only)
+        _movements_geres(registry.registry_as_movements()),
+        insert=frappe.utils.cint(insert), only=only)
     frappe.db.commit()
     return res
 

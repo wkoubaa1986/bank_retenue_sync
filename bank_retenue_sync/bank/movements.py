@@ -215,19 +215,52 @@ def export_movements(lookback_days: int, timeout: int = 900) -> dict:
 _EXPORT_WINDOWS = (118, 55, 27, 13)
 
 
+# Au-dela de ce retard (en jours), le registre est repute vieux : on retente les fenetres
+# larges en premier pour reconstituer l'historique avant les donnees du jour.
+_REGISTRE_FRESH_MAX_AGE = 3
+
+
+def _ordered_windows(last_movement_date=None) -> tuple:
+    """Ordre d'essai des fenetres d'export, selon la fraicheur du REGISTRE.
+
+    Tous les flux lisent le registre (`registry_as_movements`), qui CUMULE les exports —
+    `/export/latest` n'est plus qu'un repli quand le registre est vide. Une fenetre etroite ne
+    fait donc rien disparaitre : elle limite seulement ce que CE run peut apprendre de neuf.
+
+    D'ou l'ordre adaptatif (constat prod du 2026-08-21 : le portail en rade faisait bruler
+    ~4 minutes sur 118 j puis 55 j avant d'atteindre la fenetre courte qui, elle, passait — et le
+    job planifie mourait avant) :
+      - registre frais (retard <= _REGISTRE_FRESH_MAX_AGE j) : 13 j D'ABORD — il ne manque que
+        quelques jours, la petite fenetre suffit et reussit plus souvent ;
+      - registre vieux ou vide : large d'abord, pour recouvrir le trou.
+    """
+    if last_movement_date:
+        try:
+            age = (date.today() - frappe.utils.getdate(last_movement_date)).days
+        except Exception:
+            age = None
+        if age is not None and age <= _REGISTRE_FRESH_MAX_AGE:
+            return tuple(sorted(_EXPORT_WINDOWS))
+    return _EXPORT_WINDOWS
+
+
+def _last_registered_date():
+    """Date du dernier mouvement au registre, None si registre vide ou table absente."""
+    try:
+        return frappe.db.sql("select max(date) from `tabBRS Bank Movement`")[0][0]
+    except Exception:
+        return None
+
+
 def refresh_movements(lookback_days: int = None, timeout: int = 900) -> dict:
     """Declenche un export des mouvements sur une fenetre glissante et attend sa fin.
 
-    ATTENTION a la largeur de fenetre : les consommateurs lisent `/export/latest`, donc le dernier
-    export REMPLACE le precedent comme source. Une fenetre etroite fait disparaitre les mouvements
-    anciens dont dependent les flux declaration/CNSS -> on vise large en premier.
-
     Le portail est capricieux : une tranche sans aucun mouvement fait echouer tout l'export. On
-    reessaie donc sur des fenetres de plus en plus courtes plutot que de ne rien rapporter — des
-    donnees recentes fraiches valent mieux qu'un historique perime. `lookback_days` force une
-    fenetre unique (pas de repli).
+    reessaie donc sur plusieurs fenetres plutot que de ne rien rapporter, dans l'ordre choisi par
+    `_ordered_windows` (etroite d'abord si le registre est frais, large d'abord sinon).
+    `lookback_days` force une fenetre unique (pas de repli).
     """
-    windows = (lookback_days,) if lookback_days else _EXPORT_WINDOWS
+    windows = (lookback_days,) if lookback_days else _ordered_windows(_last_registered_date())
     last_error = None
     for days in windows:
         try:

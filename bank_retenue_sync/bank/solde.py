@@ -436,6 +436,50 @@ def dernier_solde():
     return rows[0] if rows else None
 
 
+def solde_derive(date_max=None) -> dict | None:
+    """Solde CALCULE quand la capture n'est pas disponible : derniere capture reelle + net du
+    registre depuis sa derniere operation.
+
+    POURQUOI (demande utilisateur 2026-08-21) : la capture du portail echoue parfois alors que
+    l'export des MOUVEMENTS, lui, est passe. On sait donc tout ce qui a boujé depuis la
+    derniere capture — le solde du jour se DEDUIT au millime, au lieu de rester fige sur un
+    releve vieux de plusieurs jours.
+
+    L'ANCRE EST `derniere_operation`, PAS la date de capture : la capture archive la date de la
+    derniere operation que le portail affichait. Tout mouvement STRICTEMENT posterieur a cette
+    date n'est par construction pas dans le solde capture — on l'ajoute. (Repli sur `date_solde`
+    pour les captures anciennes sans ce champ, avec l'hypothese annoncee dans le resultat.)
+
+    LIMITE ASSUMEE : un mouvement date DU JOUR de l'ancre mais comptabilise apres la capture
+    serait manque — il se rattrape a la capture suivante. Et un solde derive n'est JAMAIS
+    archive dans `BRS Solde Bancaire` : le doctype ne contient que des lectures REELLES, sinon
+    un calcul s'ancrerait sur un calcul et l'erreur se composerait.
+
+    Retourne None sans capture de reference — on ne fabrique pas un solde a partir de rien.
+    """
+    from frappe.utils import add_days
+
+    ancre = dernier_solde()
+    if not ancre:
+        return None
+    coupure = ancre.get("derniere_operation") or ancre.get("date_solde")
+    if not coupure:
+        return None
+    f = flux_registre(date_min=add_days(getdate(coupure), 1), date_max=date_max)
+    dernier_mvt = frappe.db.get_all(DOCTYPE_MOUVEMENT, limit_page_length=1,
+                                    order_by="date desc", fields=["date"])
+    return {
+        "solde_calcule": flt(flt(ancre.solde_banque) + f["net"], 3),
+        "capture": ancre.name,
+        "solde_capture": flt(ancre.solde_banque, 3),
+        "operations_incluses_jusqu_au": str(getdate(coupure)),
+        "ancre": "derniere_operation" if ancre.get("derniere_operation") else "date_solde",
+        "mouvements_ajoutes": f["mouvements"],
+        "net_ajoute": f["net"],
+        "registre_asof": str(dernier_mvt[0]["date"]) if dernier_mvt else None,
+    }
+
+
 def historique(limite: int = 30) -> list:
     """Historique des soldes, du plus recent au plus ancien."""
     return frappe.db.get_all(

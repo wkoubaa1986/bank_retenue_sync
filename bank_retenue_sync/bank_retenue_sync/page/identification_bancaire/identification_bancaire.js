@@ -548,10 +548,27 @@ class IdentificationBancaire {
       </div>`;
     }
 
+    /* Solde CALCULÉ : dernière capture + net du registre depuis sa dernière opération.
+       Affiché seulement quand le registre est allé PLUS LOIN que la capture — sinon il
+       répéterait le solde capturé. C'est la continuité quand la capture est en panne :
+       les mouvements, eux, continuent d'arriver. */
+    const dv = s.derive || null;
+    const derive_html =
+      dv && dv.mouvements_ajoutes > 0
+        ? `<div class="sub" style="color:var(--text-muted)">calculé au ${frappe.datetime.str_to_user(
+            dv.registre_asof || dv.operations_incluses_jusqu_au
+          )} : <b>${nb(dv.solde_calcule)}</b> (capture ${
+            dv.net_ajoute >= 0 ? "+" : "−"
+          } ${nb(Math.abs(dv.net_ajoute))} sur ${dv.mouvements_ajoutes} mouvement${
+            dv.mouvements_ajoutes > 1 ? "s" : ""
+          })</div>`
+        : "";
+
     this.$root.find('[data-role="solde"]').html(`
       <div>
         <div class="lbl">Solde banque (réel)</div>
         ${banque}
+        ${derive_html}
       </div>
       <div>
         <div class="lbl">Solde ERPNext</div>
