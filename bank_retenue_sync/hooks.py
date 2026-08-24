@@ -249,6 +249,10 @@ doc_events = {
     # ne peut pas etre soumis tant qu'un humain n'a pas resolu — cf. encaissement/ecarts.py.
     "Encaissement Paiement": {
         "before_submit": "bank_retenue_sync.encaissement.ecarts.before_submit",
+        # La piece soumise (ou annulee) change les ecarts de rapprochement du mois : l'ecriture
+        # cumulative de frais est resynchronisee en job, sans attendre le cron du lendemain.
+        "on_submit": "bank_retenue_sync.expenses.fees.rafraichir_apres_encaissement",
+        "on_cancel": "bank_retenue_sync.expenses.fees.rafraichir_apres_encaissement",
     },
 }
 

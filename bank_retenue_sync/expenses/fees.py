@@ -366,3 +366,55 @@ def process_fees(movements: list, insert: bool = True, context=None, force: bool
         periodes = [p for p in periodes if p >= debut]
     return out + [sync_ecriture_mensuelle(movements, p, insert=insert, force=force)
                   for p in periodes]
+
+
+# ------------------------------------------------------------ rafraichissement evenementiel
+
+def rafraichir_mois_courant():
+    """Resynchronise l'ecriture du mois COURANT depuis le registre.
+
+    Le cumul n'etait refait que par le cron quotidien : tout evenement qui change les montants
+    rapproches en journee (soumission d'un encaissement, resolution d'un ecart Aramex) laissait
+    l'ecriture — donc le solde ERPNext — faux jusqu'au lendemain. Constate le 24/08/2026 :
+    delta cheque resolu a 21 h, ecriture d'aout figee sur l'ancien brouillon a 13 h, ecart
+    fantome de 6,200 au tableau de bord toute la soiree.
+
+    Tourne en job (voir `planifier_rafraichissement`) ; idempotent comme le cron : le cumul est
+    recalcule depuis le registre, et `sync_ecriture_mensuelle` ne remplace que si le total a
+    change. Le plancher de prise en charge est respecte — meme garde que `process_fees`."""
+    if not is_enabled():
+        return
+    from bank_retenue_sync.bank import registry
+
+    periode = periode_de(frappe.utils.nowdate())
+    debut = periode_debut_gestion()
+    if debut and periode < debut:
+        return
+    try:
+        sync_ecriture_mensuelle(registry.registry_as_movements(), periode)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(title="Frais bancaires : echec du rafraichissement evenementiel",
+                         message=frappe.get_traceback())
+
+
+def planifier_rafraichissement():
+    """Enfile le rafraichissement du mois courant — a appeler depuis une requete.
+
+    `enqueue_after_commit` : le job ne doit lire le registre et les pieces QU'APRES le commit de
+    la transaction appelante, sinon il refait l'ecriture sur l'etat d'avant. Deduplique par
+    `job_id` : dix resolutions d'ecarts a la suite ne font qu'un recalcul. Jamais bloquant pour
+    l'operation appelante — un echec d'enfilage se journalise, le cron du lendemain rattrape."""
+    try:
+        frappe.enqueue("bank_retenue_sync.expenses.fees.rafraichir_mois_courant",
+                       queue="short", job_id="brs-frais-rafraichir-mois-courant",
+                       deduplicate=True, enqueue_after_commit=True)
+    except Exception:
+        frappe.log_error(title="Frais bancaires : echec d'enfilage du rafraichissement",
+                         message=frappe.get_traceback())
+
+
+def rafraichir_apres_encaissement(doc, method=None):
+    """Hook doc_events (on_submit / on_cancel d'Encaissement Paiement) : la piece qui vient de
+    changer alimente les ecarts de rapprochement du cumul mensuel."""
+    planifier_rafraichissement()

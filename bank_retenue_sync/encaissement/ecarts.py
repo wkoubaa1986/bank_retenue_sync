@@ -13,7 +13,11 @@ POLITIQUE (decisions utilisateur 2026-08-18, cas reel ENC-18-08-2026-00008 / FT2
 RESOLUTIONS — elles reprennent LES MECANISMES MAISON de customization_app, jamais les notres :
   Sur un « Delta paiement » (client connu via la PE), premier geste COMMUN : la PE Aramex est
   remplacee a l'identique au montant reellement verse (meme reference « Aramex N: <suivi> » —
-  le rapprochement et la dedup en dependent), puis le DELTA est traite selon le choix :
+  le rapprochement et la dedup en dependent). Le DELTA vise les references AMPUTEES par cette
+  reduction premier-arrive — jamais la premiere commande de la PE : elle reste allouee en
+  plein et ERPNext refuse toute nouvelle piece dessus (« a deja ete entierement paye »,
+  cas reel ENC-24-08-2026-00001 : cheque 4001015 sur deux commandes, seule la seconde est
+  reduite). Le delta est ensuite traite selon le choix :
     « Perte de non paiement »      : JE Dr Perte de non paiement / Cr Debiteurs (client,
                                      reference a la COMMANDE du paiement d'origine) ;
     « Ajustement livraison-dette » : le delta REDEVIENT UNE DETTE, patron du server script
@@ -207,6 +211,45 @@ def _commande_de(pe_doc) -> str:
     frappe.throw(_("La Payment Entry {0} ne référence aucune commande.").format(pe_doc.name))
 
 
+def _reduction_allocations(references, montant: float):
+    """Reduction premier-arrive des allocations d'une PE ramenee a `montant`.
+    Rend (refs, manques) : les lignes de reference a recreer sur la PE de remplacement, et
+    les amputations {reference_doctype, reference_name, montant} subies par chaque reference
+    — c'est sur ces references-la (et jamais la premiere) que le delta doit etre pose."""
+    reste = flt(montant, 3)
+    refs, manques = [], []
+    for r in references or []:
+        alloc = flt(r.allocated_amount, 3)
+        part = min(reste, alloc)
+        if part > 0:
+            refs.append({"reference_doctype": r.reference_doctype,
+                         "reference_name": r.reference_name,
+                         "total_amount": r.total_amount,
+                         "outstanding_amount": r.outstanding_amount,
+                         "allocated_amount": part})
+            reste = flt(reste - part, 3)
+        manque = flt(alloc - max(part, 0.0), 3)
+        if manque > 0:
+            manques.append({"reference_doctype": r.reference_doctype,
+                            "reference_name": r.reference_name,
+                            "montant": manque})
+    return refs, manques
+
+
+def _cibles_delta(src, montant: float, delta: float, commande: str) -> list:
+    """Ou poser le delta d'un « Delta paiement » : les references amputees par la reduction
+    de _remplacer_pe. Si le delta depasse la somme des amputations (PE partiellement non
+    allouee), le reliquat part SANS reference (reference_doctype vide) — la commande de tete
+    ne sert alors que d'etiquette (reference_no / remarque), pas de cible comptable."""
+    _refs, manques = _reduction_allocations(src.get("references"), montant)
+    cibles = [dict(m) for m in manques]
+    reliquat = flt(flt(delta, 3) - sum(flt(c["montant"], 3) for c in cibles), 3)
+    if reliquat > 0:
+        cibles.append({"reference_doctype": "", "reference_name": commande,
+                       "montant": reliquat})
+    return cibles
+
+
 def _remplacer_pe(pe_name: str, montant: float, note: str = ""):
     """Annule la PE soumise et la recree a l'identique au nouveau montant (allocations reduites
     en premier-arrive). Retourne la nouvelle PE soumise. La branche aramex du script de
@@ -226,18 +269,7 @@ def _remplacer_pe(pe_name: str, montant: float, note: str = ""):
     if note:
         new.remarks = ((new.remarks + "\n") if new.remarks else "") + note
     new.paid_amount = new.received_amount = flt(montant, 3)
-    reste = flt(montant, 3)
-    refs = []
-    for r in src.get("references") or []:
-        part = min(reste, flt(r.allocated_amount, 3))
-        if part <= 0:
-            continue
-        refs.append({"reference_doctype": r.reference_doctype,
-                     "reference_name": r.reference_name,
-                     "total_amount": r.total_amount,
-                     "outstanding_amount": r.outstanding_amount,
-                     "allocated_amount": part})
-        reste = flt(reste - part, 3)
+    refs, _manques = _reduction_allocations(src.get("references"), montant)
     src.cancel()
     for r in refs:
         new.append("references", r)
@@ -331,6 +363,11 @@ def _resoudre(e, resolution: str, pieces: list, note: str = ""):
     e.db_set("piece_resolution", ", ".join(pieces)[:140])
     if note:
         e.db_set("note", ((e.note + " | ") if e.note else "") + note)
+    # La resolution vient de changer les montants rapproches (PE remplacee, ligne du brouillon
+    # realignee) : l'ecriture cumulative de frais du mois est resynchronisee en job, sinon le
+    # solde ERPNext reste faux jusqu'au cron du lendemain (ecart fantome du 24/08/2026).
+    from bank_retenue_sync.expenses import fees
+    fees.planifier_rafraichissement()
 
 
 def _delta_valide(e):
@@ -363,6 +400,10 @@ def resoudre_perte(ecart: str, note: str = None):
     src = frappe.get_doc("Payment Entry", e.ref_paiement)
     commande = _commande_de(src)
     party = src.party
+    # cibles calculees AVANT le remplacement (la PE source est ensuite supprimee) :
+    # ce sont les commandes amputees qui portent le delta, pas la premiere reference.
+    cibles = _cibles_delta(src, montant_reel, delta, commande)
+    cibles_txt = ", ".join(sorted({c["reference_name"] for c in cibles}))
     new_pe = _remplacer_pe(e.ref_paiement, montant_reel, note=note)
     company, cc = _company_et_cc()
 
@@ -371,27 +412,29 @@ def resoudre_perte(ecart: str, note: str = None):
     je.company = company
     je.posting_date = new_pe.posting_date
     je.cheque_no = (note or _("Perte de non paiement {0} — suivi Aramex {1}")
-                    .format(commande, e.suivi))[:140]
+                    .format(cibles_txt, e.suivi))[:140]
     je.cheque_date = new_pe.posting_date
     je.user_remark = _("Perte de non paiement (retour) — commande {0}, suivi Aramex {1} : "
                        "PE {2} ({3}) remplacée par {4} ({5}), advice {6}. {7}").format(
-        commande, e.suivi, e.ref_paiement, flt(e.montant_piece, 3),
+        cibles_txt, e.suivi, e.ref_paiement, flt(e.montant_piece, 3),
         new_pe.name, montant_reel, e.reference_bancaire, note)
     je.append("accounts", {
         "account": PERTE_ACCOUNT,
         "debit_in_account_currency": delta,
         "cost_center": cc,
     })
-    ref_doctype = "Sales Order" if frappe.db.exists("Sales Order", commande) else "Sales Invoice"
-    je.append("accounts", {
-        "account": _receivable(company),
-        "party_type": "Customer",
-        "party": party,
-        "credit_in_account_currency": delta,
-        "cost_center": cc,
-        "reference_type": ref_doctype,
-        "reference_name": commande,
-    })
+    for c in cibles:
+        ligne = {
+            "account": _receivable(company),
+            "party_type": "Customer",
+            "party": party,
+            "credit_in_account_currency": flt(c["montant"], 3),
+            "cost_center": cc,
+        }
+        if c["reference_doctype"]:
+            ligne["reference_type"] = c["reference_doctype"]
+            ligne["reference_name"] = c["reference_name"]
+        je.append("accounts", ligne)
     je.insert(ignore_permissions=True)
     je.submit()
     _maj_ligne_brouillon(e.encaissement, e.ref_paiement, new_pe.name, montant_reel,
@@ -418,39 +461,44 @@ def resoudre_ajustement(ecart: str, pe_source: str = None, note: str = None):
         src = frappe.get_doc("Payment Entry", e.ref_paiement)
         commande = _commande_de(src)
         party = src.party
+        # cibles calculees AVANT le remplacement : une dette PAR commande amputee — la
+        # premiere reference reste allouee en plein et ERPNext refuserait une piece dessus.
+        cibles = _cibles_delta(src, montant_reel, delta, commande)
         new_pe = _remplacer_pe(e.ref_paiement, montant_reel, note=note)
         company, _cc = _company_et_cc()
-        # patron dette du server script « Traitement des encaissement » (l.785-795)
-        dette = frappe.get_doc({
-            "doctype": "Payment Entry",
-            "payment_type": "Receive",
-            "company": company,
-            "mode_of_payment": "Dette non payée",
-            "party_type": "Customer",
-            "party": party,
-            "paid_from": _receivable(company),
-            "paid_to": COMPTE_DETTES,
-            "posting_date": frappe.utils.nowdate(),
-            "reference_no": commande,
-            "reference_date": frappe.utils.nowdate(),
-            "paid_amount": delta,
-            "received_amount": delta,
-            "remarks": (_("Dette recréée depuis l'écart Aramex {0} (suivi {1}). {2}")
-                        .format(e.reference_bancaire, e.suivi, note)).strip(),
-            "references": [{
-                "reference_doctype": ("Sales Order" if frappe.db.exists("Sales Order", commande)
-                                      else "Sales Invoice"),
-                "reference_name": commande,
-                "allocated_amount": delta,
-            }],
-        })
-        dette.insert(ignore_permissions=True)
-        dette.submit()
+        dettes = []
+        for c in cibles:
+            # patron dette du server script « Traitement des encaissement » (l.785-795)
+            dette = frappe.get_doc({
+                "doctype": "Payment Entry",
+                "payment_type": "Receive",
+                "company": company,
+                "mode_of_payment": "Dette non payée",
+                "party_type": "Customer",
+                "party": party,
+                "paid_from": _receivable(company),
+                "paid_to": COMPTE_DETTES,
+                "posting_date": frappe.utils.nowdate(),
+                "reference_no": c["reference_name"],
+                "reference_date": frappe.utils.nowdate(),
+                "paid_amount": flt(c["montant"], 3),
+                "received_amount": flt(c["montant"], 3),
+                "remarks": (_("Dette recréée depuis l'écart Aramex {0} (suivi {1}). {2}")
+                            .format(e.reference_bancaire, e.suivi, note)).strip(),
+                "references": ([{
+                    "reference_doctype": c["reference_doctype"],
+                    "reference_name": c["reference_name"],
+                    "allocated_amount": flt(c["montant"], 3),
+                }] if c["reference_doctype"] else []),
+            })
+            dette.insert(ignore_permissions=True)
+            dette.submit()
+            dettes.append(dette.name)
         _maj_ligne_brouillon(e.encaissement, e.ref_paiement, new_pe.name, montant_reel,
                              flux=e.flux or "aramex")
-        _resoudre(e, "Ajustement livraison-dette", [new_pe.name, dette.name], note=note)
+        _resoudre(e, "Ajustement livraison-dette", [new_pe.name, *dettes], note=note)
         frappe.db.commit()
-        return {"payment_entry": new_pe.name, "dette": dette.name}
+        return {"payment_entry": new_pe.name, "dette": ", ".join(dettes)}
 
     if e.type_ecart != "Sans pièce":
         frappe.throw(_("« Ajustement » ne s'applique qu'à un écart « Sans pièce » "
@@ -519,29 +567,38 @@ def resoudre_avoir(ecart: str, note: str = None):
         frappe.throw(_("Le client {0} n'a pas d'avoir flottant suffisant : disponible {1}, "
                        "requis {2}. Créez d'abord l'avoir (bouton « Avoir » de la commande) "
                        "ou choisissez une autre résolution.").format(party, dispo, delta))
-    if not frappe.db.exists("Sales Order", commande):
-        frappe.throw(_("« Paiement par avoir » exige une commande (Sales Order) ; {0} n'en "
-                       "est pas une.").format(commande))
+    # l'avoir s'applique aux commandes AMPUTEES par la reduction, pas a la premiere
+    # reference de la PE — le tandem creerait sinon une JE sur une commande deja soldee.
+    cibles = _cibles_delta(src, montant_reel, delta, commande)
+    for c in cibles:
+        if c["reference_doctype"] != "Sales Order" \
+                or not frappe.db.exists("Sales Order", c["reference_name"]):
+            frappe.throw(_("« Paiement par avoir » exige une commande (Sales Order) ; le "
+                           "delta retombe sur {0} ({1}). Choisissez une autre résolution.")
+                         .format(c["reference_name"], c["reference_doctype"] or _("sans pièce")))
 
     flux = e.flux or "aramex"
     new_pe = _remplacer_pe(e.ref_paiement, montant_reel, note=note)
-    so = frappe.get_doc("Sales Order", commande)
-    so.append("payment_schedule", {
-        "due_date": frappe.utils.nowdate(),
-        "mode_of_payment": "Avoir client",
-        "payment_amount": delta,
-        "custom__n_chèque__transaction": e.suivi,
-        "description": (note or _("Avoir applique via écart Aramex {0}")
-                        .format(e.reference_bancaire))[:140],
-    })
-    # le save d'une commande soumise declenche le tandem (After Save Submitted Document),
-    # qui cree la JE d'application de l'avoir appariee a cette ligne.
-    so.flags.ignore_validate_update_after_submit = True
-    so.save(ignore_permissions=True)
+    commandes = []
+    for c in cibles:
+        so = frappe.get_doc("Sales Order", c["reference_name"])
+        so.append("payment_schedule", {
+            "due_date": frappe.utils.nowdate(),
+            "mode_of_payment": "Avoir client",
+            "payment_amount": flt(c["montant"], 3),
+            "custom__n_chèque__transaction": e.suivi,
+            "description": (note or _("Avoir applique via écart Aramex {0}")
+                            .format(e.reference_bancaire))[:140],
+        })
+        # le save d'une commande soumise declenche le tandem (After Save Submitted Document),
+        # qui cree la JE d'application de l'avoir appariee a cette ligne.
+        so.flags.ignore_validate_update_after_submit = True
+        so.save(ignore_permissions=True)
+        commandes.append(so.name)
     _maj_ligne_brouillon(e.encaissement, e.ref_paiement, new_pe.name, montant_reel, flux=flux)
-    _resoudre(e, "Paiement par avoir", [new_pe.name, commande], note=note)
+    _resoudre(e, "Paiement par avoir", [new_pe.name, *commandes], note=note)
     frappe.db.commit()
-    return {"payment_entry": new_pe.name, "commande": commande}
+    return {"payment_entry": new_pe.name, "commande": ", ".join(commandes)}
 
 
 @frappe.whitelist()

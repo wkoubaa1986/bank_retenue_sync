@@ -8,8 +8,10 @@ import types
 import unittest
 from datetime import date, timedelta
 
+import frappe
+
 from bank_retenue_sync.bank import movements as mv
-from bank_retenue_sync.encaissement import matching, builder, pending
+from bank_retenue_sync.encaissement import matching, builder, ecarts, pending
 
 
 def _adv(net, nums, payment_date=None):
@@ -394,3 +396,59 @@ class TestChequeTraiteEcarts(unittest.TestCase):
         self.assertAlmostEqual(ecarts["Toléré"]["ecart"], 0.4)
         self.assertEqual(ecarts["Sans pièce"]["bloquant"], 1)
         self.assertAlmostEqual(ecarts["Sans pièce"]["montant_advice"], 500.0)
+
+
+class TestCiblesDelta(unittest.TestCase):
+    """Le delta d'un « Delta paiement » doit viser les references AMPUTEES par la reduction
+    premier-arrive de _remplacer_pe — jamais la premiere commande de la PE (cas reel
+    ENC-24-08-2026-00001 : cheque 4001015 de 1138,200 sur deux commandes, banque 1132,000 ;
+    la premiere commande restait allouee en plein et ERPNext refusait la dette dessus)."""
+
+    @staticmethod
+    def _ref(name, alloc, doctype="Sales Order", total=None):
+        return types.SimpleNamespace(reference_doctype=doctype, reference_name=name,
+                                     total_amount=total or alloc, outstanding_amount=0,
+                                     allocated_amount=alloc)
+
+    @staticmethod
+    def _src(refs):
+        return frappe._dict({"references": refs})
+
+    def test_reduction_ampute_la_derniere_reference(self):
+        refs, manques = ecarts._reduction_allocations(
+            [self._ref("SAL-ORD-2026-02742", 851.2, total=1101.2),
+             self._ref("SAL-ORD-2026-03044", 287.0)], 1132.0)
+        self.assertEqual([(r["reference_name"], r["allocated_amount"]) for r in refs],
+                         [("SAL-ORD-2026-02742", 851.2), ("SAL-ORD-2026-03044", 280.8)])
+        self.assertEqual(manques, [{"reference_doctype": "Sales Order",
+                                    "reference_name": "SAL-ORD-2026-03044", "montant": 6.2}])
+
+    def test_cibles_ne_visent_jamais_la_premiere_commande_pleine(self):
+        cibles = ecarts._cibles_delta(
+            self._src([self._ref("SO-PLEINE", 851.2), self._ref("SO-AMPUTEE", 287.0)]),
+            1132.0, 6.2, "SO-PLEINE")
+        self.assertEqual(cibles, [{"reference_doctype": "Sales Order",
+                                   "reference_name": "SO-AMPUTEE", "montant": 6.2}])
+
+    def test_reduction_peut_faire_disparaitre_une_reference(self):
+        refs, manques = ecarts._reduction_allocations(
+            [self._ref("SO-1", 100.0), self._ref("SO-2", 50.0)], 80.0)
+        self.assertEqual([(r["reference_name"], r["allocated_amount"]) for r in refs],
+                         [("SO-1", 80.0)])
+        self.assertEqual([(m["reference_name"], m["montant"]) for m in manques],
+                         [("SO-1", 20.0), ("SO-2", 50.0)])
+
+    def test_delta_sur_pe_partiellement_non_allouee_part_sans_reference(self):
+        # PE de 100 dont 90 alloues : ramenee a 96, aucune reference n'est amputee —
+        # le delta (4) part sans cible comptable, etiquete par la commande de tete.
+        cibles = ecarts._cibles_delta(
+            self._src([self._ref("SO-1", 90.0)]), 96.0, 4.0, "SO-1")
+        self.assertEqual(cibles, [{"reference_doctype": "", "reference_name": "SO-1",
+                                   "montant": 4.0}])
+
+    def test_delta_reparti_sur_plusieurs_commandes(self):
+        cibles = ecarts._cibles_delta(
+            self._src([self._ref("SO-1", 100.0), self._ref("SO-2", 50.0),
+                       self._ref("SO-3", 30.0)]), 120.0, 60.0, "SO-1")
+        self.assertEqual([(c["reference_name"], c["montant"]) for c in cibles],
+                         [("SO-2", 30.0), ("SO-3", 30.0)])
