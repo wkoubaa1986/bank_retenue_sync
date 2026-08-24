@@ -266,6 +266,12 @@ def corriger_stock(doc) -> dict:
     manquent. 197 des 211 factures validees les portent deja.
     """
     pose = {}
+    # Facture nee de RECUS D'ACHAT (Get Items from Purchase Receipt) : la
+    # marchandise est DEJA entree a la reception — cocher la case ferait entrer
+    # le stock une seconde fois, et ERPNext refuse d'ailleurs update_stock des
+    # qu'une ligne reference un recu. On ne corrige donc rien ici.
+    if any(ligne.get("purchase_receipt") for ligne in doc.get("items") or []):
+        return pose
     if not doc.update_stock:
         doc.update_stock = 1
         pose["update_stock"] = 1
