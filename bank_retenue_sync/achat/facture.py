@@ -267,10 +267,20 @@ def corriger_stock(doc) -> dict:
     """
     pose = {}
     # Facture nee de RECUS D'ACHAT (Get Items from Purchase Receipt) : la
-    # marchandise est DEJA entree a la reception — cocher la case ferait entrer
-    # le stock une seconde fois, et ERPNext refuse d'ailleurs update_stock des
-    # qu'une ligne reference un recu. On ne corrige donc rien ici.
-    if any(ligne.get("purchase_receipt") for ligne in doc.get("items") or []):
+    # marchandise est DEJA entree a la reception — la VERIFICATION s'inverse :
+    # la case doit rester DECOCHEE (la cocher ferait entrer le stock une
+    # seconde fois, et ERPNext la refuse des qu'une ligne reference un recu).
+    # On decoche si besoin et on le dit, au lieu de corriger en silence.
+    recus = sorted({ligne.purchase_receipt for ligne in doc.get("items") or []
+                    if ligne.get("purchase_receipt")})
+    if recus:
+        if doc.update_stock:
+            doc.update_stock = 0
+            pose["update_stock"] = 0
+        frappe.msgprint(
+            _("Stock deja entre par le(s) recu(s) {0} — « Mettre a jour le "
+              "stock » reste decoche.").format(", ".join(recus)),
+            alert=True, indicator="blue")
         return pose
     if not doc.update_stock:
         doc.update_stock = 1
