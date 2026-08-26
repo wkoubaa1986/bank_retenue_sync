@@ -250,6 +250,39 @@ def inventaire_retenues(annee=None):
     return inventaire(annee)
 
 
+def orphelins_tej(export, cles_locales, depuis, etats_vivants) -> list:
+    """Les certificats VIVANTS de l'export sans facture locale correspondante. Pure.
+
+    L'AUTRE SENS du recapitulatif : le tableau principal part des factures et cherche leur
+    certificat ; ici on part du PORTAIL et on cherche la facture. Un certificat emis sous un
+    numero mal saisi, ou pour une facture qui n'existe pas dans ERPNext, n'apparaitrait dans
+    aucun des deux ecrans simples — c'est pourtant une declaration au fisc sans comptabilite.
+
+    `cles_locales` : {(numero, matricule)} de TOUTES les factures locales validees, sans plancher
+    — un certificat 2026 d'une facture comptabilisee en 2025 n'est pas un orphelin. Le plancher ne
+    filtre que la date du certificat (paiement, sinon creation) ; une date illisible GARDE le
+    certificat : le doute se montre, il ne se cache pas.
+    """
+    from frappe.utils import getdate
+
+    out = []
+    for c in export or []:
+        if (c.get("etat") or "") not in etats_vivants:
+            continue
+        cle = ((c.get("numero") or "").strip(), c.get("beneficiaire") or "")
+        if not cle[0] or cle in cles_locales:
+            continue
+        ref_date = c.get("date_paiement") or c.get("cree")
+        if ref_date:
+            try:
+                if str(getdate(ref_date)) < str(depuis):
+                    continue
+            except Exception:
+                pass
+        out.append(c)
+    return out
+
+
 @frappe.whitelist()
 def recapitulatif_retenues(depuis=None):
     """Le tableau croise ERPNext ↔ TEJ des retenues d'achat depuis le plancher. -> dict.
@@ -350,5 +383,33 @@ def recapitulatif_retenues(depuis=None):
                        "ttc": c["ttc_avant_retenue"], "due": c["due"], "saisie": c["saisie"],
                        "verdict": c["verdict"], "tej": tej})
 
+    # L'AUTRE SENS : les certificats du portail sans facture correspondante. Les cles locales
+    # couvrent TOUTES les factures validees, sans plancher — un certificat 2026 d'une facture
+    # 2025 n'est pas un orphelin ; le plancher ne filtre que la date du certificat.
+    orphelins = []
+    if export:
+        cles_locales = set()
+        fournisseurs_par_matricule = {}
+        for f in frappe.db.sql("""select p.bill_no, s.tax_id, s.supplier_name
+                                  from `tabPurchase Invoice` p
+                                  join `tabSupplier` s on s.name = p.supplier
+                                  where p.docstatus = 1 and s.country = %(pays)s
+                                    and ifnull(p.bill_no, '') != ''""",
+                               {"pays": regles.PAYS_LOCAL}, as_dict=1):
+            mat = matricule.normaliser(f.tax_id)
+            cles_locales.add((f.bill_no.strip(), mat))
+            if mat:
+                fournisseurs_par_matricule[mat] = f.supplier_name
+        # Le nom du fournisseur se retrouve par matricule meme sans facture a son numero.
+        for s in frappe.db.get_all("Supplier", filters={"country": regles.PAYS_LOCAL},
+                                   fields=["supplier_name", "tax_id"]):
+            mat = matricule.normaliser(s.tax_id)
+            if mat and mat not in fournisseurs_par_matricule:
+                fournisseurs_par_matricule[mat] = s.supplier_name
+        for c in orphelins_tej(export, cles_locales, depuis, emis.ETATS_VIVANTS):
+            orphelins.append({**c, "fournisseur": fournisseurs_par_matricule.get(
+                c.get("beneficiaire") or "", "")})
+    compte["tej_orphelins"] = len(orphelins)
+
     return {"depuis": depuis, "seuil": seuil, "export_disponible": export_disponible,
-            "lignes": lignes, "totaux": totaux, "compte": compte}
+            "lignes": lignes, "totaux": totaux, "compte": compte, "orphelins": orphelins}

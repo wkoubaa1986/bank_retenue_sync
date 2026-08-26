@@ -170,6 +170,7 @@ function ouvrir_recap_retenues() {
         tuile(__("Certificat TEJ ✓"), c.tej_emis || 0),
         tuile(__("TEJ en cours"), c.tej_en_cours || 0, c.tej_en_cours),
         tuile(__("Certificat manquant"), c.tej_manquants || 0, c.tej_manquants),
+        tuile(__("TEJ sans facture"), c.tej_orphelins || 0, c.tej_orphelins),
         tuile(__("Manque à retenir"), dt(t.manque), t.manque),
       ].join("");
 
@@ -245,8 +246,49 @@ function ouvrir_recap_retenues() {
               <td colspan="2">${__("manque : {0}", [dt(t.manque)])}</td>
             </tr></tfoot>
           </table>
-        </div>`);
+        </div>
+        ${section_orphelins(d)}`);
       dialog.show();
     },
   });
+}
+
+// L'AUTRE SENS : les certificats vivants du portail qui ne correspondent à AUCUNE facture locale
+// (numéro mal saisi côté portail, facture jamais comptabilisée…). Une déclaration au fisc sans
+// comptabilité — le symétrique de « retenue sans certificat », et aucun des deux tableaux simples
+// ne le montrait. Même plancher que le reste (01/01/2026, sur la date de paiement du certificat,
+// à défaut sa création). Section absente quand tout correspond ou que l'export est injoignable.
+function section_orphelins(d) {
+  const esc = frappe.utils.escape_html;
+  const orphelins = d.orphelins || [];
+  if (!orphelins.length) return "";
+  const lignes = orphelins
+    .map(
+      (o) => `<tr>
+        <td>${esc(o.reference || "—")}</td>
+        <td>${esc(o.numero || "")}</td>
+        <td>${esc(o.fournisseur || "")} <span class="text-muted">${esc(o.beneficiaire || "")}</span></td>
+        <td>${esc(o.date_paiement || "")}</td>
+        <td>${esc(o.cree || "")}</td>
+        <td>${esc(o.etat || "")}</td>
+      </tr>`
+    )
+    .join("");
+  return `
+    <h5 style="margin:18px 0 8px">⚠️ ${__("Certificats TEJ sans facture correspondante ({0})", [
+      orphelins.length,
+    ])}</h5>
+    <p class="text-muted" style="font-size:12px;margin:0 0 8px">${__(
+      "Déclarés au fisc, mais aucun « N° chez le déclarant » ne correspond à une facture d'achat validée : numéro mal saisi sur le portail, ou facture absente de la comptabilité."
+    )}</p>
+    <div style="max-height:30vh;overflow:auto">
+      <table class="table table-bordered brs-recap-table" style="font-size:12px;margin:0">
+        <thead><tr>
+          <th>${__("Référence")}</th><th>${__("N° chez le déclarant")}</th>
+          <th>${__("Bénéficiaire")}</th><th>${__("Date de paiement")}</th>
+          <th>${__("Créé le")}</th><th>${__("État")}</th>
+        </tr></thead>
+        <tbody>${lignes}</tbody>
+      </table>
+    </div>`;
 }

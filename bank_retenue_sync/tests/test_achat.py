@@ -401,5 +401,45 @@ class TestCorrectionMultiLignes(unittest.TestCase):
         self.assertEqual(round(taxes[1].tax_amount, 3), 10.99)
 
 
+class TestOrphelinsTej(unittest.TestCase):
+    """L'AUTRE SENS du recapitulatif : un certificat vivant du portail sans facture locale est une
+    declaration au fisc sans comptabilite — aucun des deux tableaux simples ne le montrait."""
+
+    VIVANTS = ("REÇUE", "RECUE", "EN COURS", "VALIDÉE", "VALIDEE")
+    CLES = {("FA-2026-0012", "1234567A")}
+
+    def _orphelins(self, export):
+        return RET.orphelins_tej(export, self.CLES, "2026-01-01", self.VIVANTS)
+
+    def test_un_certificat_apparie_n_est_pas_orphelin(self):
+        self.assertEqual(self._orphelins(
+            [{"numero": "FA-2026-0012", "beneficiaire": "1234567A", "etat": "VALIDEE",
+              "date_paiement": "2026-02-05"}]), [])
+
+    def test_un_certificat_sans_facture_ressort(self):
+        out = self._orphelins(
+            [{"numero": "FA-2026-9999", "beneficiaire": "1234567A", "etat": "VALIDEE",
+              "date_paiement": "2026-02-05"}])
+        self.assertEqual(len(out), 1)
+
+    def test_le_plancher_s_applique_aussi_au_portail(self):
+        """Demande du 26/08/2026 : tout part du 01/01/2026, meme cote TEJ."""
+        self.assertEqual(self._orphelins(
+            [{"numero": "FA-2025-0100", "beneficiaire": "1234567A", "etat": "VALIDEE",
+              "date_paiement": "2025-11-20"}]), [])
+
+    def test_un_annule_ne_compte_pas(self):
+        self.assertEqual(self._orphelins(
+            [{"numero": "FA-2026-9999", "beneficiaire": "1234567A", "etat": "ANNULÉ",
+              "date_paiement": "2026-02-05"}]), [])
+
+    def test_une_date_illisible_garde_le_certificat(self):
+        """Le doute se montre, il ne se cache pas."""
+        out = self._orphelins(
+            [{"numero": "FA-2026-9999", "beneficiaire": "1234567A", "etat": "VALIDEE",
+              "date_paiement": "pas une date", "cree": None}])
+        self.assertEqual(len(out), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
