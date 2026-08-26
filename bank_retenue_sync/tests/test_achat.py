@@ -379,7 +379,20 @@ class _FactureMontants:
 class TestCorrectionMultiLignes(unittest.TestCase):
     """⚠️ `saisie` EST LA SOMME DES LIGNES DE DEDUCTION. Deux lignes de retenue saisies (doublon de
     saisie), et l'ancienne correction ne redressait que la premiere : le total restait faux, le
-    verdict aussi, et rien ne le disait."""
+    verdict aussi, et rien ne le disait.
+
+    ⚠️ PIEGE DU MODE LIBRAIRIE (CI sans site) : `frappe.utils.flt(x, precision)` retourne 0 —
+    l'arrondi interne a besoin du contexte de site et flt avale l'exception. `_seuil()` valait
+    donc 0 en CI et le du tombait a zero, la ou bench (site charge) rendait 1000. Les reglages
+    sont neutralises ici, comme le fait deja TestCentreDeCoutDeLaRetenue pour la base."""
+
+    def setUp(self):
+        self._seuil, self._taux = RET._seuil, RET._taux
+        RET._seuil = lambda: R.SEUIL_RETENUE
+        RET._taux = lambda: R.TAUX_RETENUE
+
+    def tearDown(self):
+        RET._seuil, RET._taux = self._seuil, self._taux
 
     def test_les_doublons_sont_ramenes_a_zero(self):
         taxes = [_LigneMontant("TVA 19% - A&S", 175.311),
