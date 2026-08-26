@@ -189,7 +189,12 @@ function ouvrir_recap_retenues(dialog_existante) {
         tuile(__("Certificat TEJ ✓"), c.tej_emis || 0),
         tuile(__("TEJ en cours"), c.tej_en_cours || 0, c.tej_en_cours),
         tuile(__("Certificat manquant"), c.tej_manquants || 0, c.tej_manquants),
-        tuile(__("TEJ sans facture"), c.tej_orphelins || 0, c.tej_orphelins),
+        // « 0 » affirme que tout correspond ; export injoignable, on n'en sait RIEN : « — ».
+        tuile(
+          __("TEJ sans facture"),
+          d.export_disponible ? c.tej_orphelins || 0 : "—",
+          c.tej_orphelins || !d.export_disponible
+        ),
         tuile(__("Manque à retenir"), dt(t.manque), t.manque),
         tuile(
           __("Impayées"),
