@@ -574,7 +574,10 @@ def recapitulatif_retenues(depuis=None):
                                and x["beneficiaire"] == mat
                                and x["etat"] in emis.ETATS_VIVANTS), None)
                 if vivant:
+                    # La reference voyage avec la ligne : c'est elle qui permet au bouton 📎
+                    # de rapatrier le PDF du portail sur la facture.
                     tej = {"statut": "emis",
+                           "reference": vivant.get("reference"),
                            "detail": _("portail : {0} (PDF non attaché)").format(
                                vivant.get("reference") or vivant.get("etat"))}
 

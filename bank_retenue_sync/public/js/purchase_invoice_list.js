@@ -221,7 +221,12 @@ function ouvrir_recap_retenues(dialog_existante) {
                   );
           const lien_pdf = l.tej.file_url
             ? ` <a href="${esc(l.tej.file_url)}" target="_blank" title="${__("Ouvrir le certificat")}">📎</a>`
-            : "";
+            : l.tej.statut === "emis" && l.tej.reference
+              ? ` <button class="btn btn-default btn-xs" data-act="attacher-certificat"
+                    data-facture="${esc(l.facture)}" data-reference="${esc(l.tej.reference)}"
+                    title="${__("Le certificat n'existe que sur le portail : télécharger son PDF et l'attacher à la facture")}"
+                    >📎 ${__("Rapatrier")}</button>`
+              : "";
           // Le cas qui pique : certifié au fournisseur mais jamais comptabilisé — ni l'un ni
           // l'autre des deux tableaux simples ne le montrait.
           const alerte =
