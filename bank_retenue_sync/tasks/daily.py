@@ -162,6 +162,24 @@ def depots_tej():
     return _safe("depots_tej", lambda: emis.verifier_depots())
 
 
+def export_emis():
+    """L'export des certificats EMIS, regenere une fois par jour sur le portail.
+
+    Le recap des retenues d'achat lit le dernier export que le service detient : un certificat
+    cree A LA MAIN sur le portail n'y apparaissait qu'a la prochaine soumission reelle depuis
+    l'app — c'est-a-dire jamais, tant que personne n'emettait. Un passage quotidien suffit :
+    les certificats manuels se comptent par mois, et chaque regeneration coute un job
+    Playwright sur le worker unique du service.
+    """
+    return _dispatch("export_emis")
+
+
+def export_emis_job():
+    from bank_retenue_sync.tej import emis
+
+    return _safe("export_emis", lambda: emis.certificats_emis(rafraichir=True))
+
+
 def certificats_ras():
     """Certificats de retenue a la source recus du portail TEJ.
 

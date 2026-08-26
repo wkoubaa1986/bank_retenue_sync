@@ -685,6 +685,32 @@ def recapitulatif_retenues(depuis=None):
     compte["tej_orphelins"] = len(orphelins)
     suggestions = rapprochements_suggeres(orphelins, lignes)
 
+    # QUAND l'export a ete genere : c'est la reponse a « pourquoi je ne vois pas le certificat
+    # que je viens de creer sur le portail » — le tableau lit un fichier, pas le portail.
+    export_genere_le = ""
+    if export_disponible:
+        try:
+            export_genere_le = str(emis.date_export() or "")
+        except Exception:
+            pass
+
     return {"depuis": depuis, "seuil": seuil, "export_disponible": export_disponible,
+            "export_genere_le": export_genere_le,
             "lignes": lignes, "totaux": totaux, "compte": compte, "orphelins": orphelins,
             "suggestions": suggestions}
+
+
+@frappe.whitelist()
+def rafraichir_export():
+    """Regenere l'export des certificats emis sur le portail TEJ. -> {certificats}.
+
+    Le recap lit le DERNIER EXPORT que le service detient : un certificat cree a la main sur le
+    portail n'y figure qu'apres regeneration — qui n'arrivait qu'a la prochaine soumission
+    reelle. Ce bouton la demande explicitement : UN job Playwright (~1 min), le meme cout que le
+    📜 d'un orphelin, sur le worker unique du service — c'est pour cela qu'elle reste un geste
+    et non le comportement par defaut de l'ecran.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager", "Accounts User", "Purchase Manager",
+                     "Purchase User"])
+    from bank_retenue_sync.tej import emis
+    return {"certificats": len(emis.certificats_emis(rafraichir=True))}

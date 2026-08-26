@@ -284,7 +284,18 @@ function ouvrir_recap_retenues(dialog_existante) {
                    >📖 ${__("Lire les scans manquants")}</button>`
               : ""
           }
+          ${
+            d.export_genere_le
+              ? `<span class="text-muted" style="font-size:11px;align-self:center">${__(
+                  "export du portail généré le {0}",
+                  [frappe.datetime.str_to_user(d.export_genere_le)]
+                )}</span>`
+              : ""
+          }
           <button class="btn btn-default btn-xs" data-act="recharger">🔄 ${__("Actualiser")}</button>
+          <button class="btn btn-default btn-xs" data-act="rescrape-export"
+            title="${__("Regénère l'export des certificats émis sur le portail (~1 min) : fait apparaître les certificats créés à la main depuis la dernière soumission")}"
+            >🛰 ${__("Relire le portail")}</button>
         </div>
         ${avert_export}
         <div class="brs-recap-kpis">${kpis}</div>
@@ -313,6 +324,17 @@ function ouvrir_recap_retenues(dialog_existante) {
         .get_field("corps")
         .$wrapper.find("[data-act='recharger']")
         .on("click", () => ouvrir_recap_retenues(dialog));
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='rescrape-export']")
+        .on("click", () =>
+          frappe.call({
+            method: "bank_retenue_sync.achat.retenue.rafraichir_export",
+            freeze: true,
+            freeze_message: __("Relecture du portail TEJ (~1 min)…"),
+            callback: () => ouvrir_recap_retenues(dialog),
+          })
+        );
       dialog
         .get_field("corps")
         .$wrapper.find("[data-act='voir-orphelin']")

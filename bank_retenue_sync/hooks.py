@@ -62,6 +62,10 @@ scheduler_events = {
         # decalees de la banque (heures pile) et des certificats recus (:20) pour ne pas se
         # disputer le worker unique du service, qui pilote un navigateur.
         "10 10,12,14,16,18 * * *": ["bank_retenue_sync.tasks.daily.depots_tej"],
+        # Export des certificats EMIS regenere une fois par jour (9h50, creux avant les depots
+        # de 10h10) : les certificats crees A LA MAIN sur le portail apparaissent dans le recap
+        # des retenues d'achat au plus tard le lendemain matin, sans attendre une soumission.
+        "50 9 * * *": ["bank_retenue_sync.tasks.daily.export_emis"],
         "35 9 * * *": ["bank_retenue_sync.tasks.daily.contrats_financement"],
         # Confirmation des ordres : en fin de journee, une fois les cinq passages faits.
         "30 17 * * *": ["bank_retenue_sync.tasks.daily.confirmation_ordres"],
