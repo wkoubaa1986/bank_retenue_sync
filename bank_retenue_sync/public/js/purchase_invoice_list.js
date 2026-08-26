@@ -315,6 +315,22 @@ function ouvrir_recap_retenues(dialog_existante) {
         .on("click", () => ouvrir_recap_retenues(dialog));
       dialog
         .get_field("corps")
+        .$wrapper.find("[data-act='voir-orphelin']")
+        .on("click", (e) => {
+          const $b = $(e.currentTarget);
+          frappe.call({
+            method: "bank_retenue_sync.tej.emis.voir_certificat_orphelin",
+            args: { reference: $b.data("reference") },
+            freeze: true,
+            freeze_message: __("Génération du PDF sur le portail (première fois : ~1 min)…"),
+            callback: (rv) => {
+              const v = rv.message || {};
+              if (v.file_url) window.open(v.file_url, "_blank");
+            },
+          });
+        });
+      dialog
+        .get_field("corps")
         .$wrapper.find("[data-act='recreer']")
         .on("click", (e) => {
           const $b = $(e.currentTarget);
@@ -506,7 +522,14 @@ function section_orphelins(d) {
   const lignes = orphelins
     .map(
       (o) => `<tr>
-        <td>${esc(o.reference || "—")}</td>
+        <td>${
+          o.reference
+            ? `<button class="btn btn-default btn-xs" data-act="voir-orphelin"
+                 data-reference="${esc(o.reference)}"
+                 title="${__("Générer et ouvrir le PDF du certificat depuis le portail — voir le document est le seul moyen de comprendre à quoi il correspond")}"
+                 >📜 ${esc((o.reference || "").slice(0, 8))}…</button>`
+            : "—"
+        }</td>
         <td>${esc(o.numero || "")}</td>
         <td>${esc(o.fournisseur || "")} <span class="text-muted">${esc(o.beneficiaire || "")}</span></td>
         <td>${esc(o.date_paiement || "")}</td>

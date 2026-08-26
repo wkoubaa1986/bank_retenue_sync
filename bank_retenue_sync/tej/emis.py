@@ -680,6 +680,33 @@ def verifier_concordances(paires):
 
 
 @frappe.whitelist()
+def voir_certificat_orphelin(reference):
+    """Genere et rend le PDF d'un certificat du portail SANS l'attacher a une facture. -> dict.
+
+    Pour un certificat SANS facture correspondante, voir le document est le seul moyen de
+    comprendre a quoi il correspond (fournisseur, montants, periode) — la ligne du recap n'a
+    ni facture ni piece ou cliquer. Le PDF est range en File prive non attache ; s'il a deja
+    ete telecharge (meme nom, suffixe d'homonymie compris), on le rend tel quel plutot que de
+    refaire un job de generation sur le worker unique."""
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from frappe.utils.file_manager import save_file
+
+    from bank_retenue_sync.bank import movements
+
+    existant = frappe.db.get_value("File", {"file_name": ["like", pdf.motif_fichier(reference)]},
+                                   "file_url")
+    if existant:
+        return {"file_url": existant, "statut": "deja telecharge"}
+
+    job = movements.start_job(ROUTE_JOB_PDF_EMIS, {"reference": reference})
+    movements.wait_job(job, timeout=DELAI_JOB)
+    contenu = _telecharger(reference)
+    f = save_file(pdf.nom_fichier(reference), contenu, None, None, is_private=1)
+    frappe.db.commit()
+    return {"file_url": f.file_url, "statut": "telecharge"}
+
+
+@frappe.whitelist()
 def attacher_certificat(facture, reference):
     """Bouton « Attacher ce certificat » du recap : pose le PDF du portail sur la facture.
 
