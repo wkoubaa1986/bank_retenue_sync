@@ -222,10 +222,16 @@ def certificats_emis(rafraichir: bool = False) -> list:
     i_num, i_ben = col("Numéro chez le déclarant"), col("Identifiant du bénéficiaire")
     i_etat, i_ref = col("État", "Etat"), col("Référence de certificat")
     i_cree, i_dp = col("Date de création", "Date de creation"), col("Date de paiement")
+    # Le nom et la retenue declaree : sans eux, un certificat au matricule inconnu d'ERPNext
+    # reste anonyme a l'ecran alors que l'export sait parfaitement QUI il paie et COMBIEN.
+    i_nom = col("Raison social du bénéficiaire", "Raison sociale du bénéficiaire")
+    i_rs = col("totalMontantRS")
     out = []
     for l in lignes[1:]:
         out.append({"numero": str(l[i_num] or "").strip() if i_num is not None else "",
                     "beneficiaire": matricule.normaliser(l[i_ben]) if i_ben is not None else "",
+                    "beneficiaire_nom": str(l[i_nom] or "").strip() if i_nom is not None else "",
+                    "retenue": _nombre_tej(l[i_rs]) if i_rs is not None else None,
                     "etat": str(l[i_etat] or "").strip().upper() if i_etat is not None else "",
                     "reference": str(l[i_ref] or "").strip() if i_ref is not None else "",
                     "cree": str(l[i_cree] or "").strip() if i_cree is not None else "",

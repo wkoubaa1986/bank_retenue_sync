@@ -519,6 +519,18 @@ class TestRapprochementsSuggeres(unittest.TestCase):
         self.assertEqual(out[0]["facture"], "ACC-PINV-2026-00088")
         self.assertEqual(out[0]["motif"], "numero")
 
+    def test_des_numeros_semblables_avec_des_matricules_differents_se_taisent(self):
+        """⚠️ CAS REEL DU 26/08/2026 : « 4/2026 » (NIZAR BELGUITH, loyer 7,14 DT) s'emboitait dans
+        le bill_no « 04/2026 » de la facture M.F.K — et le certificat a ete attache A TORT en
+        prod sur la foi des numeros. Des numeros semblables n'excusent pas des beneficiaires
+        differents : quand les deux matricules sont connus et different, pas de suggestion."""
+        lignes = [{"facture": "ACC-PINV-2026-00026", "matricule": "9999999Z",
+                   "date": "2026-04-20", "bill_no": "04/2026"}]
+        out = RET.rapprochements_suggeres(
+            [{"numero": "4/2026", "reference": "r", "beneficiaire": "1144181A",
+              "date_paiement": "20-02-2026"}], lignes)
+        self.assertEqual(out, [])
+
     def test_un_bill_no_trop_court_ne_s_emboite_pas(self):
         """« 30/2026 » contiendrait « 2026 » : cinq caracteres minimum, sinon tout s'emboite."""
         lignes = [{"facture": "F", "matricule": None, "date": "2026-06-20", "bill_no": "2026"}]

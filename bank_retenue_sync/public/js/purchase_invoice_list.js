@@ -392,10 +392,10 @@ function ouvrir_recap_retenues(dialog_existante) {
         .on("click", (e) => {
           const $b = $(e.currentTarget);
           frappe.confirm(
-            __("Attacher le certificat {0} à la facture {1} ? L'attachement vaut identification.", [
-              $b.data("reference"),
-              $b.data("facture"),
-            ]),
+            __(
+              "Ce certificat est au nom de <b>{0}</b>. L'attacher à la facture {1} ? VÉRIFIEZ que le fournisseur de la facture est bien le même — l'attachement vaut identification.",
+              [$b.data("beneficiaire") || "?", $b.data("facture")]
+            ),
             () =>
               frappe.call({
                 method: "bank_retenue_sync.tej.emis.attacher_certificat",
@@ -505,6 +505,7 @@ function section_orphelins(d) {
             : g.reference
               ? ` <button class="btn btn-default btn-xs" data-act="attacher-certificat"
                     data-facture="${esc(g.facture)}" data-reference="${esc(g.reference)}"
+                    data-beneficiaire="${esc(o.fournisseur || o.beneficiaire || "")}"
                     title="${__("Télécharger le certificat du portail et l'attacher à cette facture")}"
                     >📎 ${__("Attacher")}</button>`
               : "";
@@ -531,7 +532,8 @@ function section_orphelins(d) {
             : "—"
         }</td>
         <td>${esc(o.numero || "")}</td>
-        <td>${esc(o.fournisseur || "")} <span class="text-muted">${esc(o.beneficiaire || "")}</span></td>
+        <td>${esc(o.fournisseur || "?")} <span class="text-muted">${esc(o.beneficiaire || "")}</span></td>
+        <td class="text-right">${o.retenue != null ? esc(String(o.retenue)) : ""}</td>
         <td>${esc(o.date_paiement || "")}</td>
         <td>${esc(o.etat || "")}</td>
         <td>${cellule_suggestion(o)}</td>
@@ -559,7 +561,8 @@ function section_orphelins(d) {
       <table class="table table-bordered brs-recap-table" style="font-size:12px;margin:0">
         <thead><tr>
           <th>${__("Référence")}</th><th>${__("N° chez le déclarant")}</th>
-          <th>${__("Bénéficiaire")}</th><th>${__("Date de paiement")}</th>
+          <th>${__("Bénéficiaire")}</th><th class="text-right">${__("Retenue")}</th>
+          <th>${__("Date de paiement")}</th>
           <th>${__("État")}</th><th>${__("Facture probable")}</th>
         </tr></thead>
         <tbody>${lignes}</tbody>

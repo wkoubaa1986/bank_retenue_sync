@@ -480,7 +480,14 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
             # L'IDENTITE VIENT DU DOCUMENT : si le champ officiel est vide, la valeur lue sur
             # le scan (Extraction Facture Achat) parle a sa place — pour SUGGERER seulement.
             bill_no = (ligne.get("bill_no") or ligne.get("bill_no_scan") or "").strip()
-            if numero and bill_no and len(bill_no) >= 5                     and (bill_no in numero or numero in bill_no) and numero != bill_no:
+            # ⚠️ DES NUMEROS SEMBLABLES N'EXCUSENT PAS DES BENEFICIAIRES DIFFERENTS. Cas reel du
+            # 26/08/2026 : « 4/2026 » (NIZAR BELGUITH, loyer 7,14 DT) suggere vers la facture
+            # M.F.K au bill_no « 04/2026 » — attache A TORT en prod sur la foi des numeros.
+            # Quand les deux matricules sont connus et different, le signal se tait.
+            mat_connu = ligne.get("matricule") or ligne.get("matricule_scan")
+            if (numero and bill_no and len(bill_no) >= 5
+                    and (bill_no in numero or numero in bill_no) and numero != bill_no
+                    and not (mat and mat_connu and mat != mat_connu)):
                 out.append({"numero": numero, "reference": o.get("reference"),
                             "facture": ligne["facture"], "motif": "numero",
                             "ecart_jours": None,
@@ -671,8 +678,10 @@ def recapitulatif_retenues(depuis=None):
                 (f.file_name or "").replace("certificat_ras_", "").rsplit(".pdf", 1)[0])
         for c in orphelins_tej(export, cles_locales, depuis, emis.ETATS_VIVANTS,
                                frozenset(refs_attachees)):
+            # Le nom : la fiche fournisseur locale d'abord, sinon la raison sociale que
+            # l'export du portail porte deja — plus d'orphelin anonyme.
             orphelins.append({**c, "fournisseur": fournisseurs_par_matricule.get(
-                c.get("beneficiaire") or "", "")})
+                c.get("beneficiaire") or "", "") or (c.get("beneficiaire_nom") or "")})
     compte["tej_orphelins"] = len(orphelins)
     suggestions = rapprochements_suggeres(orphelins, lignes)
 
