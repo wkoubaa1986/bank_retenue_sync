@@ -283,6 +283,52 @@ def orphelins_tej(export, cles_locales, depuis, etats_vivants) -> list:
     return out
 
 
+def _date_portail(v):
+    """Une date du portail TEJ (JJ-MM-AAAA) ou d'ERPNext (AAAA-MM-JJ). -> date | None.
+
+    ⚠️ EXPLICITE, PAS DEVINEE : « 05-02-2026 » est ambigu pour un parseur souple (5 fevrier ou
+    2 mai) — et une suggestion fondee sur une date mal lue enverrait vers la mauvaise facture.
+    """
+    from datetime import datetime
+
+    if not v:
+        return None
+    s = str(v).strip()[:10]
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list:
+    """Les paires probables orphelin ↔ facture. Pure. SUGGESTIF : rien n'est lie.
+
+    Meme matricule fiscal ET date de paiement du certificat proche de la comptabilisation
+    (la soumission envoie posting_date comme date de paiement : sur les vrais cas, elles sont
+    identiques). C'est le cran juste au-dessus de « rien » : l'ecran montre la paire, l'humain
+    tranche — en general en corrigeant le « N° chez le declarant » ou le bill_no.
+    """
+    out = []
+    for o in orphelins or []:
+        mat = o.get("beneficiaire")
+        date_o = _date_portail(o.get("date_paiement") or o.get("cree"))
+        if not mat or not date_o:
+            continue
+        for ligne in lignes or []:
+            if ligne.get("matricule") != mat:
+                continue
+            date_l = _date_portail(ligne.get("date"))
+            if not date_l:
+                continue
+            ecart = abs((date_o - date_l).days)
+            if ecart <= int(tolerance_jours):
+                out.append({"numero": o.get("numero"), "reference": o.get("reference"),
+                            "facture": ligne["facture"], "ecart_jours": ecart})
+    return out
+
+
 @frappe.whitelist()
 def recapitulatif_retenues(depuis=None):
     """Le tableau croise ERPNext ↔ TEJ des retenues d'achat depuis le plancher. -> dict.
@@ -387,6 +433,7 @@ def recapitulatif_retenues(depuis=None):
             totaux["restant"] = round(totaux["restant"] + restant, 3)
 
         lignes.append({"facture": r.name, "fournisseur": r.supplier_name or r.supplier,
+                       "matricule": matricule.normaliser(r.tax_id),
                        "date": str(r.posting_date), "bill_no": r.bill_no or "",
                        "ttc": c["ttc_avant_retenue"], "due": c["due"], "saisie": c["saisie"],
                        "verdict": c["verdict"], "tej": tej,
@@ -419,6 +466,8 @@ def recapitulatif_retenues(depuis=None):
             orphelins.append({**c, "fournisseur": fournisseurs_par_matricule.get(
                 c.get("beneficiaire") or "", "")})
     compte["tej_orphelins"] = len(orphelins)
+    suggestions = rapprochements_suggeres(orphelins, lignes)
 
     return {"depuis": depuis, "seuil": seuil, "export_disponible": export_disponible,
-            "lignes": lignes, "totaux": totaux, "compte": compte, "orphelins": orphelins}
+            "lignes": lignes, "totaux": totaux, "compte": compte, "orphelins": orphelins,
+            "suggestions": suggestions}

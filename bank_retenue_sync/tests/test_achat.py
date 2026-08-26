@@ -441,5 +441,40 @@ class TestOrphelinsTej(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
 
+class TestRapprochementsSuggeres(unittest.TestCase):
+    """SUGGESTIF, jamais lie : meme matricule + paiement proche de la comptabilisation. Le cran
+    au-dessus de « rien » — l'ecran montre la paire, l'humain tranche."""
+
+    LIGNES = [{"facture": "ACC-PINV-2026-00003", "matricule": "1646863M", "date": "2026-02-06"},
+              {"facture": "ACC-PINV-2026-00026", "matricule": "9999999Z", "date": "2026-04-20"}]
+
+    def test_la_date_du_portail_se_lit_en_jour_mois_annee(self):
+        """« 05-02-2026 » est ambigu pour un parseur souple : ici c'est le 5 fevrier, point."""
+        self.assertEqual(str(RET._date_portail("05-02-2026")), "2026-02-05")
+        self.assertEqual(str(RET._date_portail("2026-02-05")), "2026-02-05")
+        self.assertIsNone(RET._date_portail("pas une date"))
+
+    def test_meme_matricule_et_meme_jour_suggerent(self):
+        out = RET.rapprochements_suggeres(
+            [{"numero": "2026-0012", "reference": "ref-1", "beneficiaire": "1646863M",
+              "date_paiement": "05-02-2026"}], self.LIGNES)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["facture"], "ACC-PINV-2026-00003")
+        self.assertEqual(out[0]["ecart_jours"], 1)
+
+    def test_un_autre_matricule_ne_suggere_rien(self):
+        """Le montant et la date peuvent coincider par hasard ; le matricule, non."""
+        out = RET.rapprochements_suggeres(
+            [{"numero": "X", "reference": "r", "beneficiaire": "1111111A",
+              "date_paiement": "06-02-2026"}], self.LIGNES)
+        self.assertEqual(out, [])
+
+    def test_trop_loin_dans_le_temps_ne_suggere_rien(self):
+        out = RET.rapprochements_suggeres(
+            [{"numero": "X", "reference": "r", "beneficiaire": "1646863M",
+              "date_paiement": "20-03-2026"}], self.LIGNES)
+        self.assertEqual(out, [])
+
+
 if __name__ == "__main__":
     unittest.main()

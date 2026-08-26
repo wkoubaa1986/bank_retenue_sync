@@ -308,6 +308,28 @@ function section_orphelins(d) {
   const esc = frappe.utils.escape_html;
   const orphelins = d.orphelins || [];
   if (!orphelins.length) return "";
+  // Suggestions par (numéro, référence) : même matricule + paiement proche de la
+  // comptabilisation. SUGGESTIF — l'écran montre la paire, l'humain tranche.
+  const sugg = {};
+  for (const g of d.suggestions || []) {
+    const cle = `${g.numero}|${g.reference}`;
+    (sugg[cle] = sugg[cle] || []).push(g);
+  }
+  const cellule_suggestion = (o) => {
+    const gs = sugg[`${o.numero}|${o.reference}`] || [];
+    if (!gs.length) return "—";
+    return gs
+      .map(
+        (g) =>
+          `<a href="/app/purchase-invoice/${encodeURIComponent(g.facture)}">${esc(g.facture)}</a>
+           <span class="text-muted" style="font-size:11px">${
+             g.ecart_jours === 0
+               ? __("même jour, même matricule")
+               : __("à {0} j, même matricule", [g.ecart_jours])
+           }</span>`
+      )
+      .join("<br>");
+  };
   const lignes = orphelins
     .map(
       (o) => `<tr>
@@ -315,8 +337,8 @@ function section_orphelins(d) {
         <td>${esc(o.numero || "")}</td>
         <td>${esc(o.fournisseur || "")} <span class="text-muted">${esc(o.beneficiaire || "")}</span></td>
         <td>${esc(o.date_paiement || "")}</td>
-        <td>${esc(o.cree || "")}</td>
         <td>${esc(o.etat || "")}</td>
+        <td>${cellule_suggestion(o)}</td>
       </tr>`
     )
     .join("");
@@ -325,14 +347,14 @@ function section_orphelins(d) {
       orphelins.length,
     ])}</h5>
     <p class="text-muted" style="font-size:12px;margin:0 0 8px">${__(
-      "Déclarés au fisc, mais aucun « N° chez le déclarant » ne correspond à une facture d'achat validée : numéro mal saisi sur le portail, ou facture absente de la comptabilité."
+      "Déclarés au fisc, mais aucun « N° chez le déclarant » ne correspond à une facture d'achat validée : numéro mal saisi sur le portail, ou facture absente de la comptabilité. La « facture probable » (même matricule, paiement au même moment) est une suggestion : vérifiez, puis corrigez le bill_no de la facture ou le numéro côté portail."
     )}</p>
     <div style="max-height:30vh;overflow:auto">
       <table class="table table-bordered brs-recap-table" style="font-size:12px;margin:0">
         <thead><tr>
           <th>${__("Référence")}</th><th>${__("N° chez le déclarant")}</th>
           <th>${__("Bénéficiaire")}</th><th>${__("Date de paiement")}</th>
-          <th>${__("Créé le")}</th><th>${__("État")}</th>
+          <th>${__("État")}</th><th>${__("Facture probable")}</th>
         </tr></thead>
         <tbody>${lignes}</tbody>
       </table>
