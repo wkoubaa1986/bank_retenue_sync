@@ -95,6 +95,16 @@ function etat_certificat(frm, ctx) {
     frm.dashboard.add_indicator(__("Certificat TEJ émis"), "green");
     return;
   }
+  // Fait observé le 15/08/2026 : TEJ refuse un contenu identique MÊME annulé. Prévenir avant le
+  // clic — soumettre tel quel, c'est un refus assuré ; changer la date de paiement change le
+  // contenu.
+  if (ctx.doublon_annule) {
+    frm.dashboard.add_indicator(
+      __("TEJ : un certificat ANNULÉ au même contenu existe ({0}) — le portail refusera une " +
+         "soumission identique", [ctx.doublon_annule.reference || ctx.doublon_annule.numero || "—"]),
+      "orange"
+    );
+  }
   const dep = ctx.depot_en_cours;
   if (!dep) return;
   const envoi = dep.statut === "en_envoi";
@@ -135,10 +145,17 @@ function etat_certificat(frm, ctx) {
 }
 
 function voir_certificat(ctx) {
+  // Un certificat attaché À LA MAIN (ère papier) n'a pas de référence portail : le nom du
+  // fichier joint est alors sa seule identité, et « null » à l'écran ferait douter de tout.
+  const ligne_ref = ctx.deja_emis.reference
+    ? `<p>${__("Référence")} : <b>${frappe.utils.escape_html(ctx.deja_emis.reference)}</b></p>`
+    : `<p>${__("Certificat attaché à la main")} : <b>${frappe.utils.escape_html(
+        ctx.deja_emis.file_name || ""
+      )}</b></p>`;
   frappe.msgprint({
     title: __("Certificat déjà émis"),
     indicator: "green",
-    message: `<p>${__("Référence")} : <b>${frappe.utils.escape_html(ctx.deja_emis.reference)}</b></p>
+    message: `${ligne_ref}
       <p><a href="${frappe.utils.escape_html(ctx.deja_emis.file_url)}" target="_blank">${__(
         "Ouvrir le PDF joint à la facture"
       )} ↗</a></p>

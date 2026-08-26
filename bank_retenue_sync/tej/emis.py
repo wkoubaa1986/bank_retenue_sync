@@ -141,14 +141,47 @@ def contexte(facture: str) -> dict:
     }
 
 
+def nom_de_certificat_manuel(nom) -> bool:
+    """Ce nom de fichier annonce-t-il un certificat de retenue attache A LA MAIN ? Pure.
+
+    ⚠️ LA BARRIERE NE VOYAIT QUE SA PROPRE CONVENTION (`certificat_ras_*`), ET C'EST UN ANGLE
+    MORT REEL : au 26/08/2026, TREIZE factures 2026 portent un certificat attache a la main
+    (« Retenue à la source -JEGHAM... ») — l'ere papier, d'avant le portail obligatoire (04/2026).
+    Ces certificats-la ne figurent NI dans le nom attendu, NI dans l'export du portail : rien ne
+    barrait une seconde declaration de la meme retenue. Meme doctrine que le sens vente : le scan
+    attache a la facture prouve la retenue.
+
+    « retenue » + « source » dans un .pdf : couvre les deux graphies (avec et sans accents) sans
+    dependre de l'ordre des mots. Un scan de facture nomme ainsi par erreur bloquerait l'emission
+    — se corrige en renommant la piece, quand une double declaration ne se corrige pas.
+    """
+    n = (nom or "").lower().strip()
+    return n.endswith(".pdf") and "retenue" in n and "source" in n
+
+
+def _certificat_manuel(facture: str):
+    """Le certificat attache A LA MAIN a cette facture, ou None."""
+    for f in frappe.db.get_all("File", filters={"attached_to_doctype": "Purchase Invoice",
+                                                "attached_to_name": facture},
+                               fields=["file_name", "file_url"], order_by="creation"):
+        if nom_de_certificat_manuel(f.file_name):
+            return {"reference": None, "file_url": f.file_url, "file_name": f.file_name,
+                    "manuel": True}
+    return None
+
+
 def _certificat_attache(facture: str):
-    """Le certificat deja attache a cette facture, ou None. La reference vit dans le nom."""
+    """Le certificat deja attache a cette facture, ou None. La reference vit dans le nom.
+
+    Deux provenances : le PDF telecharge par ce module (`certificat_ras_<reference>.pdf`), et le
+    certificat attache a la main (reference inconnue — `manuel: True`). Les deux prouvent la meme
+    chose : la retenue est deja certifiee, il n'y a rien a soumettre."""
     f = frappe.db.get_value("File", {"attached_to_doctype": "Purchase Invoice",
                                      "attached_to_name": facture,
                                      "file_name": ["like", "certificat_ras_%"]},
                             ["file_name", "file_url"], as_dict=1)
     if not f:
-        return None
+        return _certificat_manuel(facture)
     ref = (f.file_name or "").replace("certificat_ras_", "").rsplit(".pdf", 1)[0]
     return {"reference": ref, "file_url": f.file_url, "file_name": f.file_name}
 
@@ -584,6 +617,20 @@ def preparer(facture):
             ctx["deja_chez_tej"] = deja_chez_tej(ctx["bill_no"], ctx["matricule"])
         except Exception:
             ctx["deja_chez_tej"] = None
+        # ⚠️ FAIT OBSERVE LE 15/08/2026 (ACC-PINV-2026-00093) : TEJ refuse un contenu identique
+        # MEME quand le certificat precedent est ANNULE — l'hypothese « un annule ne bloque pas »
+        # est contredite par le portail. On ne bloque pas ici (TEJ tranche proprement, avant tout
+        # depot), mais on PREVIENT : cliquer sans changer la date de paiement, c'est un refus
+        # assure.
+        if not ctx.get("deja_chez_tej"):
+            try:
+                cible = (ctx["bill_no"] or "").strip()
+                ctx["doublon_annule"] = next(
+                    (c for c in certificats_emis()
+                     if c["numero"] == cible and c["beneficiaire"] == ctx["matricule"]
+                     and c["etat"] not in ETATS_VIVANTS), None)
+            except Exception:
+                ctx["doublon_annule"] = None
     # Un depot en analyse doit se voir AVANT le premier clic, pas au refus du serveur.
     en_cours = M_depot.en_cours(facture)
     ctx["depot_en_cours"] = M_depot.vue(en_cours) if en_cours else None
@@ -622,7 +669,17 @@ def etats(factures):
         out[ligne["facture"]] = M_depot.vue(ligne)
 
     # ⚠️ LE PDF PRIME SUR TOUTE LIGNE DE DEPOT. Il est la memoire du certificat : s'il est la, le
-    # certificat existe, quel qu'ait ete le sort des depots qui l'ont precede.
+    # certificat existe, quel qu'ait ete le sort des depots qui l'ont precede. Le certificat
+    # attache A LA MAIN (ere papier) vaut preuve au meme titre ; celui du module, nomme
+    # `certificat_ras_*`, passe en dernier et l'emporte s'il coexiste avec un manuel.
+    for f in frappe.get_all("File", filters={"attached_to_doctype": "Purchase Invoice",
+                                             "attached_to_name": ["in", noms]},
+                            fields=["attached_to_name", "file_name", "file_url"],
+                            order_by="creation"):
+        if nom_de_certificat_manuel(f["file_name"]):
+            out[f["attached_to_name"]] = {"statut": "emis", "reference": None,
+                                          "file_url": f["file_url"],
+                                          "message": _("certificat attaché à la main")}
     for f in frappe.get_all("File", filters={"attached_to_doctype": "Purchase Invoice",
                                              "attached_to_name": ["in", noms],
                                              "file_name": ["like", "certificat_ras_%"]},

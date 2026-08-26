@@ -298,3 +298,36 @@ class TestRefusDuPortail(unittest.TestCase):
     def test_message_vide(self):
         self.assertFalse(self._f()(None))
         self.assertFalse(self._f()(""))
+
+
+class TestCertificatManuel(unittest.TestCase):
+    """⚠️ LA BARRIERE NE VOYAIT QUE SA PROPRE CONVENTION (`certificat_ras_*`). Au 26/08/2026,
+    treize factures 2026 portent un certificat attache a la main, invisible pour elle ET pour
+    l'export du portail (ere papier) : rien ne barrait une seconde declaration de la meme
+    retenue."""
+
+    def _f(self):
+        from bank_retenue_sync.tej.emis import nom_de_certificat_manuel
+        return nom_de_certificat_manuel
+
+    def test_les_noms_reels_sont_reconnus(self):
+        """Tels qu'ils sont en base — accents, tirets, ordre des mots variables."""
+        for nom in ("Retenue à la source -JEGHAM INDUSTRIES - FA N° 2026-0012 du 05-02-2026.pdf",
+                    "Retenue a la source Jgham industrie.pdf",
+                    "retenue à la source 2503747.pdf",
+                    "Fac N° 2403029-AQUA SERVICE-retenue à la source.pdf"):
+            self.assertTrue(self._f()(nom), nom)
+
+    def test_le_scan_de_la_facture_n_est_pas_un_certificat(self):
+        for nom in ("Erectroquip.pdf", "Fac N°  FA-2026-0012-JEGHAM Industries.pdf",
+                    "SOCIÉTÉ TRITECHace8dd.pdf"):
+            self.assertFalse(self._f()(nom), nom)
+
+    def test_seul_un_pdf_compte(self):
+        """Meme doctrine que la piece justificative d'achat : un JPG ne se lit ni ne s'imprime
+        pareil au controle."""
+        self.assertFalse(self._f()("retenue à la source.jpg"))
+
+    def test_le_vide_ne_prouve_rien(self):
+        self.assertFalse(self._f()(None))
+        self.assertFalse(self._f()(""))
