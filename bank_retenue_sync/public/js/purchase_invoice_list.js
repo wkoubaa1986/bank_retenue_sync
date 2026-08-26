@@ -164,7 +164,7 @@ function pill_paiement(p, dt) {
   return `<span class="brs-tej-pill ${mod.couleur}">${mod.libelle}</span>${restant}`;
 }
 
-function ouvrir_recap_retenues() {
+function ouvrir_recap_retenues(dialog_existante) {
   frappe.call({
     method: "bank_retenue_sync.achat.retenue.recapitulatif_retenues",
     freeze: true,
@@ -244,14 +244,24 @@ function ouvrir_recap_retenues() {
             "Le service TEJ est injoignable : la colonne TEJ repose sur les seules preuves locales (PDF attachés, dépôts). Un certificat existant sur le portail mais jamais attaché peut apparaître « manquant »."
           )}</p>`;
 
-      const dialog = new frappe.ui.Dialog({
-        title: __("Retenues à la source achat — depuis le {0}", [
-          frappe.datetime.str_to_user(d.depuis),
-        ]),
-        size: "extra-large",
-        fields: [{ fieldtype: "HTML", fieldname: "corps" }],
-      });
+      const titre = __("Retenues à la source achat — depuis le {0}", [
+        frappe.datetime.str_to_user(d.depuis),
+      ]);
+      // Le dialogue est une PHOTOGRAPHIE prise au clic : « Actualiser » reprend la photo en
+      // place, sans fermer. La colonne TEJ, elle, lit l'export que le service détient — le
+      // rescrape du portail reste réservé aux soumissions réelles (worker unique).
+      const dialog =
+        dialog_existante ||
+        new frappe.ui.Dialog({
+          title: titre,
+          size: "extra-large",
+          fields: [{ fieldtype: "HTML", fieldname: "corps" }],
+        });
+      if (dialog_existante) dialog.set_title(titre);
       dialog.get_field("corps").$wrapper.html(`
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <button class="btn btn-default btn-xs" data-act="recharger">🔄 ${__("Actualiser")}</button>
+        </div>
         ${avert_export}
         <div class="brs-recap-kpis">${kpis}</div>
         <div style="max-height:55vh;overflow:auto">
@@ -275,7 +285,11 @@ function ouvrir_recap_retenues() {
           </table>
         </div>
         ${section_orphelins(d)}`);
-      dialog.show();
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='recharger']")
+        .on("click", () => ouvrir_recap_retenues(dialog));
+      if (!dialog_existante) dialog.show();
     },
   });
 }
