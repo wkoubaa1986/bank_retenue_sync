@@ -327,5 +327,79 @@ class TestCentreDeCoutDeLaRetenue(unittest.TestCase):
             RET.centre_de_cout = vrai
 
 
+class TestPlancherDuPerimetre(unittest.TestCase):
+    """⚠️ SEUL L'EXERCICE 2026 EST CONTROLE (decision du 26/08/2026). Une facture comptabilisee
+    avant le 01/01/2026 appartient a un exercice clos : y poser une retenue ou y deplacer une date
+    au moment d'un enregistrement tardif ferait bouger des ecritures que plus personne ne doit
+    toucher."""
+
+    def test_une_facture_2026_est_dans_le_perimetre(self):
+        self.assertTrue(R.dans_le_perimetre(date(2026, 1, 1)))
+        self.assertTrue(R.dans_le_perimetre("2026-08-26"))
+
+    def test_une_facture_2025_est_hors_perimetre(self):
+        self.assertFalse(R.dans_le_perimetre(date(2025, 12, 31)))
+        self.assertFalse(R.dans_le_perimetre("2020-08-03"))
+
+    def test_le_plancher_est_reglable(self):
+        self.assertFalse(R.dans_le_perimetre("2026-06-30", plancher="2026-07-01"))
+        self.assertTrue(R.dans_le_perimetre("2026-07-01", plancher="2026-07-01"))
+
+    def test_dans_le_doute_on_controle(self):
+        """Une date absente (ERPNext posera la date du jour) ou illisible ne doit pas offrir une
+        sortie de perimetre silencieuse : le plancher exclut le passe connu, pas l'inconnu."""
+        self.assertTrue(R.dans_le_perimetre(None))
+        self.assertTrue(R.dans_le_perimetre("n'importe quoi"))
+
+
+class _LigneMontant:
+    """Une ligne de taxe avec son montant — ce que `corriger_ligne` lit et redresse."""
+
+    def __init__(self, account_head, tax_amount, add_deduct_tax="Add"):
+        self.account_head, self.tax_amount, self.add_deduct_tax = (account_head, tax_amount,
+                                                                   add_deduct_tax)
+
+
+class _FactureMontants:
+    """Une facture reduite a ses taxes et a son total, sans base ni recalcul ERPNext."""
+
+    def __init__(self, taxes, grand_total):
+        self._d = {"taxes": taxes}
+        self.grand_total = grand_total
+
+    def get(self, k, defaut=None):
+        return self._d.get(k, defaut)
+
+    def calculate_taxes_and_totals(self):
+        pass
+
+
+class TestCorrectionMultiLignes(unittest.TestCase):
+    """⚠️ `saisie` EST LA SOMME DES LIGNES DE DEDUCTION. Deux lignes de retenue saisies (doublon de
+    saisie), et l'ancienne correction ne redressait que la premiere : le total restait faux, le
+    verdict aussi, et rien ne le disait."""
+
+    def test_les_doublons_sont_ramenes_a_zero(self):
+        taxes = [_LigneMontant("TVA 19% - A&S", 175.311),
+                 _LigneMontant("Retenue a la source achat - A&S", 11.99, "Deduct"),
+                 _LigneMontant("Retenue a la source achat - A&S", 11.99, "Deduct")]
+        # grand_total net des DEUX retenues : 1 099,011 - 23,98.
+        f = _FactureMontants(taxes, 1075.031)
+        res = RET.corriger_ligne(f)
+        self.assertEqual(res["statut"], "corrigee")
+        self.assertEqual(res["doublons_annules"], 1)
+        self.assertEqual(round(taxes[1].tax_amount, 3), 10.99)
+        self.assertEqual(taxes[2].tax_amount, 0)
+
+    def test_une_seule_ligne_fausse_se_corrige_comme_avant(self):
+        taxes = [_LigneMontant("TVA 19% - A&S", 175.311),
+                 _LigneMontant("Retenue a la source achat - A&S", 15.0, "Deduct")]
+        f = _FactureMontants(taxes, 1084.011)
+        res = RET.corriger_ligne(f)
+        self.assertEqual(res["statut"], "corrigee")
+        self.assertNotIn("doublons_annules", res)
+        self.assertEqual(round(taxes[1].tax_amount, 3), 10.99)
+
+
 if __name__ == "__main__":
     unittest.main()

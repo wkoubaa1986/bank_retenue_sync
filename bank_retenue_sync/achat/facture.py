@@ -344,8 +344,11 @@ def diagnostic(nom) -> dict:
     doc = frappe.get_doc("Purchase Invoice", nom)
     facture = _lu(doc)
     extraction = extraction_de(nom)
+    perimetre = regles.dans_le_perimetre(doc.posting_date, _plancher())
     return {"local": regles.est_local(facture["pays_fournisseur"]),
-            "manques": regles.bloquants(facture, _pieces_jointes(nom), extraction, *_seuils()),
+            "dans_perimetre": perimetre,
+            "manques": (regles.bloquants(facture, _pieces_jointes(nom), extraction, *_seuils())
+                        if perimetre else []),
             "extraction": extraction, "retenue": facture["controle_retenue"],
             "ttc_avant_retenue": facture["total_ttc"], "tva": facture["total_tva"]}
 
@@ -361,6 +364,10 @@ def diagnostic_maintenant(nom):
 def avant_validation(doc, method=None):
     """Hook `before_submit` : refuse la validation tant qu'un manque subsiste."""
     if not controle_actif() or doc.get("is_return"):
+        return
+    # ⚠️ PLANCHER DU 01/01/2026 (decision du 26/08/2026) : une facture d'un exercice anterieur se
+    # valide sans controle ni retenue — la corriger aujourd'hui toucherait un exercice clos.
+    if not regles.dans_le_perimetre(doc.posting_date, _plancher()):
         return
     facture = _lu(doc)
     if not regles.est_local(facture["pays_fournisseur"]):
@@ -399,6 +406,24 @@ def avant_validation(doc, method=None):
                         indicator="orange", alert=True)
 
     refus = regles.bloquants(facture, pieces, extraction, *_seuils())
+
+    # ⚠️ LA RETENUE SE VERROUILLE AUSSI ICI, ET C'EST LE MEME TROU QUE LES DATES. Le Desk sait
+    # enregistrer ET valider en un seul appel : le document arrive alors avec `docstatus = 1`,
+    # `a_l_enregistrement` sort sans rien poser, et une ligne de retenue modifiee ou supprimee
+    # dans ce dernier geste partait telle quelle — sans retenue, sans contrôle, sans bruit.
+    # On ne CORRIGE pas ici : changer la table des taxes apres le `validate` d'ERPNext laisserait
+    # un echeancier calcule sur l'ancien total. On refuse, et l'enregistrement — qui, lui, pose et
+    # redresse tout seul — suffit a se remettre en règle.
+    c = facture["controle_retenue"]
+    if c["verdict"] == "manquante":
+        refus.append("la retenue à la source de %s DT (1 %% de %s, timbre exclu) n'est pas posée : "
+                     "enregistrez la facture — elle se pose seule — puis validez"
+                     % (c["due"], c["assiette"]))
+    elif c["verdict"] == "montant faux":
+        refus.append("la retenue à la source saisie (%s DT) ne vaut pas ce qui est dû (%s DT) : "
+                     "enregistrez la facture — elle se corrige seule — puis validez"
+                     % (c["saisie"], c["due"]))
+
     if refus:
         frappe.throw(_("Facture d'achat locale :<br>• {0}").format(
             "<br>• ".join(frappe.utils.escape_html(m) for m in refus)),
@@ -419,6 +444,11 @@ def a_l_enregistrement(doc, method=None):
     la facture pour l'y ajouter.
     """
     if not controle_actif() or doc.get("is_return") or doc.docstatus != 0:
+        return
+    # ⚠️ PLANCHER DU 01/01/2026 (decision du 26/08/2026). Se juge sur la date de comptabilisation
+    # TELLE QUE SAISIE, avant tout alignement : une facture d'un exercice anterieur enregistree
+    # aujourd'hui ne doit recevoir ni retenue ni correction — l'exercice est clos.
+    if not regles.dans_le_perimetre(doc.posting_date, _plancher()):
         return
     if not regles.est_local(frappe.db.get_value("Supplier", doc.supplier, "country")):
         return
@@ -539,3 +569,8 @@ def _seuil():
 
 def _taux():
     return flt(_reglage("ras_achat_taux", None) or regles.TAUX_RETENUE, 3)
+
+
+def _plancher():
+    """Le plancher du perimetre : les factures comptabilisees avant lui ne sont pas controlees."""
+    return _reglage("controle_achat_plancher", None) or regles.PLANCHER_CONTROLE

@@ -129,14 +129,26 @@ def corriger_ligne(doc) -> dict:
     if c["verdict"] != "montant faux":
         return {"statut": c["verdict"], **c}
     compte = compte_retenue()
-    for ligne in doc.get("taxes") or []:
-        if ligne.add_deduct_tax == "Deduct" and regles.MOT_RETENUE in (ligne.account_head or ""):
-            avant = flt(ligne.tax_amount, 3)
-            ligne.tax_amount = c["due"]
-            ligne.account_head = compte
-            doc.calculate_taxes_and_totals()
-            return {"statut": "corrigee", "avant": avant, "apres": c["due"], **c}
-    return {"statut": "ligne introuvable", **c}
+    # ⚠️ TOUTES LES LIGNES DE RETENUE, PAS SEULEMENT LA PREMIERE. `saisie` est la SOMME des lignes
+    # de deduction : n'en redresser qu'une laisse le total faux — la premiere porte le du, les
+    # suivantes (doublons de saisie) sont ramenees a zero, et chacune est dite.
+    lignes_retenue = [l for l in (doc.get("taxes") or [])
+                      if l.add_deduct_tax == "Deduct"
+                      and regles.MOT_RETENUE in (l.account_head or "")]
+    if not lignes_retenue:
+        return {"statut": "ligne introuvable", **c}
+    avant = flt(c["saisie"], 3)
+    annulees = 0
+    for i, ligne in enumerate(lignes_retenue):
+        ligne.tax_amount = c["due"] if i == 0 else 0
+        ligne.account_head = compte if i == 0 else ligne.account_head
+        if i > 0:
+            annulees += 1
+    doc.calculate_taxes_and_totals()
+    res = {"statut": "corrigee", "avant": avant, "apres": c["due"], **c}
+    if annulees:
+        res["doublons_annules"] = annulees
+    return res
 
 
 def completer_centre(doc) -> dict:
@@ -199,13 +211,18 @@ def inventaire(annee=None, seuil=None) -> dict:
     """
     annee = annee or frappe.utils.getdate(frappe.utils.nowdate()).year
     seuil = flt(seuil or _seuil(), 3)
+    # ⚠️ PLANCHER DU PERIMETRE : meme regle que les hooks (facture._plancher). Une annee demandee
+    # entierement anterieure au plancher rend un inventaire vide — c'est voulu, l'exercice est clos.
+    plancher = _reglage("controle_achat_plancher", None) or regles.PLANCHER_CONTROLE
     rows = frappe.db.sql("""select p.name, p.supplier, p.posting_date, p.grand_total
                             from `tabPurchase Invoice` p
                             join `tabSupplier` s on s.name = p.supplier
                             where p.docstatus = 1 and s.country = %(pays)s
                               and year(p.posting_date) = %(annee)s
+                              and p.posting_date >= %(plancher)s
                             order by p.posting_date""",
-                         {"pays": regles.PAYS_LOCAL, "annee": annee}, as_dict=1)
+                         {"pays": regles.PAYS_LOCAL, "annee": annee, "plancher": plancher},
+                         as_dict=1)
     out = {"annee": annee, "factures": 0, "conformes": 0, "manquantes": 0, "fausses": 0,
            "manque_total": 0.0, "detail": []}
     for r in rows:

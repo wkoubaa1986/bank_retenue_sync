@@ -52,6 +52,7 @@
   "last_tej_sync",
   "section_achat",
   "controle_achat_actif",
+  "controle_achat_plancher",
   "ras_achat_seuil",
   "ras_achat_taux",
   "column_break_achat",
@@ -365,6 +366,13 @@
    "fieldtype": "Check",
    "label": "Controler les factures d'achat locales",
    "description": "Refuse la validation d'une facture d'un fournisseur tunisien tant que le scan n'est pas joint, que le stock et le magasin ne sont pas renseignes, ou que les totaux saisis different de ceux du scan. Decoche : plus aucun controle."
+  },
+  {
+   "default": "2026-01-01",
+   "fieldname": "controle_achat_plancher",
+   "fieldtype": "Date",
+   "label": "Plancher des controles d'achat",
+   "description": "Les factures comptabilisees AVANT cette date ne sont ni controlees ni retenues : l'exercice est clos. Vide : 01/01/2026."
   },
   {
    "default": "1000",

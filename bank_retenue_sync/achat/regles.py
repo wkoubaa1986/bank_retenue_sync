@@ -232,6 +232,38 @@ def controle_retenue(grand_total, lignes, seuil: float = SEUIL_RETENUE,
             "due": due, "saisie": saisie, "ecart": ecart, "verdict": verdict}
 
 
+# ⚠️ PLANCHER DU PERIMETRE (decision utilisateur du 26/08/2026) : seules les factures dont la date
+# de comptabilisation est au 01/01/2026 ou apres sont controlees. Les exercices anterieurs sont
+# clos : y poser une retenue ou y deplacer une date au moment d'un enregistrement tardif ferait
+# bouger des ecritures que plus personne ne doit toucher. Meme logique de plancher que les
+# anomalies de commandes (customization_app, 01/07/2026).
+PLANCHER_CONTROLE = "2026-01-01"
+
+
+def dans_le_perimetre(posting_date, plancher=PLANCHER_CONTROLE) -> bool:
+    """La facture est-elle dans le perimetre des controles ? Fonction pure.
+
+    ⚠️ EN CAS DE DOUTE, ON CONTROLE. Une date absente (nouvelle facture non datee : ERPNext posera
+    la date du jour) ou illisible ne doit pas offrir une sortie de perimetre silencieuse — le
+    plancher exclut le passe connu, pas l'inconnu.
+    """
+    if not posting_date:
+        return True
+    try:
+        from datetime import date, datetime
+
+        def _d(v):
+            if isinstance(v, datetime):
+                return v.date()
+            if isinstance(v, date):
+                return v
+            return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+
+        return _d(posting_date) >= _d(plancher)
+    except Exception:
+        return True
+
+
 # Ecart maximal admis entre la date lue sur le scan et la date de comptabilisation. Large : une
 # facture peut etre saisie plusieurs semaines apres son emission, ou a cheval sur deux exercices.
 MARGE_DATE_JOURS = 400
