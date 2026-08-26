@@ -360,36 +360,43 @@ def recreer_avec_retenue(facture):
 
 @frappe.whitelist()
 def lire_scans_manquants():
-    """Lit le scan des factures du recap SANS n° fournisseur, pour leur rendre leur identite.
+    """LANCE EN TACHE DE FOND la lecture des scans des factures sans n° fournisseur. -> dict.
 
-    L'extraction pose le bill_no directement en base (db.set_value : possible meme sur une
-    facture validee) et range numero + matricule lus dans Extraction Facture Achat — de quoi
-    faire parler les suggestions. Chaque lecture coute un appel OpenAI : seules les factures du
-    perimetre sans bill_no et avec un PDF joint sont lues.
+    ⚠️ EN TACHE DE FOND, ET C'EST OBLIGATOIRE : une quinzaine de scans a un appel OpenAI chacun
+    depasse le timeout du proxy — en prod, le clic rendait « La Requête a Expirée » et la
+    transaction annulait TOUTES les lectures (constate le 26/08/2026). La requete desk ne fait
+    que compter et enqueuer ; l'ecran invite a actualiser dans quelques minutes.
     """
     frappe.only_for(["System Manager", "Accounts Manager"])
-    from bank_retenue_sync.achat import facture as M_facture
     from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
 
-    rows = frappe.db.sql("""select p.name from `tabPurchase Invoice` p
-                            join `tabSupplier` s on s.name = p.supplier
-                            where p.docstatus = 1 and s.country = %(pays)s
-                              and p.posting_date >= %(depuis)s
-                              and ifnull(p.bill_no, '') = ''
-                            order by p.posting_date""",
-                         {"pays": regles.PAYS_LOCAL, "depuis": str(_plancher_achat())})
-    resultats = []
-    for (nom,) in rows:
+    noms = [r[0] for r in frappe.db.sql(
+        """select p.name from `tabPurchase Invoice` p
+           join `tabSupplier` s on s.name = p.supplier
+           where p.docstatus = 1 and s.country = %(pays)s
+             and p.posting_date >= %(depuis)s
+             and ifnull(p.bill_no, '') = ''
+           order by p.posting_date""",
+        {"pays": regles.PAYS_LOCAL, "depuis": str(_plancher_achat())})]
+    if not noms:
+        return {"statut": "rien a lire", "factures": 0}
+    frappe.enqueue("bank_retenue_sync.achat.retenue.executer_lecture_scans",
+                   queue="long", timeout=3600, job_name="lecture scans achats", noms=noms)
+    return {"statut": "lance", "factures": len(noms)}
+
+
+def executer_lecture_scans(noms):
+    """La lecture elle-meme, en worker. Un COMMIT PAR FACTURE : un scan illisible ou une panne
+    OpenAI n'emporte pas les lectures deja faites — c'est tout l'interet de sortir du clic."""
+    from bank_retenue_sync.achat import facture as M_facture
+
+    for nom in noms or []:
         try:
-            res = M_facture.extraire(nom, forcer=False)
-            resultats.append({"facture": nom, "statut": res.get("statut"),
-                              "invoice_no": res.get("invoice_no")})
+            M_facture.extraire(nom, forcer=False)
+            frappe.db.commit()
         except Exception:
+            frappe.db.rollback()
             frappe.log_error(title="Lecture scan %s" % nom, message=frappe.get_traceback())
-            frappe.clear_last_message()
-            resultats.append({"facture": nom, "statut": "erreur"})
-    frappe.db.commit()
-    return resultats
 
 
 def orphelins_tej(export, cles_locales, depuis, etats_vivants,

@@ -353,8 +353,21 @@ function ouvrir_recap_retenues(dialog_existante) {
           frappe.call({
             method: "bank_retenue_sync.achat.retenue.lire_scans_manquants",
             freeze: true,
-            freeze_message: __("Lecture des scans (OpenAI)…"),
-            callback: () => ouvrir_recap_retenues(dialog),
+            freeze_message: __("Lancement de la lecture des scans…"),
+            callback: (rl) => {
+              const v = rl.message || {};
+              frappe.msgprint({
+                title: __("Lecture des scans"),
+                indicator: v.statut === "lance" ? "blue" : "green",
+                message:
+                  v.statut === "lance"
+                    ? __(
+                        "{0} scan(s) en cours de lecture en tâche de fond (un appel OpenAI par facture). Cliquez « Actualiser » dans quelques minutes.",
+                        [v.factures]
+                      )
+                    : __("Toutes les factures du périmètre ont déjà leur n° fournisseur."),
+              });
+            },
           })
         );
       dialog
