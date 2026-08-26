@@ -319,7 +319,8 @@ def recapitulatif_retenues(depuis=None):
         frappe.clear_last_message()
 
     rows = frappe.db.sql("""select p.name, p.supplier, s.supplier_name, s.tax_id,
-                                   p.posting_date, p.bill_no, p.grand_total
+                                   p.posting_date, p.bill_no, p.grand_total,
+                                   p.status, p.outstanding_amount
                             from `tabPurchase Invoice` p
                             join `tabSupplier` s on s.name = p.supplier
                             where p.docstatus = 1 and s.country = %(pays)s
@@ -327,9 +328,9 @@ def recapitulatif_retenues(depuis=None):
                             order by p.posting_date""",
                          {"pays": regles.PAYS_LOCAL, "depuis": depuis}, as_dict=1)
 
-    lignes, totaux = [], {"due": 0.0, "saisie": 0.0, "manque": 0.0}
+    lignes, totaux = [], {"due": 0.0, "saisie": 0.0, "manque": 0.0, "restant": 0.0}
     compte = {"factures": 0, "conformes": 0, "manquantes": 0, "fausses": 0,
-              "tej_emis": 0, "tej_en_cours": 0, "tej_manquants": 0}
+              "tej_emis": 0, "tej_en_cours": 0, "tej_manquants": 0, "impayees": 0}
     for r in rows:
         taxes = frappe.db.get_all("Purchase Taxes and Charges", filters={"parent": r.name},
                                   fields=["account_head", "tax_amount", "add_deduct_tax"],
@@ -378,10 +379,18 @@ def recapitulatif_retenues(depuis=None):
         if c["verdict"] != "conforme":
             totaux["manque"] = round(totaux["manque"] - c["ecart"], 3)
 
+        # L'etat du paiement, tel qu'ERPNext le tient : le statut pour le mot, le restant
+        # pour le chiffre — un « Partiellement paye » sans montant ne dit rien d'utile.
+        restant = flt(r.outstanding_amount, 3)
+        if restant > 0.005:
+            compte["impayees"] += 1
+            totaux["restant"] = round(totaux["restant"] + restant, 3)
+
         lignes.append({"facture": r.name, "fournisseur": r.supplier_name or r.supplier,
                        "date": str(r.posting_date), "bill_no": r.bill_no or "",
                        "ttc": c["ttc_avant_retenue"], "due": c["due"], "saisie": c["saisie"],
-                       "verdict": c["verdict"], "tej": tej})
+                       "verdict": c["verdict"], "tej": tej,
+                       "paiement": {"statut": r.status or "", "restant": restant}})
 
     # L'AUTRE SENS : les certificats du portail sans facture correspondante. Les cles locales
     # couvrent TOUTES les factures validees, sans plancher — un certificat 2026 d'une facture

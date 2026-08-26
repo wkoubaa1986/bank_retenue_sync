@@ -145,6 +145,25 @@ const VERDICTS_COMPTA = {
   "montant faux": { couleur: "orange", libelle: __("montant faux") },
 };
 
+// L'état de paiement, tel qu'ERPNext le tient sur la facture. Le restant s'affiche dès qu'il
+// existe : « Partiellement payé » sans montant ne dit rien d'utile.
+const ETATS_PAIEMENT = {
+  Paid: { couleur: "green", libelle: __("payée ✓") },
+  Unpaid: { couleur: "red", libelle: __("impayée") },
+  Overdue: { couleur: "red", libelle: __("en retard") },
+  "Partly Paid": { couleur: "orange", libelle: __("partiellement payée") },
+  "Debit Note Issued": { couleur: "gray", libelle: __("avoir émis") },
+};
+
+function pill_paiement(p, dt) {
+  const mod = ETATS_PAIEMENT[p.statut] || { couleur: "gray", libelle: p.statut || "—" };
+  const restant =
+    p.restant > 0.005
+      ? ` <span class="text-muted" style="font-size:11px">${__("reste {0}", [dt(p.restant)])}</span>`
+      : "";
+  return `<span class="brs-tej-pill ${mod.couleur}">${mod.libelle}</span>${restant}`;
+}
+
 function ouvrir_recap_retenues() {
   frappe.call({
     method: "bank_retenue_sync.achat.retenue.recapitulatif_retenues",
@@ -172,6 +191,11 @@ function ouvrir_recap_retenues() {
         tuile(__("Certificat manquant"), c.tej_manquants || 0, c.tej_manquants),
         tuile(__("TEJ sans facture"), c.tej_orphelins || 0, c.tej_orphelins),
         tuile(__("Manque à retenir"), dt(t.manque), t.manque),
+        tuile(
+          __("Impayées"),
+          `${c.impayees || 0} <span style="font-size:12px;font-weight:400">${dt(t.restant)}</span>`,
+          c.impayees
+        ),
       ].join("");
 
       const pill = (mod, texte, titre) =>
@@ -207,6 +231,7 @@ function ouvrir_recap_retenues() {
             <td class="text-right">${dt(l.ttc)}</td>
             <td class="text-right">${dt(l.due)}</td>
             <td class="text-right">${dt(l.saisie)}</td>
+            <td>${pill_paiement(l.paiement || {}, dt)}</td>
             <td>${pill(v.couleur, v.libelle)}</td>
             <td>${etat_tej}${lien_pdf}</td>
           </tr>`;
@@ -236,13 +261,15 @@ function ouvrir_recap_retenues() {
               <th>${__("N° fournisseur")}</th><th class="text-right">${__("TTC avant retenue")}</th>
               <th class="text-right">${__("Retenue due")}</th>
               <th class="text-right">${__("Retenue saisie")}</th>
+              <th>${__("Paiement")}</th>
               <th>${__("Comptabilité")}</th><th>${__("TEJ")}</th>
             </tr></thead>
-            <tbody>${lignes || `<tr><td colspan="9">${__("Aucune facture concernée")}</td></tr>`}</tbody>
+            <tbody>${lignes || `<tr><td colspan="10">${__("Aucune facture concernée")}</td></tr>`}</tbody>
             <tfoot><tr style="font-weight:600">
               <td colspan="5">${__("Totaux")}</td>
               <td class="text-right">${dt(t.due)}</td>
               <td class="text-right">${dt(t.saisie)}</td>
+              <td>${__("reste {0}", [dt(t.restant)])}</td>
               <td colspan="2">${__("manque : {0}", [dt(t.manque)])}</td>
             </tr></tfoot>
           </table>
