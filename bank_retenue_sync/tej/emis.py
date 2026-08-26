@@ -577,6 +577,72 @@ def attacher_pdf(facture: str, reference: str) -> dict:
     return {"reference": reference, **res}
 
 
+def _texte_bytes(contenu: bytes):
+    """Le texte d'un PDF recu en memoire, ou None s'il n'en rend aucun."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+
+        lecteur = PdfReader(io.BytesIO(contenu))
+        return "\n".join((p.extract_text() or "") for p in lecteur.pages)
+    except Exception:
+        return None
+
+
+@frappe.whitelist()
+def verifier_concordance(facture, reference):
+    """Le certificat ATTACHE a la facture et celui du PORTAIL (reference) sont-ils le MEME ? -> dict.
+
+    Le cas qu'on verifie : un certificat du portail suggere vers une facture qui porte DEJA un
+    certificat. Si c'est le meme document (numero divergent, rien de grave), tout va bien ; si
+    c'en est un AUTRE, la meme retenue a ete declaree deux fois au fisc.
+
+    Trois niveaux de preuve :
+    - reference connue des deux cotes -> egalite des references, imparable ;
+    - certificat manuel -> comparaison du TEXTE des deux PDF (les octets ne servent a rien : le
+      portail regenere le fichier a chaque demande, cf. pdf.textes_concordent) ;
+    - un scan sans couche texte ne prouve rien -> « inverifiable », avec les deux liens pour
+      trancher a l'oeil.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from bank_retenue_sync.bank import movements
+
+    atteste = _certificat_attache(facture)
+    if not atteste:
+        return {"verdict": "aucun", "message": _("Aucun certificat n'est attaché à {0} : rien à "
+                                                 "comparer.").format(facture)}
+    if atteste.get("reference"):
+        if atteste["reference"] == reference:
+            return {"verdict": "meme", "message": _("Même certificat : la référence attachée est "
+                                                    "identique ({0}).").format(reference)}
+        return {"verdict": "different",
+                "message": _("DEUX certificats différents : la facture porte {0}, le portail "
+                             "propose {1} — double déclaration probable, à trancher sur le "
+                             "portail.").format(atteste["reference"], reference)}
+
+    texte_local = pdf.texte_pdf(atteste.get("file_url"))
+    if texte_local is None:
+        return {"verdict": "inverifiable", "file_url": atteste.get("file_url"),
+                "message": _("Le PDF attaché ne rend aucun texte (scan) : comparez à l'œil — "
+                             "certificat attaché : {0}.").format(atteste.get("file_name"))}
+
+    job = movements.start_job(ROUTE_JOB_PDF_EMIS, {"reference": reference})
+    movements.wait_job(job, timeout=DELAI_JOB)
+    texte_portail = _texte_bytes(_telecharger(reference))
+    if texte_portail is None:
+        return {"verdict": "inverifiable",
+                "message": _("Le PDF du portail ({0}) ne rend aucun texte : comparez à "
+                             "l'œil.").format(reference)}
+    if pdf.textes_concordent(texte_local, texte_portail):
+        return {"verdict": "meme", "message": _("Même document : le texte des deux PDF est "
+                                                "identique au caractère près.")}
+    return {"verdict": "different",
+            "message": _("Documents DIFFÉRENTS ({0} contre {1} caractères) : double déclaration "
+                         "probable, à trancher sur le portail.").format(
+                             len(texte_local), len(texte_portail))}
+
+
 def _telecharger(reference: str) -> bytes:
     """Le PDF du certificat, une fois le job de generation passe.
 

@@ -323,7 +323,8 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
             if numero and bill_no and len(bill_no) >= 5                     and (bill_no in numero or numero in bill_no) and numero != bill_no:
                 out.append({"numero": numero, "reference": o.get("reference"),
                             "facture": ligne["facture"], "motif": "numero",
-                            "ecart_jours": None})
+                            "ecart_jours": None,
+                            "facture_tej": (ligne.get("tej") or {}).get("statut")})
                 continue
             # Signal 2 — MATRICULE + DATE : meme beneficiaire, paiement proche de la
             # comptabilisation.
@@ -336,7 +337,8 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
             if ecart <= int(tolerance_jours):
                 out.append({"numero": numero, "reference": o.get("reference"),
                             "facture": ligne["facture"], "motif": "matricule+date",
-                            "ecart_jours": ecart})
+                            "ecart_jours": ecart,
+                            "facture_tej": (ligne.get("tej") or {}).get("statut")})
     return out
 
 

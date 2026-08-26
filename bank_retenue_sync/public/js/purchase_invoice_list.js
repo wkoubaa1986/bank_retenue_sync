@@ -294,6 +294,26 @@ function ouvrir_recap_retenues(dialog_existante) {
         .get_field("corps")
         .$wrapper.find("[data-act='recharger']")
         .on("click", () => ouvrir_recap_retenues(dialog));
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='verif-concordance']")
+        .on("click", (e) => {
+          const $b = $(e.currentTarget);
+          frappe.call({
+            method: "bank_retenue_sync.tej.emis.verifier_concordance",
+            args: { facture: $b.data("facture"), reference: $b.data("reference") },
+            freeze: true,
+            freeze_message: __("Comparaison des certificats (le PDF du portail se génère)…"),
+            callback: (rv) => {
+              const v = rv.message || {};
+              frappe.msgprint({
+                title: __("Concordance des certificats"),
+                indicator: v.verdict === "meme" ? "green" : v.verdict === "different" ? "red" : "orange",
+                message: frappe.utils.escape_html(v.message || ""),
+              });
+            },
+          });
+        });
       if (!dialog_existante) dialog.show();
     },
   });
@@ -319,17 +339,26 @@ function section_orphelins(d) {
     const gs = sugg[`${o.numero}|${o.reference}`] || [];
     if (!gs.length) return "—";
     return gs
-      .map(
-        (g) =>
-          `<a href="/app/purchase-invoice/${encodeURIComponent(g.facture)}">${esc(g.facture)}</a>
+      .map((g) => {
+        // La facture suggérée porte DÉJÀ un certificat : même document (numéro divergent,
+        // bénin) ou un AUTRE (double déclaration) ? Le bouton tranche — références si le
+        // module a attaché, texte des PDF sinon.
+        const verif =
+          g.facture_tej === "emis"
+            ? ` <button class="btn btn-default btn-xs" data-act="verif-concordance"
+                  data-facture="${esc(g.facture)}" data-reference="${esc(g.reference || "")}"
+                  title="${__("Cette facture a déjà un certificat : vérifier si c'est le même")}"
+                  >⚖️ ${__("Vérifier")}</button>`
+            : "";
+        return `<a href="/app/purchase-invoice/${encodeURIComponent(g.facture)}">${esc(g.facture)}</a>
            <span class="text-muted" style="font-size:11px">${
              g.motif === "numero"
                ? __("numéros emboîtés")
                : g.ecart_jours === 0
                  ? __("même jour, même matricule")
                  : __("à {0} j, même matricule", [g.ecart_jours])
-           }</span>`
-      )
+           }</span>${verif}`;
+      })
       .join("<br>");
   };
   const lignes = orphelins
