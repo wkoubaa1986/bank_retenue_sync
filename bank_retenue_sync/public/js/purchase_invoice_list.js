@@ -237,7 +237,14 @@ function ouvrir_recap_retenues(dialog_existante) {
             <td class="text-right">${dt(l.due)}</td>
             <td class="text-right">${dt(l.saisie)}</td>
             <td>${pill_paiement(l.paiement || {}, dt)}</td>
-            <td>${pill(v.couleur, v.libelle)}</td>
+            <td>${pill(v.couleur, v.libelle)}${
+              l.recreable
+                ? ` <button class="btn btn-default btn-xs" data-act="recreer"
+                      data-facture="${esc(l.facture)}"
+                      title="${__("Rien n'est payé : supprimer et recréer la facture sous le même numéro, retenue posée automatiquement")}"
+                      >♻️ ${__("Recréer")}</button>`
+                : ""
+            }</td>
             <td>${etat_tej}${lien_pdf}</td>
           </tr>`;
         })
@@ -301,6 +308,39 @@ function ouvrir_recap_retenues(dialog_existante) {
         .get_field("corps")
         .$wrapper.find("[data-act='recharger']")
         .on("click", () => ouvrir_recap_retenues(dialog));
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='recreer']")
+        .on("click", (e) => {
+          const $b = $(e.currentTarget);
+          frappe.confirm(
+            __(
+              "Supprimer la facture {0} et la recréer SOUS LE MÊME NUMÉRO avec sa retenue posée ? Rien n'y est payé ; les pièces jointes et l'extraction sont conservées.",
+              [$b.data("facture")]
+            ),
+            () =>
+              frappe.call({
+                method: "bank_retenue_sync.achat.retenue.recreer_avec_retenue",
+                args: { facture: $b.data("facture") },
+                freeze: true,
+                freeze_message: __("Suppression puis recréation de la facture…"),
+                callback: (rv) => {
+                  const v = rv.message || {};
+                  frappe.msgprint({
+                    title: __("Facture recréée"),
+                    indicator: v.verdict_apres === "conforme" ? "green" : "orange",
+                    message: __("{0} : retenue {1} → {2} ({3}).", [
+                      frappe.utils.escape_html(v.facture || ""),
+                      v.retenue_avant,
+                      v.retenue_apres,
+                      frappe.utils.escape_html(v.verdict_apres || ""),
+                    ]),
+                  });
+                  ouvrir_recap_retenues(dialog);
+                },
+              })
+          );
+        });
       dialog
         .get_field("corps")
         .$wrapper.find("[data-act='lire-scans']")

@@ -28,6 +28,8 @@ from frappe.utils import flt
 
 from bank_retenue_sync.achat import regles
 
+DOCTYPE_EXTRACTION_ACHAT = "Extraction Facture Achat"
+
 MODE_RETENUE_ACHAT = "Retenue a la source achat"
 COMPTE_RETENUE_ACHAT = "Retenue a la source achat - A&S"
 LIBELLE = "Retenue a la source achat"
@@ -140,6 +142,13 @@ def corriger_ligne(doc) -> dict:
     avant = flt(c["saisie"], 3)
     annulees = 0
     for i, ligne in enumerate(lignes_retenue):
+        # ⚠️ LA LIGNE DOIT DEVENIR « Actual ». Saisie en « On Net Total » a 1 %, son montant est
+        # RECALCULE depuis le taux a chaque calculate_taxes_and_totals : poser tax_amount sans
+        # changer le type etait aussitot ecrase, et la correction annoncee ne collait jamais.
+        # C'est l'origine meme des montants faux — 16,523 = 1 % du HT (ACC-PINV-2026-00091),
+        # quand la retenue se calcule sur le TTC hors timbre.
+        ligne.charge_type = "Actual"
+        ligne.rate = 0
         ligne.tax_amount = c["due"] if i == 0 else 0
         ligne.account_head = compte if i == 0 else ligne.account_head
         if i > 0:
@@ -248,6 +257,105 @@ def inventaire(annee=None, seuil=None) -> dict:
 def inventaire_retenues(annee=None):
     frappe.only_for(["System Manager", "Accounts Manager"])
     return inventaire(annee)
+
+
+@frappe.whitelist()
+def recreer_avec_retenue(facture):
+    """Supprime la facture NON PAYEE et la recree SOUS LE MEME NUMERO, retenue posee. -> dict.
+
+    La table des taxes d'une facture validee est figee : la seule voie pour y poser la retenue
+    manquante (ou corriger un montant faux) est de la refaire. Decision utilisateur du
+    26/08/2026 : pas d'amendee « -1 » avec une annulee qui traine — l'ancienne est SUPPRIMEE et
+    la facture renait a l'identique, meme numero, avec sa retenue posee par
+    `a_l_enregistrement`. Pieces jointes et extraction restent au meme nom.
+
+    ⚠️ SEULEMENT SI RIEN N'EST PAYE. Un paiement lie devrait etre desalloue puis reimpute ; ce
+    geste-la ne se fait pas d'un clic. Un avoir lie non plus. En cas d'echec en cours de route,
+    la transaction Frappe annule TOUT — la facture d'origine reste en place, rien a moitie fait.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
+
+    doc = frappe.get_doc("Purchase Invoice", facture)
+    if doc.docstatus != 1:
+        frappe.throw(_("La facture n'est pas validée."))
+    if doc.get("is_return"):
+        frappe.throw(_("C'est un avoir : rien à recréer."))
+    if not regles.dans_le_perimetre(doc.posting_date, _plancher_achat()):
+        frappe.throw(_("Facture antérieure au plancher des contrôles : exercice clos."))
+    c = controle(doc)
+    if c["verdict"] == "conforme":
+        frappe.throw(_("La retenue de cette facture est déjà conforme."))
+    if flt(doc.outstanding_amount, 3) < flt(doc.grand_total, 3) - 0.005:
+        frappe.throw(_("Un paiement est déjà imputé ({0} restant sur {1}) : désallouez-le "
+                       "d'abord — ce bouton ne touche qu'aux factures où rien n'est payé.")
+                     .format(doc.outstanding_amount, doc.grand_total))
+    if frappe.get_all("Payment Entry Reference",
+                      filters={"reference_doctype": "Purchase Invoice",
+                               "reference_name": facture, "docstatus": 1}, limit=1):
+        frappe.throw(_("Un paiement validé référence cette facture : désallouez-le d'abord."))
+    if frappe.get_all("Purchase Invoice",
+                      filters={"return_against": facture, "docstatus": ["<", 2]}, limit=1):
+        frappe.throw(_("Un avoir existe contre cette facture : à traiter d'abord."))
+
+    # Copie des donnees AVANT toute destruction — c'est elle qui renaitra.
+    doc.cancel()
+    donnees = frappe.copy_doc(doc)
+    donnees.amended_from = None
+    donnees.docstatus = 0
+    # La date de comptabilisation d'origine est conservee : sans set_posting_time, ERPNext
+    # ramenerait la copie a aujourd'hui et changerait l'exercice du montant.
+    donnees.set_posting_time = 1
+
+    # Les pieces jointes et l'extraction sont PARQUEES le temps de la suppression (delete_doc
+    # efface les fichiers attaches au document supprime), puis rendues au MEME nom — puisque la
+    # facture renait sous son numero, rien d'autre n'a a etre repointe.
+    PARC = "__recree_en_cours"
+    frappe.db.sql("""update tabFile set attached_to_name = %(parc)s
+                     where attached_to_doctype = 'Purchase Invoice'
+                       and attached_to_name = %(nom)s""", {"parc": PARC, "nom": facture})
+    ext = frappe.db.get_value(DOCTYPE_EXTRACTION_ACHAT, {"purchase_invoice": facture}, "name")
+    if ext:
+        frappe.db.set_value(DOCTYPE_EXTRACTION_ACHAT, ext, "purchase_invoice", None,
+                            update_modified=False)
+
+    # L'annulation d'une facture a stock cree un « Repost Item Valuation » qui LIE la facture :
+    # delete_doc refuse tant qu'il existe (constate sur ACC-PINV-2026-00091). La recreation
+    # immediate au meme numero, memes articles, meme date le rend sans objet — la validation de
+    # la copie declenchera son propre reposting.
+    for nom_repost in frappe.get_all("Repost Item Valuation",
+                                     filters={"voucher_type": "Purchase Invoice",
+                                              "voucher_no": facture}, pluck="name"):
+        # `before_cancel` du repost refuse d'annuler un Queued/In Progress (« réessayez dans une
+        # heure ») : on le passe d'abord Skipped — l'etat prevu pour un repost sans objet, ce
+        # qu'il est puisque la resoumission immediate en recreera un equivalent.
+        frappe.db.set_value("Repost Item Valuation", nom_repost, "status", "Skipped",
+                            update_modified=False)
+        repost = frappe.get_doc("Repost Item Valuation", nom_repost)
+        if repost.docstatus == 1:
+            repost.flags.ignore_permissions = True
+            repost.cancel()
+        frappe.delete_doc("Repost Item Valuation", nom_repost, ignore_permissions=True,
+                          force=True)
+
+    frappe.delete_doc("Purchase Invoice", facture, ignore_permissions=True)
+
+    # L'insert passe par before_validate : `a_l_enregistrement` pose (ou redresse) la retenue,
+    # le stock, le centre de couts — exactement comme une saisie a la main.
+    donnees.insert(set_name=facture)
+    frappe.db.sql("""update tabFile set attached_to_name = %(nom)s
+                     where attached_to_doctype = 'Purchase Invoice'
+                       and attached_to_name = %(parc)s""", {"parc": PARC, "nom": facture})
+    if ext:
+        frappe.db.set_value(DOCTYPE_EXTRACTION_ACHAT, ext, "purchase_invoice", facture,
+                            update_modified=False)
+
+    donnees.submit()
+    frappe.db.commit()
+    apres = controle(donnees)
+    return {"facture": donnees.name,
+            "retenue_avant": c["saisie"], "retenue_apres": apres["saisie"],
+            "verdict_apres": apres["verdict"]}
 
 
 @frappe.whitelist()
@@ -496,7 +604,12 @@ def recapitulatif_retenues(depuis=None):
                        "date": str(r.posting_date), "bill_no": r.bill_no or "",
                        "ttc": c["ttc_avant_retenue"], "due": c["due"], "saisie": c["saisie"],
                        "verdict": c["verdict"], "tej": tej,
-                       "paiement": {"statut": r.status or "", "restant": restant}})
+                       "paiement": {"statut": r.status or "", "restant": restant},
+                       # Recreable = retenue non conforme ET rien de paye : le seul cas ou la
+                       # facture peut etre refaite d'un clic (les garde-fous complets sont
+                       # re-verifies cote serveur au moment du geste).
+                       "recreable": c["verdict"] != "conforme"
+                       and restant >= flt(r.grand_total, 3) - 0.005})
 
     # L'IDENTITE DOCUMENTAIRE en secours : quand bill_no ou matricule manquent sur les champs
     # officiels, la lecture du scan (Extraction Facture Achat) parle a leur place — pour les

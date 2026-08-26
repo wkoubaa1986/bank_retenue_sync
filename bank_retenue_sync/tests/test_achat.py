@@ -355,9 +355,11 @@ class TestPlancherDuPerimetre(unittest.TestCase):
 class _LigneMontant:
     """Une ligne de taxe avec son montant — ce que `corriger_ligne` lit et redresse."""
 
-    def __init__(self, account_head, tax_amount, add_deduct_tax="Add"):
+    def __init__(self, account_head, tax_amount, add_deduct_tax="Add",
+                 charge_type="On Net Total", rate=1.0):
         self.account_head, self.tax_amount, self.add_deduct_tax = (account_head, tax_amount,
                                                                    add_deduct_tax)
+        self.charge_type, self.rate = charge_type, rate
 
 
 class _FactureMontants:
@@ -399,6 +401,21 @@ class TestCorrectionMultiLignes(unittest.TestCase):
         self.assertEqual(res["statut"], "corrigee")
         self.assertNotIn("doublons_annules", res)
         self.assertEqual(round(taxes[1].tax_amount, 3), 10.99)
+
+    def test_la_ligne_corrigee_devient_Actual(self):
+        """⚠️ LE BUG QUI RENDAIT LA CORRECTION INOPERANTE (26/08/2026, ACC-PINV-2026-00091) :
+        saisie en « On Net Total » a 1 %, la ligne etait recalculee depuis le taux a chaque
+        calculate_taxes_and_totals — le tax_amount pose par la correction etait aussitot ecrase
+        (16,523 = 1 % du HT au lieu du TTC hors timbre). La ligne corrigee doit devenir Actual,
+        taux a zero, pour que le montant calcule soit celui qui fasse foi."""
+        taxes = [_LigneMontant("TVA 19% - A&S", 313.743),
+                 _LigneMontant("Retenue a la source achat - A&S", 16.523, "Deduct")]
+        f = _FactureMontants(taxes, 1949.5)
+        res = RET.corriger_ligne(f)
+        self.assertEqual(res["statut"], "corrigee")
+        self.assertEqual(taxes[1].charge_type, "Actual")
+        self.assertEqual(taxes[1].rate, 0)
+        self.assertEqual(round(taxes[1].tax_amount, 3), 19.66)
 
 
 class TestOrphelinsTej(unittest.TestCase):
