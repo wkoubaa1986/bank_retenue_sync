@@ -617,6 +617,10 @@ def preparer(facture):
             ctx["deja_chez_tej"] = deja_chez_tej(ctx["bill_no"], ctx["matricule"])
         except Exception:
             ctx["deja_chez_tej"] = None
+            # Un frappe.throw en profondeur (jeton indeciffrable apres restore, service coupe) a
+            # deja empile son message : sans ce retrait, chaque ouverture de facture montrerait un
+            # popup d'erreur pour une simple decoration.
+            frappe.clear_last_message()
         # ⚠️ FAIT OBSERVE LE 15/08/2026 (ACC-PINV-2026-00093) : TEJ refuse un contenu identique
         # MEME quand le certificat precedent est ANNULE — l'hypothese « un annule ne bloque pas »
         # est contredite par le portail. On ne bloque pas ici (TEJ tranche proprement, avant tout
@@ -631,6 +635,7 @@ def preparer(facture):
                      and c["etat"] not in ETATS_VIVANTS), None)
             except Exception:
                 ctx["doublon_annule"] = None
+                frappe.clear_last_message()
     # Un depot en analyse doit se voir AVANT le premier clic, pas au refus du serveur.
     en_cours = M_depot.en_cours(facture)
     ctx["depot_en_cours"] = M_depot.vue(en_cours) if en_cours else None

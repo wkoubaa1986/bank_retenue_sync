@@ -279,6 +279,11 @@ def recapitulatif_retenues(depuis=None):
         export = emis.certificats_emis()
     except Exception:
         export_disponible = False
+        # ⚠️ AVALER L'EXCEPTION NE SUFFIT PAS : un frappe.throw en profondeur (ex. jeton
+        # indeciffrable apres un restore — la clé de chiffrement du site a changé) a DEJA mis son
+        # message dans la file d'affichage, et l'ecran montrerait un popup d'erreur par-dessus un
+        # tableau pourtant rendu. Le bandeau « export indisponible » suffit.
+        frappe.clear_last_message()
 
     rows = frappe.db.sql("""select p.name, p.supplier, s.supplier_name, s.tax_id,
                                    p.posting_date, p.bill_no, p.grand_total
