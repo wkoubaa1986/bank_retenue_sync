@@ -110,6 +110,14 @@ function poser_bouton_recap(listview) {
   if (listview.__brs_bouton_recap) return;
   listview.__brs_bouton_recap = true;
   listview.page.add_inner_button(__("Récap retenues à la source"), () => ouvrir_recap_retenues());
+
+  // Arrivée par le raccourci de l'espace Achat (?recap-retenues=1) : le tableau s'ouvre seul.
+  // Le paramètre est retiré de l'URL aussitôt — sans ça, chaque rafraîchissement de la liste
+  // rouvrirait le dialogue, et un lien copié depuis cet écran le transporterait par surprise.
+  if (new URLSearchParams(window.location.search).has("recap-retenues")) {
+    window.history.replaceState(null, "", window.location.pathname);
+    ouvrir_recap_retenues();
+  }
 }
 
 function poser_css_recap() {
