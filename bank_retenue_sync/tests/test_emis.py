@@ -331,3 +331,68 @@ class TestCertificatManuel(unittest.TestCase):
     def test_le_vide_ne_prouve_rien(self):
         self.assertFalse(self._f()(None))
         self.assertFalse(self._f()(""))
+
+
+class TestSuiviDesDepotsIncertains(unittest.TestCase):
+    """`emis.suivre_depot` sur une ligne `incertain` : la route de statut peut conclure seule.
+
+    Le cas fondateur est DEP-2026-00323 (prod, 26/08/2026) : la confirmation post-Valider du
+    service a rendu une erreur alors que le certificat etait GENERE. La ligne est passee
+    `incertain` — et le cron, qui ne relisait que `en_analyse`, laissait la facture « a
+    verifier sur le portail » pour toujours. La route de statut, elle, est en lecture seule :
+    la rappeler ne risque rien et rend la verite.
+    """
+
+    LIGNE = {"name": "DEP-TEST-1", "facture": "ACC-PINV-TEST", "statut": "incertain",
+             "numero_depot": "", "numero_declarant": "2605094", "suivi": "",
+             "verifications": 3}
+
+    def _suivre(self, vu, ligne=None):
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        appels = {}
+        with mock.patch.object(depot, "interroger", return_value=vu), \
+             mock.patch.object(depot, "conclure",
+                               side_effect=lambda *a, **k: appels.setdefault("conclure", (a, k))), \
+             mock.patch.object(depot, "toucher",
+                               side_effect=lambda *a, **k: appels.setdefault("toucher", (a, k))), \
+             mock.patch.object(emis, "attacher_pdf",
+                               side_effect=lambda *a, **k: appels.setdefault("pdf", (a, k)) or {}):
+            resultat = emis.suivre_depot(dict(ligne or self.LIGNE))
+        return resultat, appels
+
+    def test_un_incertain_que_le_portail_dit_genere_est_conclu_et_son_pdf_attache(self):
+        resultat, appels = self._suivre({"statut": depot.GENERE, "reference": "2f8fbad3-x",
+                                         "depot_numero": "IN260099", "message": ""})
+        self.assertEqual(resultat["statut"], depot.GENERE)
+        a, k = appels["conclure"]
+        self.assertEqual(a[1], depot.GENERE)
+        self.assertEqual(a[2], "2f8fbad3-x")
+        # Le numero de depot appris par le suivi est conserve : la conclusion prematuree en
+        # `incertain` n'avait jamais pu l'enregistrer.
+        self.assertEqual(k.get("numero"), "IN260099")
+        self.assertIn("pdf", appels)
+
+    def test_un_incertain_que_le_portail_dit_en_analyse_reprend_le_circuit_nominal(self):
+        resultat, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "",
+                                         "depot_numero": "IN260099", "message": "patienter"})
+        self.assertEqual(resultat["statut"], depot.EN_ANALYSE)
+        a, k = appels["conclure"]
+        self.assertEqual(a[1], depot.EN_ANALYSE)
+        self.assertEqual(k.get("numero"), "IN260099")
+        self.assertNotIn("toucher", appels)
+
+    def test_un_en_analyse_toujours_en_analyse_est_seulement_touche(self):
+        ligne = dict(self.LIGNE, statut="en_analyse")
+        resultat, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "",
+                                         "depot_numero": "", "message": ""}, ligne)
+        self.assertEqual(resultat["statut"], depot.EN_ANALYSE)
+        self.assertIn("toucher", appels)
+        self.assertNotIn("conclure", appels)
+
+    def test_un_incertain_sans_reponse_exploitable_le_reste(self):
+        resultat, appels = self._suivre({"statut": None, "reference": "",
+                                         "depot_numero": "", "message": "portail muet"})
+        self.assertIn("toucher", appels)
+        self.assertNotIn("conclure", appels)

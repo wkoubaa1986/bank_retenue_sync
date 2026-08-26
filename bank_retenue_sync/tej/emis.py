@@ -960,8 +960,11 @@ def suivre_depot(ligne) -> dict:
         M_depot.toucher(nom, "suivi impossible : %s" % str(e)[:200])
         return {"depot": nom, "statut": "erreur", "erreur": str(e)[:200]}
 
+    statut_courant = ligne["statut"] if isinstance(ligne, dict) else ligne.statut
+
     if vu["statut"] == M_depot.GENERE and vu["reference"]:
-        M_depot.conclure(nom, M_depot.GENERE, vu["reference"], vu.get("message") or "")
+        M_depot.conclure(nom, M_depot.GENERE, vu["reference"], vu.get("message") or "",
+                         numero=vu.get("depot_numero") or "")
         resultat = {"depot": nom, "statut": M_depot.GENERE, "reference": vu["reference"]}
         # Le PDF suit le certificat, pas le depot : il n'existait pas avant cet instant.
         try:
@@ -975,6 +978,15 @@ def suivre_depot(ligne) -> dict:
     if vu["statut"] and vu["statut"] not in (M_depot.EN_ANALYSE, M_depot.GENERE):
         M_depot.conclure(nom, vu["statut"], "", vu.get("message") or "")
         return {"depot": nom, "statut": vu["statut"]}
+
+    # Un `incertain` que le portail dit `en_analyse` n'est plus incertain : le depot existe,
+    # la declaration est bien partie — la ligne reprend le circuit nominal (et son numero de
+    # depot, qu'une conclusion prematuree n'avait jamais pu enregistrer).
+    if vu["statut"] == M_depot.EN_ANALYSE and statut_courant == M_depot.INCERTAIN:
+        M_depot.conclure(nom, M_depot.EN_ANALYSE, "", vu.get("message") or "",
+                         numero=vu.get("depot_numero") or "")
+        return {"depot": nom, "statut": M_depot.EN_ANALYSE,
+                "message": vu.get("message") or ""}
 
     M_depot.toucher(nom, vu.get("message") or "")
     # Le message du service dit s'il faut attendre ou surtout pas resoumettre : il remonte jusqu'a
@@ -995,12 +1007,16 @@ def verifier_depots(limite: int = 20) -> dict:
                         "portail TEJ si le dépôt existe avant tout nouveau geste")
         frappe.db.commit()
 
-    ouverts = M_depot.ouverts(limite)
+    # LES `incertain` AUSSI : la route de statut est en lecture seule, la rappeler ne coute
+    # rien — et elle seule peut conclure un depot que la confirmation post-Valider a rate
+    # (fausse alerte constatee en prod le 26/08/2026 sur DEP-2026-00323, certificat pourtant
+    # genere). Sans cette reprise, la facture restait « a verifier sur le portail » a jamais.
+    a_suivre = M_depot.ouverts(limite) + M_depot.incertains(limite)
     out = []
-    for ligne in ouverts:
+    for ligne in a_suivre:
         out.append(suivre_depot(ligne))
         frappe.db.commit()
-    return {"perdus": len(perdus), "examines": len(ouverts),
+    return {"perdus": len(perdus), "examines": len(a_suivre),
             "generes": len([r for r in out if r.get("statut") == M_depot.GENERE]),
             "details": out}
 

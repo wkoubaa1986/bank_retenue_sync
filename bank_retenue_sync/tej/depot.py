@@ -138,8 +138,24 @@ def ouverts(limite: int = 50) -> list:
     Seulement `en_analyse` : une ligne `en_envoi` n'a pas encore de depot a suivre.
     """
     return frappe.get_all(DOCTYPE, filters={"statut": EN_ANALYSE},
-                          fields=["name", "facture", "numero_depot", "numero_declarant",
-                                  "suivi", "verifications"],
+                          fields=["name", "facture", "statut", "numero_depot",
+                                  "numero_declarant", "suivi", "verifications"],
+                          order_by="soumis_le asc", limit_page_length=limite)
+
+
+def incertains(limite: int = 20) -> list:
+    """Les depots conclus `incertain` — qu'on REINTERROGE quand meme a chaque passage.
+
+    ⚠️ `incertain` N'EST PAS UN ETAT FINAL POUR LE SUIVI, seulement pour la facture (qui reste
+    bloquee). La route de statut est en lecture seule au contrat : la rappeler ne coute rien et
+    peut conclure toute seule. Constate en prod le 26/08/2026 (DEP-2026-00323) : la confirmation
+    post-Valider du service avait rendu une erreur alors que le certificat etait GENERE — et le
+    cron, qui ne relisait que `en_analyse`, laissait la facture « a verifier sur le portail »
+    pour toujours.
+    """
+    return frappe.get_all(DOCTYPE, filters={"statut": INCERTAIN},
+                          fields=["name", "facture", "statut", "numero_depot",
+                                  "numero_declarant", "suivi", "verifications"],
                           order_by="soumis_le asc", limit_page_length=limite)
 
 
@@ -301,12 +317,20 @@ def interroger(depot) -> dict:
     return lire_statut(resultat.get("result") or resultat.get("data") or resultat)
 
 
-def conclure(nom: str, statut: str, reference: str = "", message: str = "") -> None:
-    """Met la ligne de depot a jour apres un suivi."""
+def conclure(nom: str, statut: str, reference: str = "", message: str = "",
+             numero: str = "") -> None:
+    """Met la ligne de depot a jour apres un suivi.
+
+    `numero` : le numero de depot appris par le suivi — une ligne passee `incertain` avant la
+    reponse du portail n'en a pas, et c'est la seule occasion de le recuperer. On ne remplace
+    jamais un numero deja en base : celui de la creation fait foi.
+    """
     doc = frappe.get_doc(DOCTYPE, nom)
     doc.statut = statut or doc.statut
     if reference:
         doc.reference = reference
+    if numero and not doc.numero_depot:
+        doc.numero_depot = numero
     if message:
         doc.message = message[:500]
     doc.derniere_verification = frappe.utils.now_datetime()
