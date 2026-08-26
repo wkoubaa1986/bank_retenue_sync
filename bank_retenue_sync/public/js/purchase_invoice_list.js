@@ -349,6 +349,44 @@ function ouvrir_recap_retenues(dialog_existante) {
                 indicator: v.verdict === "meme" ? "green" : v.verdict === "different" ? "red" : "orange",
                 message: frappe.utils.escape_html(v.message || ""),
               });
+              // « même document » a été mémorisé (PDF officiel attaché) : la photo a changé.
+              if (v.verdict === "meme") ouvrir_recap_retenues(dialog);
+            },
+          });
+        });
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='verifier-tout']")
+        .on("click", () => {
+          const paires = (d.suggestions || [])
+            .filter((g) => g.facture_tej === "emis" && g.reference)
+            .map((g) => ({ facture: g.facture, reference: g.reference }));
+          if (!paires.length) return;
+          frappe.call({
+            method: "bank_retenue_sync.tej.emis.verifier_concordances",
+            args: { paires: paires },
+            freeze: true,
+            freeze_message: __("Vérification de {0} paire(s) — un PDF portail par paire…", [
+              paires.length,
+            ]),
+            callback: (rv) => {
+              const res = rv.message || [];
+              const icone = (v) => (v === "meme" ? "🟢" : v === "different" ? "🔴" : "🟠");
+              frappe.msgprint({
+                title: __("Concordance des certificats — {0} paire(s)", [res.length]),
+                indicator: res.every((x) => x.verdict === "meme") ? "green" : "orange",
+                message:
+                  "<ul style='padding-left:18px'><li>" +
+                  res
+                    .map(
+                      (x) =>
+                        `${icone(x.verdict)} <b>${frappe.utils.escape_html(x.facture || "")}</b> — ` +
+                        frappe.utils.escape_html(x.message || x.verdict || "")
+                    )
+                    .join("</li><li>") +
+                  "</li></ul>",
+              });
+              ouvrir_recap_retenues(dialog);
             },
           });
         });
@@ -419,10 +457,20 @@ function section_orphelins(d) {
       </tr>`
     )
     .join("");
+  const nb_verifiables = (d.suggestions || []).filter(
+    (g) => g.facture_tej === "emis" && g.reference
+  ).length;
   return `
-    <h5 style="margin:18px 0 8px">⚠️ ${__("Certificats TEJ sans facture correspondante ({0})", [
-      orphelins.length,
-    ])}</h5>
+    <h5 style="margin:18px 0 8px;display:flex;align-items:center;gap:10px">⚠️ ${__(
+      "Certificats TEJ sans facture correspondante ({0})",
+      [orphelins.length]
+    )}${
+      nb_verifiables > 1
+        ? `<button class="btn btn-default btn-xs" data-act="verifier-tout"
+             title="${__("Vérifie chaque paire suggérée (un PDF portail est généré par paire) ; les « même document » sont mémorisés et disparaissent")}"
+             >⚖️ ${__("Tout vérifier ({0})", [nb_verifiables])}</button>`
+        : ""
+    }</h5>
     <p class="text-muted" style="font-size:12px;margin:0 0 8px">${__(
       "Déclarés au fisc, mais aucun « N° chez le déclarant » ne correspond à une facture d'achat validée : numéro mal saisi sur le portail, ou facture absente de la comptabilité. La « facture probable » (même matricule, paiement au même moment) est une suggestion : vérifiez, puis corrigez le bill_no de la facture ou le numéro côté portail."
     )}</p>

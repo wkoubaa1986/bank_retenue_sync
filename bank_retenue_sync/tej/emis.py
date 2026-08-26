@@ -613,7 +613,10 @@ def verifier_concordance(facture, reference):
         return {"verdict": "aucun", "message": _("Aucun certificat n'est attaché à {0} : rien à "
                                                  "comparer.").format(facture)}
     if atteste.get("reference"):
-        if atteste["reference"] == reference:
+        # Par PREFIXE, pas par egalite : Frappe suffixe le nom de fichier en cas d'homonyme
+        # (certificat_ras_<ref>dce363.pdf) et la reference relue porte ce suffixe — une egalite
+        # stricte declarerait « different » un certificat qu'on vient soi-meme d'attacher.
+        if atteste["reference"].startswith(reference) or reference.startswith(atteste["reference"]):
             return {"verdict": "meme", "message": _("Même certificat : la référence attachée est "
                                                     "identique ({0}).").format(reference)}
         return {"verdict": "different",
@@ -629,18 +632,51 @@ def verifier_concordance(facture, reference):
 
     job = movements.start_job(ROUTE_JOB_PDF_EMIS, {"reference": reference})
     movements.wait_job(job, timeout=DELAI_JOB)
-    texte_portail = _texte_bytes(_telecharger(reference))
+    contenu = _telecharger(reference)
+    texte_portail = _texte_bytes(contenu)
     if texte_portail is None:
         return {"verdict": "inverifiable",
                 "message": _("Le PDF du portail ({0}) ne rend aucun texte : comparez à "
                              "l'œil.").format(reference)}
     if pdf.textes_concordent(texte_local, texte_portail):
-        return {"verdict": "meme", "message": _("Même document : le texte des deux PDF est "
-                                                "identique au caractère près.")}
+        # ⚠️ LE VERDICT SE MEMORISE, ET LE PDF EST LA MEMOIRE. Prouver deux fois la meme paire
+        # coute un job de generation a chaque fois, et l'orphelin resterait affiche a jamais.
+        # Le PDF du portail — deja telecharge pour la comparaison — est attache sous son nom
+        # officiel : la reference attachee sort le certificat des orphelins, et toute
+        # verification future se tranche par simple egalite de references.
+        pdf.attacher({"reference": reference}, contenu, "Purchase Invoice", facture)
+        frappe.db.commit()
+        return {"verdict": "meme",
+                "message": _("Même document : texte identique au caractère près. Le certificat "
+                             "du portail a été attaché sous son nom officiel ({0}) — cette paire "
+                             "ne s'affichera plus.").format(reference)}
     return {"verdict": "different",
             "message": _("Documents DIFFÉRENTS ({0} contre {1} caractères) : double déclaration "
                          "probable, à trancher sur le portail.").format(
                              len(texte_local), len(texte_portail))}
+
+
+@frappe.whitelist()
+def verifier_concordances(paires):
+    """Le bouton « Tout verifier » : chaque paire suggeree, en sequence. -> [dict].
+
+    Sequentiel a dessein : chaque verification genere un PDF sur le portail via le worker unique
+    du service — paralleliser reviendrait a se faire la queue a soi-meme. Une paire en erreur
+    n'arrete pas les suivantes.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    paires = frappe.parse_json(paires) if isinstance(paires, str) else paires
+    out = []
+    for paire in paires or []:
+        try:
+            res = verifier_concordance(paire.get("facture"), paire.get("reference"))
+            out.append({"facture": paire.get("facture"), "reference": paire.get("reference"),
+                        **res})
+        except Exception as e:
+            frappe.clear_last_message()
+            out.append({"facture": paire.get("facture"), "reference": paire.get("reference"),
+                        "verdict": "erreur", "message": str(e)[:200]})
+    return out
 
 
 @frappe.whitelist()

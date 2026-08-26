@@ -309,8 +309,11 @@ def orphelins_tej(export, cles_locales, depuis, etats_vivants,
             continue
         # Un certificat dont le PDF est DEJA attache a une facture n'est pas orphelin, quel que
         # soit son numero : l'attachement est une identification faite par un humain (ou par le
-        # bouton « Attacher ce certificat »).
-        if (c.get("reference") or "") in references_attachees:
+        # bouton « Attacher ce certificat »). Par PREFIXE : Frappe suffixe le nom du fichier
+        # quand un homonyme existe (certificat_ras_<ref>dce363.pdf) — c'est la raison d'etre de
+        # pdf.motif_fichier, et une egalite stricte laissait l'orphelin affiche a jamais.
+        ref = c.get("reference") or ""
+        if ref and any(att.startswith(ref) for att in references_attachees):
             continue
         ref_date = c.get("date_paiement") or c.get("cree")
         if ref_date:
