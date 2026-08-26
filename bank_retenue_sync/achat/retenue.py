@@ -250,7 +250,42 @@ def inventaire_retenues(annee=None):
     return inventaire(annee)
 
 
-def orphelins_tej(export, cles_locales, depuis, etats_vivants) -> list:
+@frappe.whitelist()
+def lire_scans_manquants():
+    """Lit le scan des factures du recap SANS n° fournisseur, pour leur rendre leur identite.
+
+    L'extraction pose le bill_no directement en base (db.set_value : possible meme sur une
+    facture validee) et range numero + matricule lus dans Extraction Facture Achat — de quoi
+    faire parler les suggestions. Chaque lecture coute un appel OpenAI : seules les factures du
+    perimetre sans bill_no et avec un PDF joint sont lues.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from bank_retenue_sync.achat import facture as M_facture
+    from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
+
+    rows = frappe.db.sql("""select p.name from `tabPurchase Invoice` p
+                            join `tabSupplier` s on s.name = p.supplier
+                            where p.docstatus = 1 and s.country = %(pays)s
+                              and p.posting_date >= %(depuis)s
+                              and ifnull(p.bill_no, '') = ''
+                            order by p.posting_date""",
+                         {"pays": regles.PAYS_LOCAL, "depuis": str(_plancher_achat())})
+    resultats = []
+    for (nom,) in rows:
+        try:
+            res = M_facture.extraire(nom, forcer=False)
+            resultats.append({"facture": nom, "statut": res.get("statut"),
+                              "invoice_no": res.get("invoice_no")})
+        except Exception:
+            frappe.log_error(title="Lecture scan %s" % nom, message=frappe.get_traceback())
+            frappe.clear_last_message()
+            resultats.append({"facture": nom, "statut": "erreur"})
+    frappe.db.commit()
+    return resultats
+
+
+def orphelins_tej(export, cles_locales, depuis, etats_vivants,
+                  references_attachees=frozenset()) -> list:
     """Les certificats VIVANTS de l'export sans facture locale correspondante. Pure.
 
     L'AUTRE SENS du recapitulatif : le tableau principal part des factures et cherche leur
@@ -271,6 +306,11 @@ def orphelins_tej(export, cles_locales, depuis, etats_vivants) -> list:
             continue
         cle = ((c.get("numero") or "").strip(), c.get("beneficiaire") or "")
         if not cle[0] or cle in cles_locales:
+            continue
+        # Un certificat dont le PDF est DEJA attache a une facture n'est pas orphelin, quel que
+        # soit son numero : l'attachement est une identification faite par un humain (ou par le
+        # bouton « Attacher ce certificat »).
+        if (c.get("reference") or "") in references_attachees:
             continue
         ref_date = c.get("date_paiement") or c.get("cree")
         if ref_date:
@@ -319,7 +359,9 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
             # Signal 1 — INCLUSION DES NUMEROS : le numero du portail contient le bill_no de la
             # facture ou l'inverse (cas reel : « 26FA01134_V2 », le suffixe ajoute pour passer le
             # refus de contenu identique apres annulation). Plus fort que la date : il joue seul.
-            bill_no = (ligne.get("bill_no") or "").strip()
+            # L'IDENTITE VIENT DU DOCUMENT : si le champ officiel est vide, la valeur lue sur
+            # le scan (Extraction Facture Achat) parle a sa place — pour SUGGERER seulement.
+            bill_no = (ligne.get("bill_no") or ligne.get("bill_no_scan") or "").strip()
             if numero and bill_no and len(bill_no) >= 5                     and (bill_no in numero or numero in bill_no) and numero != bill_no:
                 out.append({"numero": numero, "reference": o.get("reference"),
                             "facture": ligne["facture"], "motif": "numero",
@@ -328,7 +370,8 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
                 continue
             # Signal 2 — MATRICULE + DATE : meme beneficiaire, paiement proche de la
             # comptabilisation.
-            if not mat or not date_o or ligne.get("matricule") != mat:
+            mat_ligne = ligne.get("matricule") or ligne.get("matricule_scan")
+            if not mat or not date_o or mat_ligne != mat:
                 continue
             date_l = _date_portail(ligne.get("date"))
             if not date_l:
@@ -452,6 +495,25 @@ def recapitulatif_retenues(depuis=None):
                        "verdict": c["verdict"], "tej": tej,
                        "paiement": {"statut": r.status or "", "restant": restant}})
 
+    # L'IDENTITE DOCUMENTAIRE en secours : quand bill_no ou matricule manquent sur les champs
+    # officiels, la lecture du scan (Extraction Facture Achat) parle a leur place — pour les
+    # suggestions uniquement, jamais pour l'appariement strict.
+    if lignes:
+        extractions = {e.purchase_invoice: e for e in frappe.get_all(
+            "Extraction Facture Achat",
+            filters={"purchase_invoice": ["in", [l["facture"] for l in lignes]]},
+            fields=["purchase_invoice", "invoice_no", "supplier_tax_id"])}
+        for l in lignes:
+            e = extractions.get(l["facture"])
+            if not e:
+                continue
+            if not l["bill_no"] and (e.invoice_no or "").strip():
+                l["bill_no_scan"] = e.invoice_no.strip()
+            if not l["matricule"]:
+                m = matricule.normaliser(e.supplier_tax_id)
+                if m:
+                    l["matricule_scan"] = m
+
     # L'AUTRE SENS : les certificats du portail sans facture correspondante. Les cles locales
     # couvrent TOUTES les factures validees, sans plancher — un certificat 2026 d'une facture
     # 2025 n'est pas un orphelin ; le plancher ne filtre que la date du certificat.
@@ -475,7 +537,14 @@ def recapitulatif_retenues(depuis=None):
             mat = matricule.normaliser(s.tax_id)
             if mat and mat not in fournisseurs_par_matricule:
                 fournisseurs_par_matricule[mat] = s.supplier_name
-        for c in orphelins_tej(export, cles_locales, depuis, emis.ETATS_VIVANTS):
+        refs_attachees = set()
+        for f in frappe.get_all("File", filters={"attached_to_doctype": "Purchase Invoice",
+                                                 "file_name": ["like", "certificat_ras_%"]},
+                                fields=["file_name"]):
+            refs_attachees.add(
+                (f.file_name or "").replace("certificat_ras_", "").rsplit(".pdf", 1)[0])
+        for c in orphelins_tej(export, cles_locales, depuis, emis.ETATS_VIVANTS,
+                               frozenset(refs_attachees)):
             orphelins.append({**c, "fournisseur": fournisseurs_par_matricule.get(
                 c.get("beneficiaire") or "", "")})
     compte["tej_orphelins"] = len(orphelins)

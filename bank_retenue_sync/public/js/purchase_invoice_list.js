@@ -264,7 +264,14 @@ function ouvrir_recap_retenues(dialog_existante) {
         });
       if (dialog_existante) dialog.set_title(titre);
       dialog.get_field("corps").$wrapper.html(`
-        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:8px">
+          ${
+            (d.lignes || []).some((l) => !l.bill_no && !l.bill_no_scan)
+              ? `<button class="btn btn-default btn-xs" data-act="lire-scans"
+                   title="${__("Lit le scan des factures sans n° fournisseur (un appel OpenAI par facture) : pose le n° et rend l'identité aux suggestions")}"
+                   >📖 ${__("Lire les scans manquants")}</button>`
+              : ""
+          }
           <button class="btn btn-default btn-xs" data-act="recharger">🔄 ${__("Actualiser")}</button>
         </div>
         ${avert_export}
@@ -294,6 +301,37 @@ function ouvrir_recap_retenues(dialog_existante) {
         .get_field("corps")
         .$wrapper.find("[data-act='recharger']")
         .on("click", () => ouvrir_recap_retenues(dialog));
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='lire-scans']")
+        .on("click", () =>
+          frappe.call({
+            method: "bank_retenue_sync.achat.retenue.lire_scans_manquants",
+            freeze: true,
+            freeze_message: __("Lecture des scans (OpenAI)…"),
+            callback: () => ouvrir_recap_retenues(dialog),
+          })
+        );
+      dialog
+        .get_field("corps")
+        .$wrapper.find("[data-act='attacher-certificat']")
+        .on("click", (e) => {
+          const $b = $(e.currentTarget);
+          frappe.confirm(
+            __("Attacher le certificat {0} à la facture {1} ? L'attachement vaut identification.", [
+              $b.data("reference"),
+              $b.data("facture"),
+            ]),
+            () =>
+              frappe.call({
+                method: "bank_retenue_sync.tej.emis.attacher_certificat",
+                args: { facture: $b.data("facture"), reference: $b.data("reference") },
+                freeze: true,
+                freeze_message: __("Téléchargement du certificat depuis le portail…"),
+                callback: () => ouvrir_recap_retenues(dialog),
+              })
+          );
+        });
       dialog
         .get_field("corps")
         .$wrapper.find("[data-act='verif-concordance']")
@@ -343,13 +381,21 @@ function section_orphelins(d) {
         // La facture suggérée porte DÉJÀ un certificat : même document (numéro divergent,
         // bénin) ou un AUTRE (double déclaration) ? Le bouton tranche — références si le
         // module a attaché, texte des PDF sinon.
+        // Une action par situation : facture déjà certifiée -> vérifier la concordance ;
+        // facture sans certificat -> l'orphelin est probablement SON certificat, l'attacher
+        // (l'attachement est l'identification : la facture passe « émis », l'orphelin sort).
         const verif =
           g.facture_tej === "emis"
             ? ` <button class="btn btn-default btn-xs" data-act="verif-concordance"
                   data-facture="${esc(g.facture)}" data-reference="${esc(g.reference || "")}"
                   title="${__("Cette facture a déjà un certificat : vérifier si c'est le même")}"
                   >⚖️ ${__("Vérifier")}</button>`
-            : "";
+            : g.reference
+              ? ` <button class="btn btn-default btn-xs" data-act="attacher-certificat"
+                    data-facture="${esc(g.facture)}" data-reference="${esc(g.reference)}"
+                    title="${__("Télécharger le certificat du portail et l'attacher à cette facture")}"
+                    >📎 ${__("Attacher")}</button>`
+              : "";
         return `<a href="/app/purchase-invoice/${encodeURIComponent(g.facture)}">${esc(g.facture)}</a>
            <span class="text-muted" style="font-size:11px">${
              g.motif === "numero"

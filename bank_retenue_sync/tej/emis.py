@@ -643,6 +643,18 @@ def verifier_concordance(facture, reference):
                              len(texte_local), len(texte_portail))}
 
 
+@frappe.whitelist()
+def attacher_certificat(facture, reference):
+    """Bouton « Attacher ce certificat » du recap : pose le PDF du portail sur la facture.
+
+    L'attachement EST l'identification : une fois le PDF sur la facture, elle passe
+    « Certificat émis ✓ » et le certificat sort de la liste des orphelins."""
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    res = attacher_pdf(facture, reference)
+    frappe.db.commit()
+    return res
+
+
 def _telecharger(reference: str) -> bytes:
     """Le PDF du certificat, une fois le job de generation passe.
 
