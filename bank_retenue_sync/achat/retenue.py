@@ -313,19 +313,30 @@ def rapprochements_suggeres(orphelins, lignes, tolerance_jours: int = 3) -> list
     out = []
     for o in orphelins or []:
         mat = o.get("beneficiaire")
+        numero = (o.get("numero") or "").strip()
         date_o = _date_portail(o.get("date_paiement") or o.get("cree"))
-        if not mat or not date_o:
-            continue
         for ligne in lignes or []:
-            if ligne.get("matricule") != mat:
+            # Signal 1 — INCLUSION DES NUMEROS : le numero du portail contient le bill_no de la
+            # facture ou l'inverse (cas reel : « 26FA01134_V2 », le suffixe ajoute pour passer le
+            # refus de contenu identique apres annulation). Plus fort que la date : il joue seul.
+            bill_no = (ligne.get("bill_no") or "").strip()
+            if numero and bill_no and len(bill_no) >= 5                     and (bill_no in numero or numero in bill_no) and numero != bill_no:
+                out.append({"numero": numero, "reference": o.get("reference"),
+                            "facture": ligne["facture"], "motif": "numero",
+                            "ecart_jours": None})
+                continue
+            # Signal 2 — MATRICULE + DATE : meme beneficiaire, paiement proche de la
+            # comptabilisation.
+            if not mat or not date_o or ligne.get("matricule") != mat:
                 continue
             date_l = _date_portail(ligne.get("date"))
             if not date_l:
                 continue
             ecart = abs((date_o - date_l).days)
             if ecart <= int(tolerance_jours):
-                out.append({"numero": o.get("numero"), "reference": o.get("reference"),
-                            "facture": ligne["facture"], "ecart_jours": ecart})
+                out.append({"numero": numero, "reference": o.get("reference"),
+                            "facture": ligne["facture"], "motif": "matricule+date",
+                            "ecart_jours": ecart})
     return out
 
 

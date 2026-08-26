@@ -475,6 +475,28 @@ class TestRapprochementsSuggeres(unittest.TestCase):
               "date_paiement": "20-03-2026"}], self.LIGNES)
         self.assertEqual(out, [])
 
+    def test_les_numeros_emboites_suggerent_malgre_la_date(self):
+        """Cas reel « 26FA01134_V2 » : suffixe ajoute pour passer le refus de contenu identique
+        apres annulation — la date de paiement portee au portail est celle de la SOUMISSION
+        (10 jours apres la comptabilisation), le matricule manque sur la fiche : seuls les
+        numeros disent encore la verite."""
+        lignes = [{"facture": "ACC-PINV-2026-00088", "matricule": None,
+                   "date": "2026-08-03", "bill_no": "26FA01134"}]
+        out = RET.rapprochements_suggeres(
+            [{"numero": "26FA01134_V2", "reference": "r", "beneficiaire": "1802542W",
+              "date_paiement": "13-08-2026"}], lignes)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["facture"], "ACC-PINV-2026-00088")
+        self.assertEqual(out[0]["motif"], "numero")
+
+    def test_un_bill_no_trop_court_ne_s_emboite_pas(self):
+        """« 30/2026 » contiendrait « 2026 » : cinq caracteres minimum, sinon tout s'emboite."""
+        lignes = [{"facture": "F", "matricule": None, "date": "2026-06-20", "bill_no": "2026"}]
+        out = RET.rapprochements_suggeres(
+            [{"numero": "30/2026", "reference": "r", "beneficiaire": "1144181A",
+              "date_paiement": "20-06-2026"}], lignes)
+        self.assertEqual(out, [])
+
 
 if __name__ == "__main__":
     unittest.main()

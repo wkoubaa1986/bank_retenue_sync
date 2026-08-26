@@ -323,9 +323,11 @@ function section_orphelins(d) {
         (g) =>
           `<a href="/app/purchase-invoice/${encodeURIComponent(g.facture)}">${esc(g.facture)}</a>
            <span class="text-muted" style="font-size:11px">${
-             g.ecart_jours === 0
-               ? __("même jour, même matricule")
-               : __("à {0} j, même matricule", [g.ecart_jours])
+             g.motif === "numero"
+               ? __("numéros emboîtés")
+               : g.ecart_jours === 0
+                 ? __("même jour, même matricule")
+                 : __("à {0} j, même matricule", [g.ecart_jours])
            }</span>`
       )
       .join("<br>");
