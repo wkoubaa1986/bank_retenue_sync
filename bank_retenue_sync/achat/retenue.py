@@ -213,7 +213,8 @@ def inventaire(annee=None, seuil=None) -> dict:
     seuil = flt(seuil or _seuil(), 3)
     # ⚠️ PLANCHER DU PERIMETRE : meme regle que les hooks (facture._plancher). Une annee demandee
     # entierement anterieure au plancher rend un inventaire vide — c'est voulu, l'exercice est clos.
-    plancher = _reglage("controle_achat_plancher", None) or regles.PLANCHER_CONTROLE
+    from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
+    plancher = _plancher_achat()
     rows = frappe.db.sql("""select p.name, p.supplier, p.posting_date, p.grand_total
                             from `tabPurchase Invoice` p
                             join `tabSupplier` s on s.name = p.supplier
@@ -247,3 +248,102 @@ def inventaire(annee=None, seuil=None) -> dict:
 def inventaire_retenues(annee=None):
     frappe.only_for(["System Manager", "Accounts Manager"])
     return inventaire(annee)
+
+
+@frappe.whitelist()
+def recapitulatif_retenues(depuis=None):
+    """Le tableau croise ERPNext ↔ TEJ des retenues d'achat depuis le plancher. -> dict.
+
+    Une ligne par facture CONCERNEE (retenue due ou saisie), avec les deux verites cote a cote :
+    ce que la COMPTABILITE retient (ligne de taxe) et ce que le FISC a recu (certificat attache —
+    du module ou a la main —, depot en cours, ou certificat vivant dans l'export du portail).
+    C'est la confrontation des deux qui fait le controle : une retenue comptabilisee sans
+    certificat est une declaration en retard ; un certificat sans ecriture est une comptabilite
+    fausse (cas reels ACC-PINV-2026-00042 et 00054).
+
+    ⚠️ L'EXPORT PORTAIL EST UN COMPLEMENT, PAS UN PREREQUIS. Sa lecture passe par le service TEJ ;
+    injoignable (dev, panne), le tableau sort quand meme — colonne TEJ fondee sur les seules
+    preuves locales, et `export_disponible: False` pour que l'ecran le dise.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager", "Accounts User", "Purchase Manager",
+                     "Purchase User"])
+    from bank_retenue_sync.tej import emis, matricule
+    from bank_retenue_sync.tej import depot as M_depot
+
+    from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
+    depuis = str(depuis or _plancher_achat())
+    seuil, taux = _seuil(), _taux()
+
+    export, export_disponible = [], True
+    try:
+        export = emis.certificats_emis()
+    except Exception:
+        export_disponible = False
+
+    rows = frappe.db.sql("""select p.name, p.supplier, s.supplier_name, s.tax_id,
+                                   p.posting_date, p.bill_no, p.grand_total
+                            from `tabPurchase Invoice` p
+                            join `tabSupplier` s on s.name = p.supplier
+                            where p.docstatus = 1 and s.country = %(pays)s
+                              and p.posting_date >= %(depuis)s
+                            order by p.posting_date""",
+                         {"pays": regles.PAYS_LOCAL, "depuis": depuis}, as_dict=1)
+
+    lignes, totaux = [], {"due": 0.0, "saisie": 0.0, "manque": 0.0}
+    compte = {"factures": 0, "conformes": 0, "manquantes": 0, "fausses": 0,
+              "tej_emis": 0, "tej_en_cours": 0, "tej_manquants": 0}
+    for r in rows:
+        taxes = frappe.db.get_all("Purchase Taxes and Charges", filters={"parent": r.name},
+                                  fields=["account_head", "tax_amount", "add_deduct_tax"],
+                                  order_by="idx")
+        c = regles.controle_retenue(r.grand_total, [dict(t) for t in taxes], seuil, taux)
+        if not c["due"] and not c["saisie"]:
+            continue
+
+        # La verite TEJ, par force de preuve decroissante : le PDF attache (module ou manuel),
+        # le depot en cours, l'export du portail. « manquant » = aucune des trois.
+        tej = {"statut": "manquant", "detail": ""}
+        cert = emis._certificat_attache(r.name)
+        if cert:
+            tej = {"statut": "emis",
+                   "detail": _("certificat attaché à la main") if cert.get("manuel")
+                   else cert.get("reference") or "",
+                   "file_url": cert.get("file_url")}
+        else:
+            en_cours = M_depot.en_cours(r.name)
+            if en_cours:
+                vue = M_depot.vue(en_cours)
+                tej = {"statut": vue.get("statut") or "en_analyse",
+                       "detail": vue.get("numero") or ""}
+            elif export:
+                mat = matricule.normaliser(r.tax_id)
+                vivant = next((x for x in export
+                               if x["numero"] == (r.bill_no or "").strip()
+                               and x["beneficiaire"] == mat
+                               and x["etat"] in emis.ETATS_VIVANTS), None)
+                if vivant:
+                    tej = {"statut": "emis",
+                           "detail": _("portail : {0} (PDF non attaché)").format(
+                               vivant.get("reference") or vivant.get("etat"))}
+
+        compte["factures"] += 1
+        compte["conformes" if c["verdict"] == "conforme"
+               else "manquantes" if c["verdict"] == "manquante" else "fausses"] += 1
+        if tej["statut"] == "emis":
+            compte["tej_emis"] += 1
+        elif tej["statut"] == "manquant":
+            compte["tej_manquants"] += 1
+        else:
+            compte["tej_en_cours"] += 1
+        totaux["due"] = round(totaux["due"] + c["due"], 3)
+        totaux["saisie"] = round(totaux["saisie"] + c["saisie"], 3)
+        if c["verdict"] != "conforme":
+            totaux["manque"] = round(totaux["manque"] - c["ecart"], 3)
+
+        lignes.append({"facture": r.name, "fournisseur": r.supplier_name or r.supplier,
+                       "date": str(r.posting_date), "bill_no": r.bill_no or "",
+                       "ttc": c["ttc_avant_retenue"], "due": c["due"], "saisie": c["saisie"],
+                       "verdict": c["verdict"], "tej": tej})
+
+    return {"depuis": depuis, "seuil": seuil, "export_disponible": export_disponible,
+            "lignes": lignes, "totaux": totaux, "compte": compte}

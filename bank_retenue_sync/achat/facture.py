@@ -572,5 +572,11 @@ def _taux():
 
 
 def _plancher():
-    """Le plancher du perimetre : les factures comptabilisees avant lui ne sont pas controlees."""
-    return _reglage("controle_achat_plancher", None) or regles.PLANCHER_CONTROLE
+    """Le plancher du perimetre : les factures comptabilisees avant lui ne sont pas controlees.
+
+    ⚠️ UN DATE JAMAIS SAISI NE REND PAS None : `get_single_value` caste le vide en « 0001-01-01 »,
+    valeur truthy qui ecraserait le defaut et remonterait le plancher a l'an 1 — c'est-a-dire
+    aucun plancher du tout (constate en dev le 26/08/2026). Tout ce qui precede 2020 est un
+    artefact de cast, pas un reglage."""
+    v = str(_reglage("controle_achat_plancher", "") or "")
+    return v if v > "2020-01-01" else regles.PLANCHER_CONTROLE

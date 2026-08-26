@@ -18,6 +18,7 @@ frappe.listview_settings["Purchase Invoice"] = frappe.listview_settings["Purchas
   reglages.refresh = function (listview) {
     if (precedent) precedent.call(this, listview);
     poser_etats_tej(listview);
+    poser_bouton_recap(listview);
   };
 })();
 
@@ -94,6 +95,150 @@ function poser_etats_tej(listview) {
         $ligne.find(".level-right").first().find(".brs-tej-pill").remove();
         $ligne.find(".level-right").first().prepend($pill);
       }
+    },
+  });
+}
+
+// ── Récapitulatif des retenues à la source achat ─────────────────────────────
+//
+// Le tableau croisé « comptabilité ↔ fisc » depuis le plancher (01/01/2026) : ce que chaque
+// facture locale RETIENT (ligne de taxe) face à ce que TEJ a REÇU (certificat attaché — du module
+// ou à la main —, dépôt en cours, export du portail). Même grammaire visuelle que l'onglet
+// Certificats TEJ de la page « Retenue à la source — Ventes » : cartes KPI puis tableau.
+
+function poser_bouton_recap(listview) {
+  if (listview.__brs_bouton_recap) return;
+  listview.__brs_bouton_recap = true;
+  listview.page.add_inner_button(__("Récap retenues à la source"), () => ouvrir_recap_retenues());
+}
+
+function poser_css_recap() {
+  if (document.getElementById("brs-recap-ras-css")) return;
+  const style = document.createElement("style");
+  style.id = "brs-recap-ras-css";
+  style.textContent = `
+    .brs-recap-kpis { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+    .brs-recap-kpi { flex:1 1 120px; min-width:120px; padding:10px 12px; border-radius:10px;
+                     background: var(--bg-color, var(--fg-color)); border:1px solid var(--border-color); }
+    .brs-recap-kpi .lbl { font-size:11px; color:var(--text-muted); text-transform:uppercase;
+                          letter-spacing:.4px; margin-bottom:4px; white-space:nowrap; }
+    .brs-recap-kpi .val { font-size:17px; font-weight:600; }
+    .brs-recap-kpi.warn { border-color:#fdba74; background:#fff7ed; }
+    .brs-recap-kpi.warn .val { color:#c2410c; }
+    .brs-recap-table th { position:sticky; top:0; background:var(--fg-color); z-index:1; }
+    .brs-recap-table td, .brs-recap-table th { padding:5px 8px; }
+  `;
+  document.head.appendChild(style);
+}
+
+const VERDICTS_COMPTA = {
+  conforme: { couleur: "green", libelle: __("conforme ✓") },
+  manquante: { couleur: "red", libelle: __("retenue manquante") },
+  "montant faux": { couleur: "orange", libelle: __("montant faux") },
+};
+
+function ouvrir_recap_retenues() {
+  frappe.call({
+    method: "bank_retenue_sync.achat.retenue.recapitulatif_retenues",
+    freeze: true,
+    freeze_message: __("Lecture des factures et des certificats…"),
+    callback: (r) => {
+      const d = r.message || {};
+      poser_css_recap();
+      poser_css_liste_tej();
+      const dt = (v) => format_currency(v || 0, "TND");
+      const esc = frappe.utils.escape_html;
+      const c = d.compte || {};
+      const t = d.totaux || {};
+
+      const tuile = (lbl, val, warn) =>
+        `<div class="brs-recap-kpi ${warn ? "warn" : ""}"><div class="lbl">${lbl}</div>
+          <div class="val">${val}</div></div>`;
+      const kpis = [
+        tuile(__("Factures concernées"), c.factures || 0),
+        tuile(__("Comptabilité conforme"), c.conformes || 0),
+        tuile(__("Retenue manquante"), c.manquantes || 0, c.manquantes),
+        tuile(__("Montant faux"), c.fausses || 0, c.fausses),
+        tuile(__("Certificat TEJ ✓"), c.tej_emis || 0),
+        tuile(__("TEJ en cours"), c.tej_en_cours || 0, c.tej_en_cours),
+        tuile(__("Certificat manquant"), c.tej_manquants || 0, c.tej_manquants),
+        tuile(__("Manque à retenir"), dt(t.manque), t.manque),
+      ].join("");
+
+      const pill = (mod, texte, titre) =>
+        `<span class="brs-tej-pill ${mod}" ${titre ? `title="${esc(titre)}"` : ""}>${texte}</span>`;
+
+      const lignes = (d.lignes || [])
+        .map((l) => {
+          const v = VERDICTS_COMPTA[l.verdict] || { couleur: "gray", libelle: l.verdict };
+          const etat_tej =
+            l.tej.statut === "emis"
+              ? pill("green", __("Certificat TEJ ✓"), l.tej.detail)
+              : l.tej.statut === "manquant"
+                ? pill("red", __("certificat manquant"))
+                : pill(
+                    (ETATS_TEJ[l.tej.statut] || {}).couleur || "orange",
+                    (ETATS_TEJ[l.tej.statut] || {}).libelle || l.tej.statut,
+                    l.tej.detail
+                  );
+          const lien_pdf = l.tej.file_url
+            ? ` <a href="${esc(l.tej.file_url)}" target="_blank" title="${__("Ouvrir le certificat")}">📎</a>`
+            : "";
+          // Le cas qui pique : certifié au fournisseur mais jamais comptabilisé — ni l'un ni
+          // l'autre des deux tableaux simples ne le montrait.
+          const alerte =
+            l.verdict === "manquante" && l.tej.statut === "emis"
+              ? ` <span title="${__("Certificat remis au fournisseur mais AUCUNE ligne de retenue comptabilisée")}">⚠️</span>`
+              : "";
+          return `<tr>
+            <td><a href="/app/purchase-invoice/${encodeURIComponent(l.facture)}">${esc(l.facture)}</a>${alerte}</td>
+            <td>${frappe.datetime.str_to_user(l.date)}</td>
+            <td>${esc(l.fournisseur)}</td>
+            <td>${esc(l.bill_no)}</td>
+            <td class="text-right">${dt(l.ttc)}</td>
+            <td class="text-right">${dt(l.due)}</td>
+            <td class="text-right">${dt(l.saisie)}</td>
+            <td>${pill(v.couleur, v.libelle)}</td>
+            <td>${etat_tej}${lien_pdf}</td>
+          </tr>`;
+        })
+        .join("");
+
+      const avert_export = d.export_disponible
+        ? ""
+        : `<p style="margin:0 0 10px;color:#c2410c;font-size:12px">⚠️ ${__(
+            "Le service TEJ est injoignable : la colonne TEJ repose sur les seules preuves locales (PDF attachés, dépôts). Un certificat existant sur le portail mais jamais attaché peut apparaître « manquant »."
+          )}</p>`;
+
+      const dialog = new frappe.ui.Dialog({
+        title: __("Retenues à la source achat — depuis le {0}", [
+          frappe.datetime.str_to_user(d.depuis),
+        ]),
+        size: "extra-large",
+        fields: [{ fieldtype: "HTML", fieldname: "corps" }],
+      });
+      dialog.get_field("corps").$wrapper.html(`
+        ${avert_export}
+        <div class="brs-recap-kpis">${kpis}</div>
+        <div style="max-height:55vh;overflow:auto">
+          <table class="table table-bordered brs-recap-table" style="font-size:12px;margin:0">
+            <thead><tr>
+              <th>${__("Facture")}</th><th>${__("Date")}</th><th>${__("Fournisseur")}</th>
+              <th>${__("N° fournisseur")}</th><th class="text-right">${__("TTC avant retenue")}</th>
+              <th class="text-right">${__("Retenue due")}</th>
+              <th class="text-right">${__("Retenue saisie")}</th>
+              <th>${__("Comptabilité")}</th><th>${__("TEJ")}</th>
+            </tr></thead>
+            <tbody>${lignes || `<tr><td colspan="9">${__("Aucune facture concernée")}</td></tr>`}</tbody>
+            <tfoot><tr style="font-weight:600">
+              <td colspan="5">${__("Totaux")}</td>
+              <td class="text-right">${dt(t.due)}</td>
+              <td class="text-right">${dt(t.saisie)}</td>
+              <td colspan="2">${__("manque : {0}", [dt(t.manque)])}</td>
+            </tr></tfoot>
+          </table>
+        </div>`);
+      dialog.show();
     },
   });
 }
