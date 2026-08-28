@@ -614,3 +614,196 @@ def resoudre_ignorer(ecart: str, note: str = None):
     _resoudre(e, "Ignoré", [], note=(note or "").strip())
     frappe.db.commit()
     return {"ignore": e.name}
+
+
+# ------------------------------------------------------------------ regularisation
+
+def _delta_negatif_valide(e):
+    """Controles de la resolution « Régularisation » : l'advice verse PLUS que la PE.
+
+    Miroir de _delta_valide, qui ne couvre que la PE trop grosse (retour d'article).
+    Ici la PE a ete SAISIE TROP BAS (decision utilisateur 28/08/2026) : le client a bien
+    paye le montant de l'advice, la piece doit y etre portee.
+    """
+    if e.type_ecart != "Delta paiement" or not e.ref_paiement:
+        frappe.throw(_("Cette résolution s'applique à un écart « Delta paiement » "
+                       "porteur d'une Payment Entry."))
+    advice = flt(e.montant_advice, 3)
+    delta = flt(e.ecart, 3)                       # piece - advice (< 0 : la PE est trop basse)
+    if advice <= 0 or delta >= 0:
+        frappe.throw(_("Cette résolution vise le cas où Aramex verse PLUS que la pièce "
+                       "(advice {0}, écart {1}).").format(advice, delta))
+    return advice, abs(delta)
+
+
+def _place_disponible(reference_doctype: str, reference_name: str) -> float:
+    """Ce qu'une piece peut encore absorber, LU APRES l'annulation de la PE d'origine —
+    une facture par son reste a payer, une commande par ce qui n'est pas deja avance."""
+    if reference_doctype == "Sales Invoice":
+        return flt(frappe.db.get_value("Sales Invoice", reference_name,
+                                       "outstanding_amount"), 3)
+    if reference_doctype == "Sales Order":
+        so = frappe.db.get_value("Sales Order", reference_name,
+                                 ["grand_total", "advance_paid"], as_dict=True) or {}
+        return flt(flt(so.get("grand_total")) - flt(so.get("advance_paid")), 3)
+    return 0.0
+
+
+def _remplacer_pe_en_hausse(pe_name: str, montant: float, note: str = ""):
+    """Annule la PE et la recree à un montant SUPERIEUR : les allocations d'origine sont
+    conservees, et le surplus va aux memes pieces dans la limite de ce qu'elles peuvent
+    encore absorber. Ce qui ne trouve pas de place reste NON ALLOUE — un acompte au credit
+    du client, que le rapprochement de paiements affectera plus tard. Rend (PE, surplus
+    non alloue).
+    """
+    src = frappe.get_doc("Payment Entry", pe_name)
+    if src.docstatus != 1:
+        frappe.throw(_("La Payment Entry {0} n'est pas soumise (docstatus {1}).")
+                     .format(pe_name, src.docstatus))
+    montant = flt(montant, 3)
+    origine = [{"reference_doctype": r.reference_doctype,
+                "reference_name": r.reference_name,
+                "total_amount": r.total_amount,
+                "outstanding_amount": r.outstanding_amount,
+                "allocated_amount": flt(r.allocated_amount, 3)}
+               for r in (src.get("references") or [])]
+
+    new = frappe.new_doc("Payment Entry")
+    for f in ("payment_type", "posting_date", "company", "mode_of_payment", "party_type",
+              "party", "party_name", "paid_from", "paid_from_account_currency", "paid_to",
+              "paid_to_account_currency", "reference_no", "reference_date", "remarks",
+              "source_exchange_rate", "target_exchange_rate", "cost_center", "project"):
+        new.set(f, src.get(f))
+    if note:
+        new.remarks = ((new.remarks + "\n") if new.remarks else "") + note
+    new.paid_amount = new.received_amount = montant
+
+    src.cancel()   # les pieces retrouvent leur reste a payer AVANT qu'on le lise
+
+    surplus = flt(montant - sum(r["allocated_amount"] for r in origine), 3)
+    for r in origine:
+        if surplus > 0.0005:
+            place = _place_disponible(r["reference_doctype"], r["reference_name"])
+            ajout = min(surplus, max(flt(place - r["allocated_amount"], 3), 0.0))
+            if ajout > 0.0005:
+                r["allocated_amount"] = flt(r["allocated_amount"] + ajout, 3)
+                surplus = flt(surplus - ajout, 3)
+        new.append("references", {k: r[k] for k in (
+            "reference_doctype", "reference_name", "total_amount",
+            "outstanding_amount", "allocated_amount")})
+    new.insert(ignore_permissions=True)
+    new.submit()
+    frappe.delete_doc("Payment Entry", src.name, force=True, ignore_permissions=True)
+    return new, max(surplus, 0.0)
+
+
+@frappe.whitelist()
+def resoudre_regularisation(ecart: str, note: str = None):
+    """« Régularisation » — la PE avait été saisie trop bas : elle est portée au montant de
+    l'advice, le client ayant bien payé ce montant. Le surplus va aux pièces de la PE tant
+    qu'elles peuvent l'absorber, le reste demeure au crédit du client."""
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    e = _ecart_a_traiter(ecart)
+    advice, ecart_abs = _delta_negatif_valide(e)
+    note = (note or "").strip()
+
+    new_pe, non_alloue = _remplacer_pe_en_hausse(e.ref_paiement, advice, note=note)
+    _maj_ligne_brouillon(e.encaissement, e.ref_paiement, new_pe.name, advice,
+                         e.flux or "aramex")
+
+    detail = _("PE {0} ({1}) portée à {2} par {3}").format(
+        e.ref_paiement, flt(e.montant_piece, 3), advice, new_pe.name)
+    if non_alloue > 0.0005:
+        detail += " " + _("— {0} restent au crédit du client (non alloué)").format(non_alloue)
+    _resoudre(e, "Régularisation", [new_pe.name], note=(detail + (" | " + note if note else "")))
+    return {"ok": 1, "payment_entry": new_pe.name, "montant": advice,
+            "non_alloue": non_alloue}
+
+
+# ------------------------------------------------------------------ recalcul
+
+@frappe.whitelist()
+def recalculer(encaissement: str):
+    """Confronte les écarts ENCORE À TRAITER à l'état ACTUEL de la base.
+
+    Les écarts sont des constats figés au moment du rapprochement : corriger une
+    Payment Entry à la main ensuite ne les change pas, et le brouillon garde
+    l'ancien montant (situation du 28/08/2026). Ce recalcul rattrape le travail
+    fait hors de l'écran :
+      - « Sans pièce » dont la PE existe désormais (référence corrigée) : la
+        ligne est ajoutée au brouillon et l'écart se ferme ;
+      - « Delta paiement » dont la PE a changé de montant : l'écart est mis à
+        jour, et il se ferme si l'écart est retombé sous la tolérance ;
+      - écart dont la PE a disparu : signalé, jamais fermé en silence.
+    Les écarts DÉJÀ RÉSOLUS ne sont pas touchés — l'arbitrage humain prime.
+    """
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.encaissement import pending
+    from bank_retenue_sync.encaissement.matching import TOLERANCE_PAIEMENT
+
+    enc = frappe.get_doc(ENCAISSEMENT_DOCTYPE, encaissement)
+    if enc.docstatus != 0:
+        frappe.throw(_("{0} n'est plus un brouillon.").format(encaissement))
+
+    # PE Aramex disponibles, indexées par numéro de suivi (une PE peut avoir été
+    # corrigée après coup : c'est tout l'objet de ce recalcul).
+    par_suivi = {}
+    for pe in pending.get_pending_aramex(exclude=set()):
+        if pe.get("numero"):
+            par_suivi.setdefault(pe["numero"], pe)
+    deja_au_brouillon = {r.ref_paiement for r in (enc.get("livraison_aramex_a_encaisser") or [])
+                         if r.ref_paiement}
+
+    out = {"fermes": [], "maj": [], "orphelins": [], "inchanges": 0}
+    for nom in frappe.get_all(DOCTYPE, filters={"encaissement": encaissement,
+                                                "statut": "À traiter"}, pluck="name"):
+        e = frappe.get_doc(DOCTYPE, nom)
+
+        if e.type_ecart == "Sans pièce":
+            pe = par_suivi.get(e.suivi)
+            if not pe:
+                out["inchanges"] += 1
+                continue
+            if pe["name"] not in deja_au_brouillon:
+                _ajouter_ligne_brouillon(encaissement, frappe.get_doc("Payment Entry", pe["name"]),
+                                         e.suivi, e.reference_bancaire, e.flux or "aramex")
+                deja_au_brouillon.add(pe["name"])
+            e.db_set("ref_paiement", pe["name"])
+            e.db_set("montant_piece", flt(pe["paid_amount"], 3))
+            e.db_set("ecart", flt(flt(pe["paid_amount"], 3) - flt(e.montant_advice, 3), 3))
+            _resoudre(e, "Ajustement", [pe["name"]],
+                      note=_("Recalcul : pièce {0} retrouvée sur le suivi {1}.")
+                      .format(pe["name"], e.suivi))
+            out["fermes"].append({"ecart": nom, "piece": pe["name"]})
+            continue
+
+        if e.type_ecart == "Delta paiement":
+            if not e.ref_paiement or not frappe.db.exists("Payment Entry", e.ref_paiement):
+                out["orphelins"].append(nom)
+                continue
+            paye = flt(frappe.db.get_value("Payment Entry", e.ref_paiement, "paid_amount"), 3)
+            delta = flt(paye - flt(e.montant_advice, 3), 3)
+            if abs(delta - flt(e.ecart, 3)) < 0.0005:
+                out["inchanges"] += 1
+                continue
+            e.db_set("montant_piece", paye)
+            e.db_set("ecart", delta)
+            _maj_ligne_brouillon(encaissement, e.ref_paiement, e.ref_paiement, paye,
+                                 e.flux or "aramex")
+            if abs(delta) <= TOLERANCE_PAIEMENT:
+                # Retombé sous la tolérance : ce n'est plus un blocage, la différence
+                # se constate par l'écart de paiement comme les « Toléré » d'origine.
+                e.db_set("type_ecart", "Toléré")
+                e.db_set("bloquant", 0)
+                _resoudre(e, "Toléré", [e.ref_paiement],
+                          note=_("Recalcul : écart ramené à {0}, sous la tolérance.")
+                          .format(delta))
+                out["fermes"].append({"ecart": nom, "piece": e.ref_paiement})
+            else:
+                out["maj"].append({"ecart": nom, "piece": e.ref_paiement, "ecart_recalcule": delta})
+            continue
+
+        out["inchanges"] += 1
+
+    frappe.db.commit()
+    return out

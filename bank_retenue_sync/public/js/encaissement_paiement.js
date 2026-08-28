@@ -65,7 +65,15 @@ function brs_show_ecarts(frm, ecarts) {
 			let actions;
 			if (e.statut === "À traiter" && e.bloquant) {
 				const b = [];
-				if (e.type_ecart === "Delta paiement") {
+				if (e.type_ecart === "Delta paiement" && e.ecart < 0) {
+					// Advice > pièce : Aramex verse PLUS que le paiement enregistré.
+					// La PE a été saisie trop bas — une seule issue, la porter au
+					// montant de l'advice (décision 28/08/2026).
+					b.push(
+						`<button class="btn btn-xs btn-primary brs-act" data-action="regularisation" data-ecart="${e.name}"
+							title="${__("Le client a bien payé le montant de l'advice")}">${__("Régulariser")}</button>`
+					);
+				} else if (e.type_ecart === "Delta paiement") {
 					b.push(
 						`<button class="btn btn-xs btn-danger brs-act" data-action="perte" data-ecart="${e.name}">${__("Perte")}</button>`,
 						`<button class="btn btn-xs btn-warning brs-act" data-action="ajust-delta" data-ecart="${e.name}">${__("Ajustement")}</button>`
@@ -124,6 +132,39 @@ function brs_show_ecarts(frm, ecarts) {
 					</tr></thead><tbody>${rows}</tbody></table>`,
 			},
 		],
+		// Les écarts sont des constats FIGÉS au rapprochement : une Payment Entry
+		// corrigée à la main ensuite ne les change pas. Ce bouton confronte les
+		// écarts encore à traiter à l'état actuel de la base.
+		primary_action_label: __("Recalculer les écarts"),
+		primary_action() {
+			frappe.call({
+				method: "bank_retenue_sync.encaissement.ecarts.recalculer",
+				args: { encaissement: frm.doc.name },
+				freeze: true,
+				freeze_message: __("Confrontation aux paiements actuels…"),
+				callback: (r) => {
+					const m = r.message || {};
+					d.hide();
+					frappe.msgprint({
+						title: __("Recalcul terminé"),
+						indicator: (m.orphelins || []).length ? "orange" : "green",
+						message:
+							__("{0} écart(s) fermé(s), {1} mis à jour, {2} inchangé(s).", [
+								(m.fermes || []).length,
+								(m.maj || []).length,
+								m.inchanges || 0,
+							]) +
+							((m.orphelins || []).length
+								? "<br>" +
+								  __("⚠️ Pièce introuvable pour : {0}", [
+										frappe.utils.escape_html((m.orphelins || []).join(", ")),
+								  ])
+								: ""),
+					});
+					frm.reload_doc();
+				},
+			});
+		},
 	});
 	d.show();
 	const done = () => {
@@ -180,6 +221,15 @@ function brs_show_ecarts(frm, ecarts) {
 			method: "resoudre_avoir",
 			description: __(
 				"La PE sera remplacée au montant réellement versé ; une ligne d'échéancier « Avoir client » du delta est ajoutée à la commande (l'avoir flottant existant s'y applique)."
+			),
+		},
+		regularisation: {
+			titre: __("Régularisation — la pièce était trop basse"),
+			fields: [NOTE_FIELD],
+			args: (e, v) => ({ ecart: e, note: v.note }),
+			method: "resoudre_regularisation",
+			description: __(
+				"La PE sera portée au montant de l'advice (le client a bien payé ce montant). Le supplément est affecté aux pièces de la commande tant qu'elles peuvent l'absorber ; le reste demeure au crédit du client."
 			),
 		},
 		ignorer: {
