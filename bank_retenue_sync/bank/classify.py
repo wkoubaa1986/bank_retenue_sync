@@ -96,7 +96,7 @@ class LinkContext:
     """
     consumed: dict = field(default_factory=lambda: {"cheque": set(), "traite": set(),
                                                     "aramex": set(), "virement": set()})
-    booked: set = field(default_factory=set)
+    booked: dict = field(default_factory=dict)
     je_par_reference: dict = field(default_factory=dict)
     cheque_no_index: dict = field(default_factory=dict)
     # Payment Entry soumises touchant le compte bancaire, dans les deux sens. Sans elles, un
@@ -228,6 +228,14 @@ def _cle_bancaire(rule, m, numero):
     return None
 
 
+def _pieces_de(booked, ref):
+    """Les pieces {name, party} derriere une reference de `booked` — [] si l'appelant
+    a fourni un simple set (anciens tests / appels)."""
+    if isinstance(booked, dict):
+        return booked.get(ref) or []
+    return []
+
+
 def _mesurer_ecart(ctx: Classification, m: dict, montant_document):
     """Ecart entre ce que la BANQUE a verse et ce qui a ete COMPTABILISE pour la meme operation.
 
@@ -286,8 +294,17 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
     if ref and ref in context.booked:
         ctx.statut = STATUT_IDENTIFIE
         ctx.document_type = "Payment Entry"
-        ctx.raison = ("saisi hors du flux automatique : l'argent est en banque, "
-                      "mais le compte d'attente d'origine peut rester ouvert")
+        # La piece et son client S'AFFICHENT : « une PE existe » sans dire laquelle
+        # obligeait a fouiller la base a la main (constat utilisateur 28/08/2026).
+        pieces = _pieces_de(context.booked, ref)
+        if pieces:
+            ctx.document_name = pieces[0]["name"]
+        qui = ", ".join(filter(None, (p.get("party") for p in pieces))) or ""
+        ctx.raison = ("saisi hors du flux automatique%s : l'argent est en banque, "
+                      "mais le compte d'attente d'origine peut rester ouvert"
+                      % ((" — " + qui) if qui else ""))
+        if len(pieces) > 1:
+            ctx.raison += " (%d pièces portent cette référence)" % len(pieces)
         return
 
     if rule.flux == "especes" and context.je_finder:
@@ -374,10 +391,15 @@ def _resoudre_journal(rule, m, ctx: Classification, context: LinkContext, absent
                           if mode == "montant" else "")
         return
 
-    if ref and ref in (context.booked or set()):
+    if ref and ref in (context.booked or {}):
         ctx.statut = STATUT_IDENTIFIE
         ctx.document_type = "Payment Entry"
-        ctx.raison = "reference deja portee par une Payment Entry"
+        pieces = _pieces_de(context.booked, ref)
+        if pieces:
+            ctx.document_name = pieces[0]["name"]
+        qui = ", ".join(filter(None, (p.get("party") for p in pieces))) or ""
+        ctx.raison = "reference deja portee par une Payment Entry" + \
+            ((" — " + qui) if qui else "")
         return
 
     ctx.statut = STATUT_ORPHELIN

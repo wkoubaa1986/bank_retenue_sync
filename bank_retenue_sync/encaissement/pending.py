@@ -342,25 +342,29 @@ def dette_matches_schedule(sales_order: str, valeur: float) -> bool:
     return any(abs((r["payment_amount"] or 0) - (valeur or 0)) < 0.0005 for r in rows)
 
 
-def bank_refs_already_booked(references) -> set:
-    """Sous-ensemble de `references` (references bancaires de l'export) qui apparaissent deja dans
-    le `reference_no` d'une Payment Entry soumise.
+def bank_refs_already_booked(references) -> dict:
+    """Les references bancaires de `references` deja portees par le `reference_no` d'une
+    Payment Entry soumise -> {reference: [{"name", "party"}, ...]}.
+
+    Un dict pour garder LESQUELLES : l'identification bancaire doit pouvoir montrer la
+    piece et son client, pas seulement dire « une PE existe » (demande utilisateur
+    28/08/2026). Les tests d'appartenance (`ref in booked`) restent valables tels quels.
 
     Sert de garde-fou pour le flux virement : quand le comptable a deja saisi l'encaissement a la
     main, il ne faut pas en creer un second. Le rapprochement le signale (la dette d'origine, elle,
     reste ouverte sur 'Dettes - A&S') mais ne produit aucune ligne."""
     refs = {str(r).strip() for r in (references or []) if str(r or "").strip()}
     if not refs:
-        return set()
+        return {}
     rows = frappe.get_all("Payment Entry",
                           filters={"docstatus": 1, "reference_no": ["is", "set"]},
-                          fields=["name", "reference_no"])
-    booked = set()
+                          fields=["name", "party", "reference_no"])
+    booked = {}
     for r in rows:
         ref_no = r["reference_no"] or ""
         for ref in refs:
             if ref in ref_no:
-                booked.add(ref)
+                booked.setdefault(ref, []).append({"name": r["name"], "party": r["party"]})
     return booked
 
 
