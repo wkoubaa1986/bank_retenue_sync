@@ -59,6 +59,15 @@ DEFAULTS = (
      "periodicite": "Mensuel", "template_reference": "Salaire Sadok BOUZIRI {mm}-{yyyy}",
      "actif": 0,
      "notes": "ABSENT du releve juin-juillet 2026 : montant a confirmer avant activation."},
+    {"cle": "salaire_akram", "libelle": "Salaire Akram", "type": "Salaire",
+     "montant": 700.000, "tolerance": 0.001, "bank_rule": "virement_emis",
+     "compte_charge": "Salaire - A&S", "compte_banque": BANQUE,
+     "compte_attente": DECOUVERT, "mode_paiement": "Virement",
+     "declencheur": "Calendrier", "jours_avant_fin_mois": 2,
+     "periodicite": "Mensuel", "template_reference": "Salaire Akram {mm}-{yyyy}",
+     "actif": 0,
+     "notes": "Embauche du 29/07/2026 (HR-EMP-00010) : premier virement attendu fin 08/2026, "
+              "montant 700 DT a confirmer au releve avant activation."},
 
     # ------------------------------------------------------------------- loyer
     # Bimestriel, montant constant, sans TVA. Bornes du 15 au 15, comme les saisies manuelles.
