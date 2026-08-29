@@ -97,10 +97,37 @@ def paires_du_releve(movements: list) -> list:
     for jour, groupes in sorted(par_jour.items()):
         principaux = sorted(groupes["principal"], key=lambda m: -flt(m["debit"]))
         profits = sorted(groupes["profit"], key=lambda m: -flt(m["debit"]))
-        # Appariement par rang decroissant : la plus grosse part de capital va avec le plus gros
-        # interet du meme jour. Vrai des lors qu'il s'agit d'echeances de contrats distincts.
-        for i in range(min(len(principaux), len(profits))):
-            p, ii = principaux[i], profits[i]
+
+        # Appariement par REFERENCE de contrat d'abord : principal et profit d'une meme echeance
+        # portent le meme `LD…` au releve. Indispensable des que DEUX contrats prelevent le meme
+        # jour — premiere fois le 28/08/2026, le 29 tombant un samedi : le rang decroissant
+        # croisait alors les couples, le pret le plus ancien ayant le plus gros principal mais,
+        # ses interets fondant d'echeance en echeance, le plus PETIT profit.
+        def _ref(m):
+            return (m.get("reference") or "").strip().upper()
+
+        par_ref = defaultdict(lambda: {"principal": [], "profit": []})
+        for m in principaux:
+            if _ref(m):
+                par_ref[_ref(m)]["principal"].append(m)
+        for m in profits:
+            if _ref(m):
+                par_ref[_ref(m)]["profit"].append(m)
+
+        couples, apparies = [], set()
+        for ref in sorted(par_ref):
+            g = par_ref[ref]
+            if len(g["principal"]) == 1 and len(g["profit"]) == 1:
+                couples.append((g["principal"][0], g["profit"][0]))
+                apparies.update((id(g["principal"][0]), id(g["profit"][0])))
+
+        # Rang decroissant en REPLI (mouvements sans reference, ou reference ambigue) : la plus
+        # grosse part de capital va avec le plus gros interet du meme jour.
+        principaux = [m for m in principaux if id(m) not in apparies]
+        profits = [m for m in profits if id(m) not in apparies]
+        couples += list(zip(principaux, profits))
+
+        for p, ii in couples:
             paires.append({
                 "jour": jour,
                 "principal": flt(p["debit"], 3),

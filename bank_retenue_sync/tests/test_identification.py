@@ -664,6 +664,25 @@ class TestContratsFinancement(unittest.TestCase):
         c = contrats.contrat_de(paire, [self.NANTISSEMENT, self.LIGNE])
         self.assertEqual(c["cle"], "nant")
 
+    def test_deux_contrats_le_meme_jour_s_apparient_par_reference(self):
+        # 28/08/2026 : le 29 tombant un samedi, les DEUX prets ont ete preleves le meme jour.
+        # Le nantissement (echeance 7/10) a le plus gros principal mais — ses interets fondant —
+        # le plus PETIT profit : l'appariement par rang decroissant croisait les couples
+        # (17781.034 et 14058.732, inconnus des contrats). La reference LD… tranche.
+        from bank_retenue_sync.expenses import contrats
+        mvts = [
+            mv("PAIEMENT PROFIT TAMOUIL CHIRAET", debit=381.340, reference="LD2613900011"),
+            mv("PAIEMENT PRINCIPAL TAMOUIL CHIRAET", debit=13753.198, reference="LD2613900011"),
+            mv("PAIEMENT PRINCIPAL TAMOUIL CHIRAET", debit=17399.694, reference="LD2602600081"),
+            mv("PAIEMENT PROFIT TAMOUIL CHIRAET", debit=305.534, reference="LD2602600081"),
+        ]
+        paires = [p for p in contrats.paires_du_releve(mvts) if not p.get("incomplet")]
+        self.assertEqual(len(paires), 2)
+        self.assertEqual(sorted(round(p["total"], 3) for p in paires),
+                         [14134.538, 17705.228])
+        cles = {contrats.contrat_de(p, [self.NANTISSEMENT, self.LIGNE])["cle"] for p in paires}
+        self.assertEqual(cles, {"nant", "ligne"})
+
     def test_un_mouvement_sans_jumeau_ne_produit_rien(self):
         # Une echeance a moitie imputee serait pire que pas d'ecriture du tout.
         from bank_retenue_sync.expenses import contrats
