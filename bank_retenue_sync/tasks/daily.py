@@ -48,7 +48,7 @@ def _dispatch(nom: str, timeout: int = 3600):
     atteintes. Le tick, lui, revient en quelques millisecondes.
 
     `job_id` + `deduplicate` : un passage encore en cours ou deja en file n'est pas double par
-    le tick suivant — cinq crons par jour ne peuvent pas s'empiler quand la banque est lente.
+    le tick suivant — sept crons par jour ne peuvent pas s'empiler quand la banque est lente.
     """
     if not _enabled():
         return None
@@ -94,8 +94,9 @@ def paiements_carte_job():
 def verification_bancaire():
     """Passage de verification : releve + solde + identification + ecritures qui en decoulent.
 
-    Tourne CINQ fois par jour (9h, 11h, 13h, 15h, 17h). Chaque passage est complet et
-    idempotent : l'import n'insere que l'inconnu, la classification reprend tout le registre, et
+    Tourne SEPT fois par jour — 5h, 7h, 9h, 11h, 13h, 15h et 17h (5h et 7h ajoutees le
+    2026-08-21). Chaque passage est complet et idempotent : l'import n'insere que l'inconnu,
+    la classification reprend tout le registre, et
     l'ecriture mensuelle de frais est recalculee depuis zero puis refaite seulement si son total
     a change. Un passage sans nouveaute ne laisse aucune trace comptable.
     """

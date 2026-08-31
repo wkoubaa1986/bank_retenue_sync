@@ -785,7 +785,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
 
     Rien n'est cree pour un frais isole : l'ecriture est MENSUELLE et cumulative, recalculee a
     chaque passage. Rejouer la tache dix fois dans la journee laisse donc une seule ecriture,
-    toujours a jour — c'est la propriete qui rend cinq passages quotidiens sans danger.
+    toujours a jour — c'est la propriete qui rend sept passages quotidiens sans danger.
     """
     frappe.only_for("System Manager")
     from bank_retenue_sync.bank import registry, solde as S
@@ -929,7 +929,7 @@ def _export_mouvements_ok(refresh) -> bool:
     return False
 
 
-# Au-dela de ce silence (aucune synchro bancaire reussie), on alerte : cinq passages par jour,
+# Au-dela de ce silence (aucune synchro bancaire reussie), on alerte : sept passages par jour,
 # 24 h sans succes = au moins cinq echecs consecutifs, ce n'est plus un caprice du portail.
 _ALERTE_SYNCHRO_HEURES = 24
 
