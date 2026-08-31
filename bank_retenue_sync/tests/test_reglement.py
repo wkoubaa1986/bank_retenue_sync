@@ -184,3 +184,96 @@ class TestCycleAnticipe(unittest.TestCase):
         """Les deux vivent sur le compte de decouvert : seul le marqueur de libelle les separe."""
         marqueur = AR.cycle("honoraire")["marqueur"]
         self.assertNotIn(marqueur.upper(), "SALAIRE KOUBAÂ NÉJIB 07-2026".upper())
+
+
+class TestReconstructionDesLignes(unittest.TestCase):
+    """Le passage attente -> banque doit reprendre TOUTE l'ecriture, pas seulement ses debits.
+
+    Cas reel du 31/08/2026 : la note d'honoraire 07-2026 porte une retenue a la source de 7,140
+    au CREDIT. En ne recopiant que les debits, l'ecriture recreee valait Dr=239,000 contre
+    Cr=231,860 — refusee comme desequilibree, donc jamais basculee sur la banque, et le virement
+    du comptable est reste orphelin au releve.
+    """
+
+    HONORAIRE = ({"account": "Charges Diverses - A&S", "debit_in_account_currency": 201.0,
+                  "credit_in_account_currency": 0.0, "cost_center": "Principal - A&S"},
+                 {"account": "TVA 19% - A&S", "debit_in_account_currency": 38.0,
+                  "credit_in_account_currency": 0.0, "cost_center": "Principal - A&S"},
+                 {"account": "Retenue a la source achat - A&S", "debit_in_account_currency": 0.0,
+                  "credit_in_account_currency": 7.14, "cost_center": "Principal - A&S"},
+                 {"account": "Compte de découvert bancaire - A&S",
+                  "debit_in_account_currency": 0.0, "credit_in_account_currency": 231.86,
+                  "cost_center": "Principal - A&S"})
+
+    def _lignes(self, anciennes, montant, cle="honoraire"):
+        return AR.lignes_de_reglement(anciennes, montant, AR.cycle(cle))
+
+    def test_l_ecriture_recreee_est_equilibree_malgre_la_retenue(self):
+        lignes = self._lignes(self.HONORAIRE, 231.86)
+        debits = round(sum(l.get("debit") or 0 for l in lignes), 3)
+        credits = round(sum(l.get("credit") or 0 for l in lignes), 3)
+        self.assertEqual((debits, credits), (239.0, 239.0))
+
+    def test_la_retenue_reste_au_credit_et_a_son_compte(self):
+        """Elle est une DETTE jusqu'a sa declaration : ni passee au debit, ni absorbee."""
+        lignes = self._lignes(self.HONORAIRE, 231.86)
+        retenue = [l for l in lignes if l["account"] == "Retenue a la source achat - A&S"]
+        self.assertEqual(len(retenue), 1)
+        self.assertEqual(retenue[0]["credit"], 7.14)
+        self.assertIsNone(retenue[0].get("debit"))
+
+    def test_le_compte_d_attente_disparait_au_profit_de_la_banque(self):
+        lignes = self._lignes(self.HONORAIRE, 231.86)
+        comptes = [l["account"] for l in lignes]
+        self.assertNotIn("Compte de découvert bancaire - A&S", comptes)
+        banque = [l for l in lignes if l["account"] == AR.BANK_ACCOUNT]
+        self.assertEqual((len(banque), banque[0]["credit"]), (1, 231.86))
+
+    def test_charge_et_tva_sont_reprises_a_l_identique(self):
+        lignes = self._lignes(self.HONORAIRE, 231.86)
+        debits = {l["account"]: l["debit"] for l in lignes if l.get("debit")}
+        self.assertEqual(debits, {"Charges Diverses - A&S": 201.0, "TVA 19% - A&S": 38.0})
+
+    def test_une_note_sans_retenue_se_regle_comme_avant(self):
+        """Non-regression : les notes anterieures n'avaient que des debits et une contrepartie."""
+        anciennes = ({"account": "Charges Diverses - A&S", "debit_in_account_currency": 387.72,
+                      "credit_in_account_currency": 0.0, "cost_center": None},
+                     {"account": "TVA 19% - A&S", "debit_in_account_currency": 76.0,
+                      "credit_in_account_currency": 0.0, "cost_center": None},
+                     {"account": "Compte de découvert bancaire - A&S",
+                      "debit_in_account_currency": 0.0, "credit_in_account_currency": 463.72,
+                      "cost_center": None})
+        lignes = self._lignes(anciennes, 463.72)
+        self.assertEqual(len(lignes), 3)
+        self.assertEqual(round(sum(l.get("debit") or 0 for l in lignes), 3), 463.72)
+        self.assertEqual(round(sum(l.get("credit") or 0 for l in lignes), 3), 463.72)
+
+    def test_le_tiers_du_cycle_aramex_designe_la_dette_a_remplacer(self):
+        """`Crediteurs` porte tous les fournisseurs : seule la ligne ARAMEX devient la banque,
+        la dette d'un autre fournisseur presente sur la meme ecriture doit survivre."""
+        anciennes = ({"account": "Frais de transport - A&S", "debit_in_account_currency": 1000.0,
+                      "credit_in_account_currency": 0.0, "cost_center": None},
+                     {"account": "Créditeurs - A&S", "debit_in_account_currency": 0.0,
+                      "credit_in_account_currency": 600.0, "party_type": "Supplier",
+                      "party": "ARAMEX", "cost_center": None},
+                     {"account": "Créditeurs - A&S", "debit_in_account_currency": 0.0,
+                      "credit_in_account_currency": 400.0, "party_type": "Supplier",
+                      "party": "SUNLINE", "cost_center": None})
+        lignes = self._lignes(anciennes, 600.0, cle="aramex")
+        survivante = [l for l in lignes if l.get("party") == "SUNLINE"]
+        self.assertEqual(len(survivante), 1)
+        self.assertEqual(survivante[0]["credit"], 400.0)
+        self.assertEqual(round(sum(l.get("credit") or 0 for l in lignes), 3), 1000.0)
+
+    def test_les_lignes_documents_frappe_sont_lues_comme_les_dicts(self):
+        """`regler` passe de vrais objets Frappe : l'acces par attribut doit marcher aussi."""
+        class _L:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+        anciennes = [_L(account=d["account"],
+                        debit_in_account_currency=d["debit_in_account_currency"],
+                        credit_in_account_currency=d["credit_in_account_currency"],
+                        cost_center=d.get("cost_center"), party_type=None, party=None)
+                     for d in self.HONORAIRE]
+        lignes = self._lignes(anciennes, 231.86)
+        self.assertEqual(round(sum(l.get("credit") or 0 for l in lignes), 3), 239.0)

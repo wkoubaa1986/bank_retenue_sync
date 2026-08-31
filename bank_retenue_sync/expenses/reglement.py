@@ -200,6 +200,54 @@ def _remarque_reglee(ancienne: str, reference: str) -> str:
     return ("%s | Réf de paiement : %s" % (ancienne, reference)).strip(" |")
 
 
+def lignes_de_reglement(lignes_anciennes, montant: float, cyc: dict) -> list:
+    """Les lignes de l'ecriture RECREEE sur la banque, a partir de celles de l'anticipee.
+
+    SEULE LA CONTREPARTIE CHANGE : le compte d'attente devient la banque. Tout le reste de
+    l'ecriture est repris a l'identique — la charge, la TVA, ET LES AUTRES CREDITS.
+
+    ⚠️ NE PAS SE CONTENTER DES DEBITS. Une note d'honoraire porte une RETENUE A LA SOURCE, qui
+    est un CREDIT : la laisser tomber desequilibre l'ecriture recreee du montant exact de la
+    retenue, et le reglement echoue au lieu de basculer l'attente vers la banque. Constate le
+    31/08/2026 sur la note 07-2026 — Dr=239,000 != Cr=231,860, soit les 7,140 de retenue perdus :
+    le virement du comptable est reste orphelin au releve pendant que la charge dormait sur le
+    compte d'attente. Les notes precedentes n'en portaient pas, le defaut ne s'etait jamais vu.
+
+    La retenue reste une DETTE jusqu'a sa declaration : elle n'a a etre ni passee au debit, ni
+    fondue dans le montant vire.
+    """
+    def _est_la_dette(a):
+        """La ligne que la banque remplace : celle que `pieces_en_attente` a totalisee.
+
+        Le tiers fait partie du critere quand le cycle en a un — `Crediteurs` porte TOUS les
+        fournisseurs, et ce virement-la ne solde que la dette ARAMEX.
+        """
+        if _valeur(a, "account") != cyc["compte"]:
+            return False
+        return not cyc.get("party") or _valeur(a, "party") == cyc["party"]
+
+    out = [{"account": BANK_ACCOUNT, "credit": flt(montant, 3)}]
+    for a in lignes_anciennes or []:
+        debit = flt(_valeur(a, "debit_in_account_currency"), 3)
+        credit = flt(_valeur(a, "credit_in_account_currency"), 3)
+        if debit > 0:
+            out.append({"account": _valeur(a, "account"), "debit": debit,
+                        "cost_center": _valeur(a, "cost_center")})
+        elif credit > 0 and not _est_la_dette(a):
+            out.append({"account": _valeur(a, "account"), "credit": credit,
+                        "cost_center": _valeur(a, "cost_center"),
+                        "party_type": _valeur(a, "party_type") or None,
+                        "party": _valeur(a, "party") or None})
+    return out
+
+
+def _valeur(ligne, champ):
+    """Lit un champ, que la ligne soit un document Frappe ou un simple dict (tests)."""
+    if isinstance(ligne, dict):
+        return ligne.get(champ)
+    return getattr(ligne, champ, None)
+
+
 def regler(facture: dict, mouvement: dict, insert: bool = True,
            cle: str = "aramex") -> dict:
     """Remplace l'ecriture sur Crediteurs par son equivalent sur la banque.
@@ -211,13 +259,7 @@ def regler(facture: dict, mouvement: dict, insert: bool = True,
     company = ancienne.company
     montant = facture["montant"]
 
-    # Les lignes de charge et de TVA sont conservees a l'identique ; seule la contrepartie change.
-    lignes = [{"account": BANK_ACCOUNT, "credit": montant}]
-    for a in ancienne.accounts:
-        if flt(a.debit_in_account_currency, 3) > 0:
-            lignes.append({"account": a.account,
-                           "debit": flt(a.debit_in_account_currency, 3),
-                           "cost_center": a.cost_center})
+    lignes = lignes_de_reglement(ancienne.accounts, montant, cycle(cle))
 
     nouvelle = journal.build_journal_entry(
         company, ancienne.posting_date, lignes,
