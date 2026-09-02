@@ -1079,3 +1079,51 @@ class TestFraisRattachesAuCumulMensuel(unittest.TestCase):
     def test_la_cle_de_groupe_journaliere_reste_posee(self):
         c = C.classify_one(mv("COM ENC CHEQUE TN AC-1", debit=2.856, jour=16), self.ctx())
         self.assertEqual(c.groupe, "frais-16-10-2023")
+
+
+class TestReclassificationApresLesFrais(unittest.TestCase):
+    """Pourquoi les frais restaient affiches « en brouillon » APRES identification.
+
+    L'ordre du passage de verification est : releve, solde, IDENTIFICATION, creations,
+    puis l'ecriture mensuelle de frais. La page montrait donc l'ecriture telle
+    qu'elle etait AU DEBUT du passage — « ecriture en brouillon, a soumettre » —
+    alors qu'elle venait d'etre soumise a l'etape suivante. Il fallait attendre le
+    passage d'apres, jusqu'a deux heures (constate le 02/09/2026 : ACC-JV-2026-00687
+    soumise en base, affichee en brouillon a l'ecran).
+
+    Une reclassification apres coup remet les pastilles d'aplomb — mais seulement
+    quand l'ecriture a REELLEMENT bouge.
+    """
+
+    def bouge(self, resultat):
+        from bank_retenue_sync import orchestrator
+        return orchestrator._ecriture_de_frais_a_bouge(resultat)
+
+    def test_une_ecriture_creee_declenche_la_reclassification(self):
+        self.assertTrue(self.bouge([{"statut": "cree"}]))
+
+    def test_une_ecriture_refaite_aussi(self):
+        self.assertTrue(self.bouge([{"statut": "remplacee"}]))
+
+    def test_un_brouillon_rattrape_aussi(self):
+        """Le nouveau cas : montant identique, mais l'ecriture vient de partir au
+        grand livre. Sans cela, la pastille resterait fausse alors meme qu'on
+        vient de la rendre vraie."""
+        self.assertTrue(self.bouge([{"statut": "soumise"}]))
+
+    def test_un_passage_sans_changement_ne_reclassifie_pas(self):
+        """Le cas NORMAL, six fois sur sept : ne pas payer une classification de
+        plus pour rien."""
+        self.assertFalse(self.bouge([{"statut": "inchangee"}]))
+        self.assertFalse(self.bouge([{"statut": "vide"}]))
+        self.assertFalse(self.bouge([{"statut": "inactif"}]))
+
+    def test_une_seule_periode_mouvante_suffit(self):
+        """`process_fees` traite plusieurs mois d'un coup."""
+        self.assertTrue(self.bouge([{"statut": "inchangee"}, {"statut": "remplacee"}]))
+
+    def test_un_echec_des_frais_ne_declenche_rien(self):
+        """`out['ecritures']` porte un dict d'erreur quand la creation a leve.
+        Reclassifier derriere une erreur n'apporterait rien."""
+        self.assertFalse(self.bouge({"erreur": "boom"}))
+        self.assertFalse(self.bouge(None))

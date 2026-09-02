@@ -908,10 +908,45 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
             out["ecritures"] = fees.process_fees(registry.registry_as_movements(), insert=True)
         except Exception as e:
             out["ecritures"] = {"erreur": str(e)[:200]}
+        # ⚠️ L'IDENTIFICATION (etape 3) EST PASSEE AVANT CETTE ECRITURE. La page affichait donc
+        # l'ecriture de frais telle qu'elle etait AU DEBUT du passage — « Identifie non
+        # comptabilise / ecriture en brouillon, a soumettre » alors qu'elle venait d'etre creee
+        # et soumise deux lignes plus haut. L'utilisateur voyait ses frais « encore en
+        # brouillon » apres identification, et devait attendre le passage suivant (jusqu'a 2 h)
+        # pour que la pastille tombe juste (constate le 02/09/2026, ACC-JV-2026-00687 soumise,
+        # affichee en brouillon).
+        # Meme remede qu'a l'etape 4 : une reclassification apres coup, sans nouvel export.
+        # Conditionnee au fait que l'ecriture ait REELLEMENT bouge — un passage qui ne trouve
+        # rien de neuf ne paie pas une classification de plus.
+        if _ecriture_de_frais_a_bouge(out.get("ecritures")):
+            try:
+                reclass = run_identification(refresh=False)
+                out["reclassification_frais"] = {k: reclass.get(k) for k in ("revus",)}
+            except Exception as e:
+                out["reclassification_frais"] = {"erreur": str(e)[:200]}
 
     _marquer_synchro(refresh_ok=_export_mouvements_ok(out.get("refresh")))
     frappe.db.commit()
     return out
+
+
+# Les seuls etats ou l'ecriture mensuelle a change de forme au grand livre. « inchangee » et
+# « vide » ne touchent a rien : reclassifier derriere eux serait du travail pur.
+_FRAIS_ETATS_MOUVANTS = ("cree", "remplacee", "soumise")
+
+
+def _ecriture_de_frais_a_bouge(resultat) -> bool:
+    """L'ecriture mensuelle de frais a-t-elle ete creee, refaite ou soumise a l'instant ?
+
+    `process_fees` rend une LISTE (un element par periode traitee) ; un echec rend un dict
+    d'erreur. On ne veut declencher la reclassification que sur un vrai changement.
+    """
+    if isinstance(resultat, dict):
+        resultat = [resultat]
+    if not isinstance(resultat, list):
+        return False
+    return any(isinstance(r, dict) and r.get("statut") in _FRAIS_ETATS_MOUVANTS
+               for r in resultat)
 
 
 def _export_mouvements_ok(refresh) -> bool:
