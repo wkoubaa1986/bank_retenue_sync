@@ -301,6 +301,29 @@ class TestReliquatSurCompteAramex(unittest.TestCase):
         self.assertEqual(len(doc.get("dettes_a_encaisser")), 1)
         self.assertEqual(doc.total_virement_d, 40.0)
 
+    def test_notre_imputation_est_protegee_du_FIFO_du_server_script(self):
+        """Sans ce drapeau, « generartion_list dette » vide `dettes_a_encaisser` a chaque
+        enregistrement et la refait en FIFO PAR DATE, sans jamais chercher d'egalite.
+
+        Cas reel du 01/09/2026 : 898 DT recus d'un client qui devait EXACTEMENT 898 ; le FIFO a
+        solde une dette de 31 DT de 2025 puis 867 sur celle de 898, recreant 31 DT d'impaye.
+        Notre allocateur avait choisi la dette exacte — encore fallait-il que sa decision
+        survive au save."""
+        lots, _ = matching.match_virements(
+            self._mvt(), [self._reliquat()], consumed=set(), booked=set(),
+            aliases={}, schedule_check=_ok)
+        doc = builder.build_encaissement(virement_lots=lots, insert=False)
+        self.assertEqual(doc.get("custom_allocation_manuelle"), 1)
+
+    def test_sans_dette_le_drapeau_n_est_pas_pose(self):
+        """Un encaissement de cheques seuls n'a aucune imputation de dette a proteger :
+        poser le drapeau y bloquerait la regeneration sans rien defendre."""
+        doc = builder.build_encaissement(
+            cheque_rows=[{"ref_paiement": "ACC-PAY-2026-00001", "valeur": 100.0,
+                          "emmeteur": "X", "statut": "Versé"}],
+            insert=False)
+        self.assertFalse(doc.get("custom_allocation_manuelle"))
+
     def test_bl_reste_vide_pour_ne_pas_declencher_un_echec_muet(self):
         """Avec `bl`, le script chercherait une echeance « Dette non payée » de 40 DT que
         l'encaissement Aramex anterieur a effacee, et n'ecrirait rien sans le dire."""

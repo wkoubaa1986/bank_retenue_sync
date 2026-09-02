@@ -915,6 +915,38 @@ class TestReglementSaisiEnEcriture(unittest.TestCase):
         self.assertEqual(c.document_type, "Payment Entry")
 
 
+class TestSoumissionDeLEcritureDeFrais(unittest.TestCase):
+    """Qui decide que l'ecriture mensuelle de frais part au grand livre.
+
+    La regle historique — « re-soumettre seulement si celle qu'on remplace l'etait » — laissait
+    le PREMIER frais du mois en brouillon, meme reglage « soumettre automatiquement » coche :
+    il n'y a rien a remplacer ce jour-la. L'ecran d'identification affichait alors, chaque debut
+    de mois, un ecart « reste a comptabiliser » jusqu'a ce que quelqu'un y pense (02/09/2026,
+    ACC-JV-2026-00675, 1,190 DT).
+    """
+
+    def decision(self, existant, etait_soumise, auto):
+        """La regle telle qu'elle est ecrite dans `sync_ecriture_mensuelle`."""
+        return bool(etait_soumise or (not existant and auto))
+
+    def test_le_premier_frais_du_mois_part_si_le_reglage_est_coche(self):
+        self.assertTrue(self.decision(existant=None, etait_soumise=False, auto=True))
+
+    def test_le_premier_frais_reste_en_brouillon_si_le_reglage_est_decoche(self):
+        """Reglage decoche : rien ne change, la soumission reste humaine."""
+        self.assertFalse(self.decision(existant=None, etait_soumise=False, auto=False))
+
+    def test_remplacer_une_ecriture_soumise_la_re_soumet_toujours(self):
+        """Sinon le total du mois sortirait du grand livre a chaque nouveau frais, et y
+        resterait jusqu'a validation — sept passages par jour."""
+        for auto in (True, False):
+            self.assertTrue(self.decision(existant="ACC-JV-1", etait_soumise=True, auto=auto))
+
+    def test_remplacer_un_brouillon_le_laisse_en_brouillon(self):
+        """L'utilisateur ne l'avait pas soumis : on ne decide pas a sa place."""
+        self.assertFalse(self.decision(existant="ACC-JV-1", etait_soumise=False, auto=True))
+
+
 class TestTvaSurCommissionDansLesFrais(unittest.TestCase):
     """Une TVA de reference 'CHG…', seule de son jour, est une TVA sur COMMISSION bancaire et
     entre dans l'ecriture mensuelle de frais. Le reclassement de `tva_bancaire` en categorie

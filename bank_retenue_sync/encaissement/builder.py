@@ -124,6 +124,26 @@ def build_encaissement(cheque_rows=None, traite_rows=None, aramex_rows=None,
     doc.total_virement_a = round(sum((r.get("valeur") or 0) for r in aramex_rows), 3)
     doc.total_virement_d = round(sum(lot["total"] for lot in virement_lots), 3)
 
+    # ⚠️ SANS CE DRAPEAU, NOTRE IMPUTATION EST DÉTRUITE À L'ENREGISTREMENT.
+    # Le server script « generartion_list dette » se déclenche à CHAQUE save :
+    # il vide `dettes_a_encaisser` et la régénère en FIFO PAR DATE, sans jamais
+    # chercher d'égalité. `allocation.allocate` a pourtant déjà tranché, et bien
+    # mieux — dette exacte d'abord, sous-ensemble ensuite, FIFO en dernier.
+    #
+    # Cas réel du 01/09/2026 (ENC-01-09-2026-00001) : 898 DT reçus d'American
+    # Cooperative School, qui devait EXACTEMENT 898 sur SAL-ORD-2026-02770. Le
+    # FIFO a payé une dette de 31 DT de 2025, puis 867 sur celle de 898 — et
+    # recréé 31 DT d'impayé sur la bonne commande. Notre allocateur avait choisi
+    # la dette exacte.
+    #
+    # Le champ s'appelle « allocation manuelle » parce qu'il a été créé pour la
+    # caisse (l'employé choisit ses dettes), mais ce qu'il dit au script est :
+    # « l'imputation est DÉJÀ décidée, ne la refais pas ». C'est exactement
+    # notre cas. On ne le pose que si une allocation de dettes existe : sans
+    # lot de virement, il n'y a rien à protéger.
+    if virement_lots:
+        doc.custom_allocation_manuelle = 1
+
     if insert:
         doc.insert(ignore_permissions=True)  # BROUILLON : jamais submit en v1
     return doc

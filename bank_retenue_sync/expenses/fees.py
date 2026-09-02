@@ -327,13 +327,22 @@ def sync_ecriture_mensuelle(movements: list, periode: str = None, insert: bool =
 
     je = build_fee_journal_entry(cumul, insert=insert)
     # RENDRE L'ETAT, PAS SEULEMENT LE MONTANT : remplacer une ecriture SOUMISE par un brouillon
-    # sortirait le total du grand livre jusqu'a validation humaine. Avec cinq verifications par
+    # sortirait le total du grand livre jusqu'a validation humaine. Avec sept verifications par
     # jour, l'ecriture du mois en cours passerait ses journees hors comptabilite. On re-soumet
-    # donc si — et seulement si — celle qu'on remplace l'etait.
-    if insert and je and etait_soumise:
+    # donc si celle qu'on remplace l'etait.
+    #
+    # ET LE PREMIER FRAIS DU MOIS SUIT LE REGLAGE DU SITE. Il n'y a rien a
+    # remplacer ce jour-la : l'ecriture naissait donc en brouillon, meme quand
+    # « Soumettre automatiquement les ecritures » est coche. Resultat : chaque
+    # debut de mois, l'ecran d'identification affichait un ecart « reste a
+    # comptabiliser » jusqu'a ce que quelqu'un pense a soumettre — constate le
+    # 02/09/2026 sur ACC-JV-2026-00675 (1,190). Le reglage decoche, rien ne
+    # change : la soumission reste manuelle, comme avant.
+    a_soumettre = etait_soumise or (not existant and journal._auto_submit_enabled())
+    if insert and je and a_soumettre:
         je.submit()
     return {"periode": periode, "statut": "remplacee" if remplacee else "cree",
-            "total": cumul.total, "lignes": len(cumul.lignes), "soumise": etait_soumise,
+            "total": cumul.total, "lignes": len(cumul.lignes), "soumise": a_soumettre,
             "je": (je.name if insert and je else "(dry-run)"), "remplacee": remplacee}
 
 
