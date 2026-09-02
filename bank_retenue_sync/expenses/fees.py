@@ -338,7 +338,15 @@ def sync_ecriture_mensuelle(movements: list, periode: str = None, insert: bool =
     # comptabiliser » jusqu'a ce que quelqu'un pense a soumettre — constate le
     # 02/09/2026 sur ACC-JV-2026-00675 (1,190). Le reglage decoche, rien ne
     # change : la soumission reste manuelle, comme avant.
-    a_soumettre = etait_soumise or (not existant and journal._auto_submit_enabled())
+    # ⚠️ ET UN BROUILLON DÉJÀ EN PLACE EST RATTRAPÉ. Ne soumettre que la
+    # PREMIÈRE écriture du mois laissait septembre en brouillon pour toujours :
+    # l'écriture existait déjà (créée avant le correctif), donc `not existant`
+    # était faux, et chaque nouveau frais la remplaçait par un autre brouillon.
+    # L'écran d'identification affichait « écriture en brouillon, à soumettre »
+    # sur tous les frais du mois (constaté 02/09/2026, ACC-JV-2026-00685).
+    # Le réglage du site dit « soumettre automatiquement » : on le suit, sans
+    # exiger que la précédente l'ait été. Réglage décoché, rien ne part.
+    a_soumettre = etait_soumise or journal._auto_submit_enabled()
     if insert and je and a_soumettre:
         je.submit()
     return {"periode": periode, "statut": "remplacee" if remplacee else "cree",

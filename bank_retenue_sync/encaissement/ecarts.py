@@ -369,6 +369,24 @@ def _resoudre(e, resolution: str, pieces: list, note: str = ""):
     from bank_retenue_sync.expenses import fees
     fees.planifier_rafraichissement()
 
+    # ⚠️ ET LE REGISTRE EST RECLASSE, TOUT DE SUITE. Le statut et la raison d'un
+    # mouvement sont ECRITS lors de la classification : tant qu'elle n'est pas
+    # rejouee, l'ecran d'identification continue d'afficher « encaissement en
+    # BROUILLON avec 1 ecart(s) a resoudre — soumission bloquee » alors que
+    # l'ecart vient d'etre resolu. L'utilisateur croit son geste sans effet et le
+    # refait (constate le 02/09/2026).
+    #
+    # Synchrone, comme apres la creation d'une ecriture depuis le meme ecran
+    # (api/mouvements.creer_ecriture) : c'est une action humaine, elle doit se
+    # voir au rechargement qui suit. Une classification qui echoue ne doit pas
+    # pour autant annuler une resolution deja ecrite.
+    try:
+        from bank_retenue_sync.bank import classify
+
+        classify.run(persist=True)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "reclassement apres resolution ecart")
+
 
 def _delta_valide(e):
     """Controles communs des resolutions d'un « Delta paiement »."""

@@ -927,7 +927,7 @@ class TestSoumissionDeLEcritureDeFrais(unittest.TestCase):
 
     def decision(self, existant, etait_soumise, auto):
         """La regle telle qu'elle est ecrite dans `sync_ecriture_mensuelle`."""
-        return bool(etait_soumise or (not existant and auto))
+        return bool(etait_soumise or auto)
 
     def test_le_premier_frais_du_mois_part_si_le_reglage_est_coche(self):
         self.assertTrue(self.decision(existant=None, etait_soumise=False, auto=True))
@@ -942,9 +942,17 @@ class TestSoumissionDeLEcritureDeFrais(unittest.TestCase):
         for auto in (True, False):
             self.assertTrue(self.decision(existant="ACC-JV-1", etait_soumise=True, auto=auto))
 
-    def test_remplacer_un_brouillon_le_laisse_en_brouillon(self):
-        """L'utilisateur ne l'avait pas soumis : on ne decide pas a sa place."""
-        self.assertFalse(self.decision(existant="ACC-JV-1", etait_soumise=False, auto=True))
+    def test_un_brouillon_deja_en_place_est_rattrape(self):
+        """Ne soumettre que la PREMIERE ecriture du mois laissait septembre en
+        brouillon pour toujours : elle existait deja, donc jamais « premiere ».
+        Le reglage du site fait foi (ACC-JV-2026-00685, 02/09/2026)."""
+        self.assertTrue(self.decision(existant="ACC-JV-1", etait_soumise=False, auto=True))
+
+    def test_reglage_decoche_rien_ne_part_jamais(self):
+        """Le seul cas ou une ecriture reste en brouillon : l'utilisateur n'a pas
+        demande la soumission automatique."""
+        self.assertFalse(self.decision(existant="ACC-JV-1", etait_soumise=False, auto=False))
+        self.assertFalse(self.decision(existant=None, etait_soumise=False, auto=False))
 
 
 class TestTvaSurCommissionDansLesFrais(unittest.TestCase):
