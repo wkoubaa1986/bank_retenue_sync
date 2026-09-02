@@ -955,6 +955,43 @@ class TestSoumissionDeLEcritureDeFrais(unittest.TestCase):
         self.assertFalse(self.decision(existant=None, etait_soumise=False, auto=False))
 
 
+class TestMontantInchangeMaisBrouillon(unittest.TestCase):
+    """Le raccourci « meme montant, rien a faire » oubliait de regarder l'etat.
+
+    Constate le 02/09/2026 sur ACC-JV-2026-00687 : reglage « soumettre
+    automatiquement » COCHE, correctif de la soumission bien deployee, et
+    l'ecriture dormait quand meme en brouillon — tous les frais du mois
+    affichaient « ecriture en brouillon, a soumettre ».
+
+    L'explication : la soumission ne se jouait qu'au REMPLACEMENT. Or les frais
+    du mois se figent vite ; des le dernier frais pose, les passages suivants
+    trouvent le bon total, repondent « inchangee » et sortent avant meme d'avoir
+    lu le docstatus. Un brouillon au bon montant n'etait donc jamais rattrape.
+    """
+
+    def rattrape(self, docstatus, auto, insert=True):
+        """La regle telle qu'elle est ecrite dans la branche « montant identique »."""
+        return bool(insert and docstatus == 0 and auto)
+
+    def test_un_brouillon_au_bon_montant_est_soumis(self):
+        """Le cas de la capture."""
+        self.assertTrue(self.rattrape(docstatus=0, auto=True))
+
+    def test_une_ecriture_deja_soumise_n_est_pas_retouchee(self):
+        """Le cas NORMAL, sept fois par jour : ne rien faire."""
+        self.assertFalse(self.rattrape(docstatus=1, auto=True))
+
+    def test_le_reglage_decoche_laisse_le_brouillon_tranquille(self):
+        """La soumission automatique reste un choix de l'utilisateur — ici comme
+        au remplacement."""
+        self.assertFalse(self.rattrape(docstatus=0, auto=False))
+
+    def test_une_simulation_ne_soumet_rien(self):
+        """`insert=False` sert a REGARDER ce qui se passerait. Une verification a
+        blanc qui validerait des ecritures serait un piege."""
+        self.assertFalse(self.rattrape(docstatus=0, auto=True, insert=False))
+
+
 class TestTvaSurCommissionDansLesFrais(unittest.TestCase):
     """Une TVA de reference 'CHG…', seule de son jour, est une TVA sur COMMISSION bancaire et
     entre dans l'ecriture mensuelle de frais. Le reclassement de `tva_bancaire` en categorie

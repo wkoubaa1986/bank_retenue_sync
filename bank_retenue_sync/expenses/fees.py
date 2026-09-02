@@ -318,6 +318,24 @@ def sync_ecriture_mensuelle(movements: list, periode: str = None, insert: bool =
                 "je": existant.name if existant else None}
 
     if existant and abs(flt(existant.total_debit, 3) - cumul.total) < 0.005:
+        # ⚠️ MONTANT INCHANGE N'EST PAS ETAT INCHANGE. Ce raccourci sortait avant
+        # meme de regarder le docstatus : un brouillon dont le total ne bouge plus
+        # ne partait JAMAIS. Or les frais du mois se figent vite — apres le dernier
+        # de la journee, les sept passages suivants repondent tous « inchangee » et
+        # l'ecriture dort en brouillon jusqu'au mois suivant. Constate le 02/09/2026
+        # sur ACC-JV-2026-00687 : le reglage « soumettre automatiquement » etait
+        # pourtant coche, et le correctif de 13h43 bien deploye — il ne se declenche
+        # qu'au REMPLACEMENT, jamais sur une ecriture deja au bon montant.
+        if insert and existant.docstatus == 0 and journal._auto_submit_enabled():
+            try:
+                frappe.get_doc("Journal Entry", existant.name).submit()
+                return {"periode": periode, "statut": "soumise", "total": cumul.total,
+                        "je": existant.name, "soumise": True}
+            except Exception:
+                # Une ecriture qui refuse de partir (exercice clos, compte gele) ne
+                # doit pas emporter la verification des frais avec elle.
+                frappe.log_error(frappe.get_traceback(),
+                                 "frais bancaires : soumission %s" % existant.name)
         return {"periode": periode, "statut": "inchangee", "total": cumul.total,
                 "je": existant.name}
 
