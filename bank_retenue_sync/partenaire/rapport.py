@@ -577,8 +577,101 @@ def _ou_null(v) -> str:
     return montant(v) if v not in (None, "") else "null"
 
 
+def rendre_court(d: dict, prose: dict = None) -> str:
+    """Le rapport COURT — celui qui part chez le partenaire. Fonction pure.
+
+    ⚠️ POURQUOI UN SECOND RENDU PLUTOT QU'UN RAPPORT ALLEGE. Le rapport complet fait 5 900
+    caracteres, 139 lignes et six tableaux, et il deroule ses propres calculs (« Division par 3 :
+    5 572,578 / 3 = 1 857,526 ») pour finalement dire au partenaire ce qu'il doit. C'est un
+    justificatif, pas un message : on le garde tel quel pour l'ecran et la verification, et c'est
+    cette version-ci qu'on lui envoie (demande utilisateur 03/09/2026).
+
+    CE QU'ON GARDE : qui doit quoi ce mois-ci, les deux benefices qui le fondent, l'ajustement,
+    les echeances a payer, ce qui a ete recu, et les impayes a signaler. CE QU'ON RETIRE : le
+    detail commande par commande, l'echeancier BRUT (un intermediaire de calcul), les fenetres de
+    paiement entre echeances, et le deroule des formules.
+    """
+    p = prose or prose_deterministe(d)
+    L = ["# Activité %s — %s" % (de(d["nom_du_mois"]), CLIENT), ""]
+
+    for reserve in d.get("reserves") or []:
+        L += ["> ⚠️ %s" % reserve, ""]
+
+    # LE TITRE EST LA CONCLUSION, PAS L'INTRODUCTION. Le partenaire ouvre le message pour savoir
+    # ce qu'il doit ; le lui faire deduire de deux benefices et d'un solde net etait le principal
+    # defaut du rapport long.
+    aqua, part = d["bilan"]["aqua"], d["bilan"]["partenaire"]
+    solde = flt(d["solde_net"])
+    if abs(solde) < 0.001:
+        L += ["**Les deux activités s’équilibrent ce mois-ci.**", ""]
+    elif solde > 0:
+        L += ["**%s doit %s TND à AQUA WORLD** au titre de l’activité du mois."
+              % (CLIENT, montant(solde)), ""]
+    else:
+        L += ["**AQUA WORLD doit %s TND à %s** au titre de l’activité du mois."
+              % (montant(abs(solde)), CLIENT), ""]
+
+    L += _tableau(["Activité", "Ventes (TND)", "Achats (TND)", "Bénéfice (TND)"],
+                  [["Aqua World pour %s" % CLIENT, montant(aqua["ventes"]),
+                    montant(aqua["achats"]), montant(aqua["benefice"])],
+                   ["%s pour Aqua World" % CLIENT, montant(part["ventes"]),
+                    montant(part["achats"]), montant(part["benefice"])]])
+    L += ["", "- Solde net : **%s TND**" % montant(solde)]
+    if d["charges_libres"]:
+        # Le champ est `libelle` cote DocType, `label` cote ecran — comme dans le rapport long.
+        # Ne lire que `label` affichait « Charges du mois : 250,000 TND () ».
+        L += ["- Charges du mois : %s TND (%s)"
+              % (montant(d["total_charges"]),
+                 ", ".join(franciser(c.get("libelle") or c.get("label") or "sans libellé")
+                           for c in d["charges_libres"]))]
+    L += ["- **Ajustement retenu : %s TND** — %s" % (montant(d["ajustement"]), p["absorption"])]
+
+    # Les echeances : la seule partie sur laquelle le partenaire a quelque chose A FAIRE.
+    L += ["", "## Échéances", ""]
+    L += _tableau(["Date", "À payer (TND)", "Note"],
+                  [[e["date"], montant(e["montant"]), franciser(e.get("note") or "")]
+                   for e in (d["echeancier_corrige"] or [])])
+
+    reste = [l for l in (d["consolide"] or []) if flt(l.get("reste"))]
+    if reste:
+        L += ["", "Reste dû sur l’ensemble des échéances : **%s TND** (%s)."
+              % (montant(sum(flt(l.get("reste")) for l in reste)),
+                 ", ".join("%s : %s" % (l["date"], montant(l.get("reste"))) for l in reste))]
+
+    # Les reglements : le partenaire doit pouvoir reconnaitre ce qu'il a envoye.
+    L += ["", "## Règlements reçus ce mois", ""]
+    if d["paiements"]:
+        L += ["- %s TND au total : %s"
+              % (montant(d["total_paiements"]),
+                 ", ".join("%s TND le %s (%s)" % (montant(x["montant"]), x["date"],
+                                                  franciser(x.get("mode") or ""))
+                           for x in d["paiements"]))]
+    else:
+        L += ["- Aucun règlement reçu ce mois."]
+    if flt(d["avance"]):
+        L += ["- Avance reportée : %s TND — %s" % (montant(d["avance"]), p["projection"])]
+
+    # ⚠️ LES IMPAYES RESTENT, MEME EN VERSION COURTE. Une commande soldee par une piece qui ne
+    # constate aucun encaissement est le point qui coute de l'argent : le rapport de juillet 2026
+    # les taisait et 1 148,056 TND passaient inapercus.
+    if d.get("commandes_en_dette"):
+        total = sum(flt(c.get("non_paye")) for c in d["commandes_en_dette"])
+        L += ["", "## À signaler", "",
+              "- %d commande(s) sur %d ne constatent **aucun encaissement** — %s TND portés en "
+              "dette ou en perte." % (len(d["commandes_en_dette"]), len(d["commandes"] or []),
+                                      montant(total))]
+
+    L += ["", "*Le détail commande par commande et le calcul complet restent consultables sur "
+          "l’écran Partenaire Economiq.*"]
+    return "\n".join(L)
+
+
 def rendre(d: dict, prose: dict = None) -> str:
-    """Le rapport complet en Markdown. Fonction pure : ni base, ni reseau, ni modele."""
+    """Le rapport complet en Markdown. Fonction pure : ni base, ni reseau, ni modele.
+
+    Sert de JUSTIFICATIF : il est consultable a l'ecran et deroule tous les calculs. Ce n'est plus
+    lui qui part chez le partenaire — voir `rendre_court`.
+    """
     p = prose or prose_deterministe(d)
     nom = d["nom_du_mois"]
     L = ["# Rapport Financier Mensuel — %s" % d["libelle"], ""]
@@ -827,12 +920,19 @@ def poser_commentaire(mois: str, texte: str) -> dict:
 
 
 def generer(mois: str = None, avec_ia: bool = True, poser: bool = True) -> dict:
-    """Le geste complet : lire le mois, faire rediger, rendre, poser sur la fiche. -> dict."""
+    """Le geste complet : lire le mois, faire rediger, rendre, poser sur la fiche. -> dict.
+
+    ⚠️ C'EST LA VERSION COURTE QUI EST POSEE. Le rapport part chez le partenaire : il doit se
+    lire, pas se dechiffrer (demande utilisateur 03/09/2026). Le rapport complet reste rendu
+    dans `markdown_detaille` pour l'ecran et la verification.
+    """
     d = donnees(mois)
     prose = rediger(d) if avec_ia else prose_deterministe(d)
-    texte = rendre(d, prose)
+    texte = rendre_court(d, prose)
+    detaille = rendre(d, prose)
     resultat = {"mois": d["mois"], "libelle": d["libelle"], "client": CLIENT,
                 "markdown": texte, "html": en_html(texte),
+                "markdown_detaille": detaille, "html_detaille": en_html(detaille),
                 "modele": prose.get("_modele"), "rejetes": prose.get("_rejetes") or [],
                 "erreur_ia": prose.get("_erreur"), "enregistre": d["enregistre"],
                 "avance": d["avance"], "total_commandes": d["total_commandes"]}

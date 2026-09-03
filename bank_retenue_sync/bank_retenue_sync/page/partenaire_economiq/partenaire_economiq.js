@@ -847,6 +847,9 @@ class PartenaireEconomiq {
     // Le HTML vient du SERVEUR, du même convertisseur que le commentaire posé sur la fiche :
     // frappe.markdown instancie showdown sans l’extension « tables » et rendrait des pipes bruts.
     const html = (resultat && resultat.html) || apercu.html || "";
+    // Le justificatif complet reste accessible, replié : il sert à vérifier les chiffres avant
+    // d'envoyer, mais ce n'est plus lui qui part chez le partenaire.
+    const detaille = (resultat && resultat.html_detaille) || apercu.html_detaille || "";
     return `${notes.join("")}
       <div style="max-height:52vh;overflow:auto;border:1px solid var(--border-color);
                   border-radius:8px;padding:12px">${html}</div>
@@ -857,6 +860,13 @@ class PartenaireEconomiq {
         <pre style="max-height:30vh;overflow:auto;font-size:11px;white-space:pre-wrap">${this._esc(
           texte
         )}</pre>
+      </details>
+      <details style="margin-top:6px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">${__(
+          "Détail complet — commandes, échéancier brut, calculs (ne part pas au partenaire)"
+        )}</summary>
+        <div style="max-height:40vh;overflow:auto;border:1px solid var(--border-color);
+                    border-radius:8px;padding:12px;margin-top:6px">${detaille}</div>
       </details>`;
   }
 

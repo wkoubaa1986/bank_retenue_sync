@@ -109,9 +109,14 @@ def apercu_rapport(mois=None) -> dict:
     from bank_retenue_sync.partenaire import rapport
 
     d = rapport.donnees(mois)
-    texte = rapport.rendre(d)
+    # `markdown` est ce qui PARTIRA chez le partenaire (version courte) ; `markdown_detaille` est
+    # le justificatif complet, replie a l'ecran. Montrer le long en apercu et poser le court
+    # aurait ete le pire des deux : on relit un texte qui n'est pas celui qu'on envoie.
+    texte = rapport.rendre_court(d)
+    detaille = rapport.rendre(d)
     return {"mois": d["mois"], "libelle": d["libelle"], "client": rapport.CLIENT,
             "enregistre": d["enregistre"], "markdown": texte, "html": rapport.en_html(texte),
+            "markdown_detaille": detaille, "html_detaille": rapport.en_html(detaille),
             "commentaire_existant": rapport.commentaire_existant(d["mois"])}
 
 

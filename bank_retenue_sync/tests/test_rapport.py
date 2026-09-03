@@ -611,3 +611,88 @@ class TestDiminutionParLeBilan(unittest.TestCase):
 
     def test_sans_diminution_aucune_mention(self):
         self.assertNotIn("Diminution par le bilan", rapport.rendre(donnees_juin()))
+
+
+class TestRapportCourt(unittest.TestCase):
+    """Le rapport COURT — celui qui part vraiment chez le partenaire.
+
+    Le rapport complet fait 5 900 caracteres, 139 lignes et six tableaux, et il deroule ses
+    propres calculs (« Division par 3 : 5 572,578 / 3 = 1 857,526 ») pour finalement dire au
+    partenaire ce qu'il doit. C'est un justificatif, pas un message (demande utilisateur
+    03/09/2026) : le complet reste a l'ecran, le court est envoye.
+    """
+
+    def court(self, **modifs):
+        d = donnees_juin()
+        d.update(modifs)
+        return rapport.rendre_court(d)
+
+    def test_il_est_beaucoup_plus_court_que_le_complet(self):
+        d = donnees_juin()
+        self.assertLess(len(rapport.rendre_court(d)), len(rapport.rendre(d)) / 2)
+
+    def test_la_conclusion_est_en_tete(self):
+        """Le partenaire ouvre le message pour savoir ce qu'il doit. Le lui faire deduire de
+        deux benefices et d'un solde net etait le principal defaut du rapport long."""
+        lignes = [l for l in self.court().splitlines() if l.strip()]
+        self.assertTrue(lignes[1].startswith("**"), lignes[1])
+        self.assertIn("doit", lignes[1])
+
+    def test_le_sens_de_la_dette_suit_le_signe_du_solde(self):
+        positif = self.court(solde_net=147.64)
+        self.assertIn("%s doit" % rapport.CLIENT, positif)
+        negatif = self.court(solde_net=-147.64)
+        self.assertIn("AQUA WORLD doit", negatif)
+        self.assertIn("147,640", negatif)
+
+    def test_un_solde_nul_ne_reclame_rien(self):
+        """Annoncer « doit 0,000 TND » serait une reclamation vide."""
+        texte = self.court(solde_net=0.0)
+        self.assertIn("s’équilibrent", texte)
+        self.assertNotIn("doit", texte.splitlines()[2])
+
+    def test_les_echeances_y_sont_toujours(self):
+        """C'est la seule partie sur laquelle le partenaire a quelque chose A FAIRE."""
+        self.assertIn("## Échéances", self.court())
+
+    def test_les_impayes_sont_signales_meme_en_version_courte(self):
+        """⚠️ Une commande soldee par une piece qui ne constate aucun encaissement est le point
+        qui coute de l'argent : le rapport de juillet 2026 les taisait et 1 148,056 TND passaient
+        inapercus. Raccourcir ne doit pas les faire disparaitre."""
+        texte = self.court(
+            commandes_en_dette=[{"sales_order": "SAL-ORD-1", "non_paye": 1148.056}],
+            commandes=[{"sales_order": "SAL-ORD-1"}, {"sales_order": "SAL-ORD-2"}])
+        self.assertIn("À signaler", texte)
+        self.assertIn("1 148,056", texte)
+        self.assertIn("aucun encaissement", texte)
+
+    def test_sans_impaye_la_section_disparait(self):
+        self.assertNotIn("À signaler", self.court(commandes_en_dette=[]))
+
+    def test_le_libelle_de_charge_est_lu_des_deux_cotes(self):
+        """Le champ est `libelle` cote DocType, `label` cote ecran. Ne lire que `label`
+        affichait « Charges du mois : 250,000 TND () »."""
+        for champ in ("libelle", "label"):
+            texte = self.court(charges_libres=[{champ: "Salaire Fatma", "montant": 250.0}],
+                               total_charges=250.0)
+            self.assertIn("Salaire Fatma", texte, champ)
+        muet = self.court(charges_libres=[{"montant": 250.0}], total_charges=250.0)
+        self.assertIn("sans libellé", muet)
+
+    def test_sans_reglement_on_le_dit_au_lieu_de_se_taire(self):
+        texte = self.court(paiements=[], total_paiements=0.0)
+        self.assertIn("Aucun règlement reçu ce mois", texte)
+
+    def test_les_reserves_restent_en_tete(self):
+        """Elles disent comment lire tout le reste : les perdre serait grave."""
+        self.assertIn("⚠️ Prix d’achat manquants", self.court(
+            reserves=["Prix d’achat manquants en base"]))
+
+    def test_il_renvoie_vers_le_detail(self):
+        """Le partenaire doit savoir que le justificatif existe."""
+        self.assertIn("consultables", self.court())
+
+    def test_le_rendu_est_une_fonction_pure(self):
+        """Deux appels sur les memes donnees donnent le meme texte, au millime."""
+        d = donnees_juin()
+        self.assertEqual(rapport.rendre_court(d), rapport.rendre_court(d))
