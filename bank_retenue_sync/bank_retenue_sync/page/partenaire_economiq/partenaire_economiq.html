@@ -77,6 +77,10 @@
   .pe-tbl input.num { text-align: right; font-variant-numeric: tabular-nums; }
   .pe-x { cursor: pointer; color: var(--text-muted); border: 0; background: none;
           font-size: 14px; line-height: 1; }
+  .pe-check { display: inline-flex; align-items: center; gap: 6px; margin: 0;
+              font-weight: 400; white-space: nowrap; cursor: pointer; }
+  .pe-check input { margin: 0; }
+  .pe-bar .f label.pe-check { text-transform: none; letter-spacing: 0; }
   .pe-x:hover { color: #a93226; }
   .pe-absorbee td { opacity: .55; }
 </style>
@@ -84,6 +88,13 @@
 <div class="pe-wrap">
   <div class="pe-bar">
     <div class="f"><label>Mois</label><select data-f="mois"></select></div>
+    <div class="f"><label>Compter sur</label><select data-f="base">
+      <option value="livraison">Date de livraison</option>
+      <option value="tache">Date de la tache</option>
+    </select></div>
+    <div class="f"><label class="pe-check" for="pe-ouvertes">
+      <input type="checkbox" id="pe-ouvertes" data-f="ouvertes"> Exclure les taches ouvertes
+    </label></div>
     <span class="periode" data-role="periode"></span>
   </div>
   <div data-role="contenu"><div class="pe-chargement">Chargement…</div></div>

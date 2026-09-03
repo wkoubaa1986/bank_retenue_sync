@@ -62,6 +62,9 @@ def _regle_bilan(bilan: dict) -> dict:
         "libelle": "date de la tache" if base == "tache" else "date de livraison",
         "exclure_ouvertes": cint((bilan or {}).get("exclure_ouvertes")),
         "ecartees": (bilan or {}).get("ecartees") or [],
+        # La regle se change depuis CET onglet aussi ; c'est `bilan_vente` qui dit qui en a le
+        # droit, et on relaie sa reponse plutot que de redonder la liste des roles ici.
+        "peut_regler": bool((bilan or {}).get("peut_regler")),
     }
 
 

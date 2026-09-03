@@ -23,6 +23,11 @@ class PartenaireEconomiq {
       this.mois = $(e.currentTarget).val();
       this._charger();
     });
+    // La règle de comptage est PARTAGÉE avec l'écran « Bilan Vente » : on l'écrit, on ne la
+    // garde pas pour soi. Sinon les deux écrans annonceraient deux bénéfices différents sur le
+    // même mois — et l'ajustement se calculerait sur le mauvais (−516,010 contre +147,640 sur
+    // août 2026).
+    this.$root.on("change", '[data-f="base"], [data-f="ouvertes"]', () => this._changer_regle());
     this.$root.on("click", '[data-action="ajouter-charge"]', () => this._ajouter_charge());
     this.$root.on("click", ".pe-x", (e) => {
       $(e.currentTarget).closest("tr").remove();
@@ -60,6 +65,43 @@ class PartenaireEconomiq {
     this._charger();
   }
 
+  /** Écrit la règle de comptage, puis relit TOUT.
+   *
+   * ⚠️ LE CACHE PAR MOIS DOIT SAUTER. `this.cache[mois]` garde le tableau déjà calculé ; sans
+   * ce vidage, changer la règle laissait l’écran sur les anciens chiffres et donnait
+   * l’impression que le réglage ne servait à rien.
+   */
+  async _changer_regle() {
+    const base = this.$root.find('[data-f="base"]').val() || "livraison";
+    const ouvertes = this.$root.find('[data-f="ouvertes"]').is(":checked") ? 1 : 0;
+    try {
+      await frappe.call({
+        method: "customization_app.bilan_vente.set_regle",
+        args: { base, exclure_ouvertes: ouvertes },
+        freeze: true,
+      });
+    } catch (e) {
+      frappe.show_alert({ message: __("Règle non enregistrée"), indicator: "red" });
+      return;
+    }
+    this.cache = {};
+    this._charger();
+  }
+
+  /** Remet les deux contrôles sur la règle réellement appliquée par le serveur. */
+  _refleter_regle(d) {
+    const r = (d && d.regle_bilan) || {};
+    this.$root.find('[data-f="base"]').val(r.base || "livraison");
+    this.$root.find('[data-f="ouvertes"]').prop("checked", !!r.exclure_ouvertes);
+    // Qui ne peut pas régler avec le partenaire ne change pas la règle du règlement.
+    const fige = r.peut_regler === false;
+    this.$root.find('[data-f="base"], [data-f="ouvertes"]')
+      .prop("disabled", fige)
+      .attr("title", fige
+        ? "Reserve aux profils comptables"
+        : "Regle partagee avec l ecran Bilan Vente");
+  }
+
   async _charger() {
     const $c = this.$root.find('[data-role="contenu"]');
     if (this.cache[this.mois]) {
@@ -86,11 +128,17 @@ class PartenaireEconomiq {
     }
   }
 
+  /** La barre du haut : période ET état des deux contrôles de règle.
+   *
+   * Appelée sur les DEUX chemins de `_charger` — celui du cache et celui du serveur — sinon
+   * revenir sur un mois déjà consulté laissait les cases sur la règle du mois précédent.
+   */
   _periode(d) {
     const p = d && d.periode;
     this.$root.find('[data-role="periode"]').text(
       p ? `Période : ${p.debut} → ${p.fin}` : (d && d.libelle) || ""
     );
+    this._refleter_regle(d);
   }
 
   _rendre(d) {
