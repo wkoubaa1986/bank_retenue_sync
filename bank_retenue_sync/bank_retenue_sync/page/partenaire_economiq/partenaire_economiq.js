@@ -203,7 +203,7 @@ class PartenaireEconomiq {
       : '<div class="pe-vide">Aucune commande du partenaire sur ce mois.</div>';
 
     return kpis + avert + etat + trou
-      + this._sous("Bilan d’activité") + bilan
+      + this._sous("Bilan d’activité") + this._regle(d) + bilan
       + this._sous("Écriture de bilan") + ecriture
       + this._sous("Charges libres du mois") + charges
       + this._sous("Échéancier") + ech
@@ -839,6 +839,27 @@ class PartenaireEconomiq {
       `<div class="pe-kpi ${cls || ""}"><div class="lbl">${this._esc(lbl)}</div>
        <div class="val">${val == null ? "—" : val}</div>
        <div class="sub">${this._esc(sub || "")}</div></div>`).join("")}</div>`;
+  }
+
+  /** La règle de comptage qui a produit ces chiffres — dite, pas seulement appliquée.
+   *
+   * Les bénéfices de ce tableau viennent de `customization_app.bilan_vente`, qui applique une
+   * règle ENREGISTRÉE (Config Bilan Vente). Sans cette mention, on lirait 654,86 ici après avoir
+   * lu 1 321,01 la semaine précédente sans pouvoir expliquer l’écart.
+   */
+  _regle(d) {
+    const r = d && d.regle_bilan;
+    if (!r) return "";
+    const bouts = [`comptées sur la <b>${this._esc(r.libelle)}</b>`];
+    if (r.exclure_ouvertes) {
+      const n = (r.ecartees || []).length;
+      bouts.push(`commandes à <b>tâche ouverte exclues</b>${n ? ` (${n} écartée${n > 1 ? "s" : ""})` : ""}`);
+    }
+    const fige = d.valide
+      ? " Ce mois est <b>validé</b> : son bilan est figé, la règle ne le change plus."
+      : "";
+    return `<div class="pe-note">Règle du bilan : ${bouts.join(", ")}.${fige}
+      <span class="muted">Elle se change sur l’écran « Bilan Vente » et vaut pour les deux.</span></div>`;
   }
 
   _sous(titre) { return `<div class="pe-sous">${this._esc(titre)}</div>`; }

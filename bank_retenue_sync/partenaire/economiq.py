@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from bank_retenue_sync.facturation import periode
 from bank_retenue_sync.partenaire import echeancier
@@ -31,7 +31,14 @@ COMPTE_DETTES = "Dettes - A&S"
 
 
 def _bilan(mois: str) -> dict | None:
-    """Les deux sections du bilan, ou None si customization_app n'est pas installee."""
+    """Les deux sections du bilan, ou None si customization_app n'est pas installee.
+
+    ⚠️ AUCUN PARAMETRE DE PERIMETRE N'EST PASSE, ET C'EST VOULU. `get_data` applique alors la
+    REGLE ENREGISTREE (Config Bilan Vente : base de comptage, exclusion des taches ouvertes),
+    la meme que l'ecran « Bilan Vente ». Forcer ici un perimetre ferait annoncer deux benefices
+    differents sur le meme mois par les deux ecrans — et l'ajustement du mois se calculerait sur
+    le mauvais chiffre (constate le 03/09/2026 sur aout : 1 321,01 ici contre 654,86 la-bas).
+    """
     try:
         get_data = frappe.get_attr("customization_app.bilan_vente.get_data")
     except Exception:
@@ -41,6 +48,21 @@ def _bilan(mois: str) -> dict | None:
     except Exception:
         frappe.log_error(title="Bilan Economiq indisponible", message=frappe.get_traceback())
         return None
+
+
+def _regle_bilan(bilan: dict) -> dict:
+    """La regle qui a produit ces chiffres, pour que l'onglet puisse la DIRE.
+
+    Un ecran qui applique une regle sans l'afficher est un ecran dont on ne peut pas discuter
+    les chiffres : on lit le resultat sans savoir sur quel perimetre il a ete calcule.
+    """
+    base = (bilan or {}).get("base") or "livraison"
+    return {
+        "base": base,
+        "libelle": "date de la tache" if base == "tache" else "date de livraison",
+        "exclure_ouvertes": cint((bilan or {}).get("exclure_ouvertes")),
+        "ecartees": (bilan or {}).get("ecartees") or [],
+    }
 
 
 def _section(bilan: dict, cle: str) -> dict:
@@ -253,6 +275,7 @@ def tableau(mois: str) -> dict:
         "ecriture": piece,
         "echeancier": versements,
         "report": report,
+        "regle_bilan": _regle_bilan(bilan),
         "enregistre": bool(enregistre),
         "valide": bool((enregistre or {}).get("valide")),
         "journal_entry": (enregistre or {}).get("journal_entry"),
