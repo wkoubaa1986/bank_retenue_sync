@@ -680,8 +680,8 @@ class TestRapportCourt(unittest.TestCase):
         self.assertIn("sans libellé", muet)
 
     def test_sans_reglement_on_le_dit_au_lieu_de_se_taire(self):
-        texte = self.court(paiements=[], total_paiements=0.0)
-        self.assertIn("Aucun règlement reçu ce mois", texte)
+        texte = self.court(consolide=[])
+        self.assertIn("Aucun règlement imputé", texte)
 
     def test_les_reserves_restent_en_tete(self):
         """Elles disent comment lire tout le reste : les perdre serait grave."""
@@ -696,3 +696,85 @@ class TestRapportCourt(unittest.TestCase):
         """Deux appels sur les memes donnees donnent le meme texte, au millime."""
         d = donnees_juin()
         self.assertEqual(rapport.rendre_court(d), rapport.rendre_court(d))
+
+
+class TestReglementsImputes(unittest.TestCase):
+    """TOUS les règlements qui paient le tableau doivent figurer au rapport.
+
+    ⚠️ LES REGLEMENTS DU MOIS NE SONT PAS LES REGLEMENTS QUI PAIENT LE MOIS. La version courte
+    n'annonçait que les pièces DATÉES du mois — 1 292,000 TND sur août 2026 — quand le tableau
+    consolidé en imputait 8 290,210 : deux versements de juillet et un règlement du 2 septembre
+    coupé entre deux échéances n'apparaissaient nulle part. Le partenaire lisait un total qui ne
+    correspondait à aucune de ses lignes (signalé par l'utilisateur le 03/09/2026).
+    """
+
+    def consolide(self):
+        return [
+            {"date": "2026-07-31", "montant": 4541.671, "paye": 4541.671, "reste": None,
+             "statut": "payé", "reglements": [
+                 {"payment_entry": "ACC-PAY-1", "date": "2026-07-29", "montant": 10.0,
+                  "mode": "Virement", "impute": 10.0},
+                 {"payment_entry": "ACC-PAY-2", "date": "2026-07-31", "montant": 3000.0,
+                  "mode": "Espèces", "impute": 3000.0},
+                 # La somme des imputations vaut EXACTEMENT `paye` : la fixture ne porte
+                 # aucune avance, c'est le test dédié qui en ajoute une.
+                 {"payment_entry": "ACC-PAY-9", "date": "2026-09-02", "montant": 3960.0,
+                  "mode": "Espèces", "impute": 1531.671},
+             ]},
+            {"date": "2026-08-31", "montant": 5208.811, "paye": 2456.539, "reste": 2752.272,
+             "statut": "partiel", "reglements": [
+                 {"payment_entry": "ACC-PAY-9", "date": "2026-09-02", "montant": 2456.539,
+                  "mode": "Espèces", "impute": 2456.539},
+             ]},
+            {"date": "2026-09-30", "montant": 2545.212, "paye": None, "reste": 2545.212,
+             "statut": "non_payé", "reglements": []},
+        ]
+
+    def court(self, **modifs):
+        d = donnees_juin()
+        d["consolide"] = self.consolide()
+        d.update(modifs)
+        return rapport.rendre_court(d)
+
+    def test_chaque_piece_du_tableau_est_citee(self):
+        texte = self.court()
+        for piece in ("ACC-PAY-1", "ACC-PAY-2", "ACC-PAY-9"):
+            self.assertIn(piece, texte, piece)
+
+    def test_les_reglements_hors_du_mois_y_sont_aussi(self):
+        """Le règlement du 2 septembre paie une échéance de juillet : c'est précisément celui
+        qui manquait."""
+        self.assertIn("2026-09-02", self.court())
+
+    def test_un_reglement_partage_le_dit(self):
+        """Sans cette mention, la même pièce paraît comptée deux fois pour deux montants
+        différents (1 503,461 puis 2 456,539 sur ACC-PAY-9)."""
+        texte = self.court()
+        self.assertIn("part d’un règlement de 3 960,000", texte)
+
+    def test_un_reglement_entier_ne_porte_pas_la_mention(self):
+        self.assertNotIn("part d’un règlement de 3 000,000", self.court())
+
+    def test_le_total_est_celui_de_la_colonne_PAYE_de_l_ecran(self):
+        """⚠️ Le rapport et l'écran doivent annoncer le MÊME total, sinon le partenaire
+        constate un écart qu'il ne peut pas expliquer."""
+        self.assertIn("**6 998,210 TND** au total", self.court())
+
+    def test_une_avance_reportee_apparait_au_lieu_de_creuser_un_ecart(self):
+        """« Payé » peut dépasser la somme des pièces : une avance d'un mois antérieur à
+        l'ancrage couvre une échéance sans pièce de ce cycle (28,210 TND sur juillet 2026).
+        La passer sous silence donnait 8 262,000 au rapport contre 8 290,210 à l'écran."""
+        c = self.consolide()
+        c[0]["paye"] = 4541.671 + 28.21
+        texte = self.court(consolide=c)
+        self.assertIn("28,210 TND d’avance reportée", texte)
+        self.assertIn("avance reportée des mois précédents", texte)
+        self.assertIn("**7 026,420 TND** au total", texte)
+
+    def test_une_echeance_non_payee_n_est_pas_listee(self):
+        """Rien à reconnaître : elle figure déjà au tableau des échéances."""
+        i = self.court().find("## Règlements imputés")
+        self.assertNotIn("2026-09-30", self.court()[i:])
+
+    def test_sans_aucun_reglement_on_le_dit(self):
+        self.assertIn("Aucun règlement imputé", self.court(consolide=[]))

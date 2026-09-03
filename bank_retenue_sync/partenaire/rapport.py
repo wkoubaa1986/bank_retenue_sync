@@ -638,18 +638,51 @@ def rendre_court(d: dict, prose: dict = None) -> str:
               % (montant(sum(flt(l.get("reste")) for l in reste)),
                  ", ".join("%s : %s" % (l["date"], montant(l.get("reste"))) for l in reste))]
 
-    # Les reglements : le partenaire doit pouvoir reconnaitre ce qu'il a envoye.
-    L += ["", "## Règlements reçus ce mois", ""]
-    if d["paiements"]:
-        L += ["- %s TND au total : %s"
-              % (montant(d["total_paiements"]),
-                 ", ".join("%s TND le %s (%s)" % (montant(x["montant"]), x["date"],
-                                                  franciser(x.get("mode") or ""))
-                           for x in d["paiements"]))]
+    # ⚠️ LES REGLEMENTS DU MOIS NE SONT PAS LES REGLEMENTS QUI PAIENT LE MOIS. La version courte
+    # n'annoncait que `paiements` — les pieces DATEES du mois — soit 1 292,000 TND sur aout 2026,
+    # alors que le tableau consolide en imputait 8 290,210 : deux versements de juillet
+    # (10,000 + 3 000,000) et un reglement du 2 septembre coupe en deux (211,461 sur juillet,
+    # 3 748,539 sur aout) n'apparaissaient nulle part. Le partenaire lisait donc un total qui ne
+    # correspondait a aucune de ses lignes (signale par l'utilisateur le 03/09/2026).
+    # On liste donc ce qui a ETE IMPUTE, echeance par echeance — la colonne « Règlements » de
+    # l'ecran.
+    reglees = [l for l in (d["consolide"] or []) if flt(l.get("paye"))]
+    total_paye = sum(flt(l.get("paye")) for l in reglees)
+    pieces = {x.get("payment_entry") for l in reglees for x in (l.get("reglements") or [])
+              if x.get("payment_entry")}
+    # ⚠️ « PAYÉ » PEUT DEPASSER LA SOMME DES PIECES. Une avance reportee d'un mois anterieur a
+    # l'ancrage couvre une echeance sans piece de ce cycle : sur juillet 2026, 28,210 TND
+    # d'excedent de juin. Prendre la somme des `impute` pour total annoncait 8 262,000 quand
+    # l'ecran affiche 8 290,210 — un ecart de 28 TND que le partenaire ne pouvait pas expliquer.
+    avance_totale = sum(
+        max(0.0, flt(l.get("paye")) - sum(flt(x.get("impute")) for x in (l.get("reglements") or [])))
+        for l in reglees)
+    L += ["", "## Règlements imputés", ""]
+    if reglees:
+        entete = "**%s TND** au total, sur %d pièce(s)" % (montant(total_paye), len(pieces))
+        if avance_totale > 0.001:
+            entete += " et %s TND d’avance reportée" % montant(avance_totale)
+        L += [entete + " :", ""]
+        for ligne in reglees:
+            regs = ligne.get("reglements") or []
+            L += ["- Échéance du %s — %s TND :" % (ligne["date"], montant(ligne.get("paye")))]
+            for x in regs:
+                impute, verse = flt(x.get("impute")), flt(x.get("montant"))
+                # UN REGLEMENT PARTAGE ENTRE DEUX ECHEANCES DOIT LE DIRE. Sans cette mention, la
+                # meme piece parait comptee deux fois pour deux montants differents.
+                part = (" — part d’un règlement de %s TND" % montant(verse)
+                        if abs(verse - impute) > 0.001 else "")
+                L += ["   - %s TND le %s (%s) · %s%s"
+                      % (montant(impute), x["date"], franciser(x.get("mode") or ""),
+                         x.get("payment_entry") or "", part)]
+            reste_ligne = flt(ligne.get("paye")) - sum(flt(x.get("impute")) for x in regs)
+            if reste_ligne > 0.001:
+                L += ["   - %s TND — avance reportée des mois précédents (aucune pièce de ce "
+                      "cycle)" % montant(reste_ligne)]
     else:
-        L += ["- Aucun règlement reçu ce mois."]
+        L += ["- Aucun règlement imputé à ce jour."]
     if flt(d["avance"]):
-        L += ["- Avance reportée : %s TND — %s" % (montant(d["avance"]), p["projection"])]
+        L += ["", "- Avance reportée : %s TND — %s" % (montant(d["avance"]), p["projection"])]
 
     # ⚠️ LES IMPAYES RESTENT, MEME EN VERSION COURTE. Une commande soldee par une piece qui ne
     # constate aucun encaissement est le point qui coute de l'argent : le rapport de juillet 2026
