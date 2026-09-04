@@ -355,3 +355,42 @@ class TestTotalQuiSAdditionne(unittest.TestCase):
         src = __import__("inspect").getsource(R.lignes)
         bloc = src[src.index("CLE_JOURNAL"):]
         self.assertIn('"encaisse": True', bloc[:600])
+
+
+import inspect  # noqa: E402  (les classes ci-dessus importent inspect localement)
+
+
+class TestDetailDesLivraisons(unittest.TestCase):
+    """Ce que la colonne « BL validés » ne peut pas dire à elle seule.
+
+    Mesuré sur la base : 10 601 bons validés, 4 RETOURS (−333,600 DT), 45 bons restés en
+    BROUILLON (25 705 DT), aucun annulé. Et le brouillon explique souvent l'écart en entier :
+    Abdelaziz Amraoui a 970 DT de commandes, 970 DT d'écart de livraison, et un bon de 970 DT
+    jamais validé.
+    """
+
+    def source(self):
+        return inspect.getsource(R.livraisons_detail)
+
+    def test_les_quatre_etats_sont_distingues(self):
+        src = self.source()
+        for etat in ("annules", "brouillons", "retours", "livres"):
+            self.assertIn('"%s"' % etat, src)
+
+    def test_un_retour_est_un_bon_VALIDE_de_montant_negatif(self):
+        """Il n'est pas dans un état à part : c'est `is_return` qui le désigne, et son total
+        négatif vient naturellement en déduction du net livré."""
+        self.assertIn("is_return", self.source())
+        self.assertIn("docstatus == 2", self.source())
+
+    def test_le_total_des_BL_garde_les_retours(self):
+        """⚠️ C'est le NET livré qu'on compare aux commandes. Exclure les retours ferait
+        paraître sur-livrés les clients qui ont rendu de la marchandise."""
+        self.assertIn("docstatus = 1", inspect.getsource(R.bons_de_livraison))
+        self.assertNotIn("is_return", inspect.getsource(R.bons_de_livraison))
+
+    def test_tout_passe_par_un_seul_GROUP_BY(self):
+        self.assertIn("GROUP BY customer, docstatus, is_return", self.source())
+
+    def test_chaque_client_porte_son_detail(self):
+        self.assertIn('"livraisons": livr.get(c.name, {})', inspect.getsource(R.lignes))

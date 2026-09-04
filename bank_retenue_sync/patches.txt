@@ -19,3 +19,4 @@ bank_retenue_sync.patches.politique_achat_local #2026-08-13-ecarts
 # d'emettre, et les libelles ne se devinent pas — ils ont ete arraches au portail en repetition.
 bank_retenue_sync.patches.politique_achat_local #2026-08-13-tej
 bank_retenue_sync.patches.initialiser_seuils_rapprochement
+bank_retenue_sync.patches.retablir_dette_fm_water_plus

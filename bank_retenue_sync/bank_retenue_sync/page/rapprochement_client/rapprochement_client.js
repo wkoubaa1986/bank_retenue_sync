@@ -35,6 +35,13 @@ class RapprochementClient {
       $d.prop("hidden", ouvert);
       $(e.currentTarget).text(ouvert ? "Types" : "Replier");
     });
+    this.$root.on("click", "[data-livrer]", (e) => {
+      const nom = $(e.currentTarget).attr("data-livrer");
+      const $d = this.$root.find(`[data-livr-de="${CSS.escape(nom)}"]`);
+      const ouvert = !$d.prop("hidden");
+      $d.prop("hidden", ouvert);
+      $(e.currentTarget).text(ouvert ? "BL" : "Replier");
+    });
     this.$root.on("click", "[data-detail]", (e) =>
       this._detail($(e.currentTarget).attr("data-detail")));
     this.$root.on("click", "[data-ignorer]", (e) =>
@@ -98,7 +105,8 @@ class RapprochementClient {
     const kpis = `<div class="rc-kpis">
       ${this._kpi("Clients affiches", d.nb, `${d.en_ecart} en ecart`)}
       ${this._kpi("Commandes TTC", this._m(t.commandes), "validees")}
-      ${this._kpi("Bons de livraison", this._m(t.bl), this._sousBl(d, t))}
+      ${this._kpi("Bons de livraison", this._m(t.bl), this._sousBl(d, t),
+                  !!(d.livraisons && d.livraisons.brouillons))}
       ${this._kpi("Regle par les clients", this._m(t.regle),
                   `dont journal ${this._m(t.journal)}`)}
       ${this._kpi("Reprise d-historique", this._m(t.reprise),
@@ -133,10 +141,13 @@ class RapprochementClient {
   }
 
   _sousBl(d, t) {
-    const ecart = t.delta_bl;
-    const sans = d.sans_bl
-      ? `${d.sans_bl} client(s) sans aucun BL` : "tous ont au moins un BL";
-    return `${this._m(ecart)} vs commandes · ${sans}`;
+    const sans = d.sans_bl ? `${d.sans_bl} client(s) sans aucun BL` : "tous ont au moins un BL";
+    const b = (d.livraisons || {}).brouillons;
+    const r = (d.livraisons || {}).retours;
+    return [`${this._m(t.delta_bl)} vs commandes`, sans,
+            b ? `${this._m(b.total)} en brouillon (${b.nb})` : "",
+            r ? `${this._m(r.total)} de retours (${r.nb})` : ""]
+      .filter(Boolean).join(" · ");
   }
 
   _kpi(libelle, valeur, sous, alerte) {
@@ -162,6 +173,8 @@ class RapprochementClient {
     const actions = [
       l.ventilation && l.ventilation.length
         ? `<button class="rc-act" data-ventiler="${this._esc(l.client)}">Types</button>` : "",
+      Object.keys(l.livraisons || {}).length
+        ? `<button class="rc-act" data-livrer="${this._esc(l.client)}">BL</button>` : "",
       `<button class="rc-act" data-detail="${this._esc(l.client)}">Detail</button>`,
       d.peut_decider
         ? (l.ignore
@@ -188,7 +201,53 @@ class RapprochementClient {
       <td>${avances}</td>
       <td class="num">${actions}</td>
     </tr>
-    ${this._ventilation(l)}`;
+    ${this._ventilation(l)}
+    ${this._livraisons(l)}`;
+  }
+
+  /** Le detail des LIVRAISONS : ce qui est parti, ce qui est revenu, ce qui n-est pas valide.
+   *
+   * La colonne « BL valides » ne dit pas tout. Un retour est un BL valide de montant NEGATIF —
+   * il vient en deduction et explique un ecart en faveur du client. Un BL resté en BROUILLON
+   * (45 dans la base, 25 705 DT) est de la marchandise sortie que rien ne constate : c-est la
+   * premiere cause d-un « livre moins que commande ». Et un BL annule explique une commande qui
+   * parait non honoree.
+   */
+  _livraisons(l) {
+    const etats = l.livraisons || {};
+    if (!Object.keys(etats).length) return "";
+    const libelles = {
+      livres: ["Bons de livraison valides", "rc-ok", "encaisse"],
+      retours: ["Retours de marchandise", "rc-jaune", "en deduction"],
+      brouillons: ["Bons NON valides (brouillon)", "rc-alerte", "ne compte pas"],
+      annules: ["Bons annules", "rc-gris", "ne compte pas"],
+    };
+    const net = (etats.livres ? etats.livres.total : 0) + (etats.retours ? etats.retours.total : 0);
+    const ecart = net - (l.commandes || 0);
+    const lignes = ["livres", "retours", "brouillons", "annules"].filter((k) => etats[k])
+      .map((k) => {
+        const [lib, cls, note] = libelles[k];
+        const e = etats[k];
+        return `<div class="rc-vent">
+          <span class="rc-pastille ${cls}">${this._esc(note)}</span>
+          <span>${this._esc(lib)}</span>
+          <span class="rc-meta"></span>
+          <span class="num">${this._m(e.total)}</span>
+          <span class="rc-meta num">${e.nb} bon(s)</span>
+        </div>`;
+      }).join("");
+    const compte = Math.abs(ecart) > (this.seuils ? this.seuils.bl : 1);
+    return `<tr class="rc-detail" data-livr-de="${this._esc(l.client)}" hidden>
+      <td colspan="10">
+        <div class="rc-vents">
+          <div class="rc-vent-tete">Livraisons —
+            net livre <b>${this._m(net)}</b> contre <b>${this._m(l.commandes)}</b> de commandes
+            · <b class="${compte ? "rc-rouge" : "rc-vert"}">ecart ${this._m(ecart)}</b>
+            ${etats.brouillons
+              ? ` · <b class="rc-rouge">${this._m(etats.brouillons.total)} en brouillon,
+                  non comptes</b>` : ""}</div>
+          ${lignes}
+        </div></td></tr>`;
   }
 
   /** Le detail des reglements PAR TYPE, deplie sous la ligne du client.

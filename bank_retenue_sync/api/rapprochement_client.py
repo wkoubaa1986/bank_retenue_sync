@@ -57,6 +57,14 @@ def get_data(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
                         "delta_paiement", "delta_bl", "avance_non_affectee",
                         "avance_sur_commande", "encaisse_reel", "non_encaisse",
                         "reprise")}
+    # Les états de livraison, cumulés sur la sélection entière — comme les autres totaux, ils se
+    # calculent AVANT la coupe à 300 lignes.
+    totaux_livraison = {}
+    for l in lignes:
+        for etat, v in (l.get("livraisons") or {}).items():
+            e = totaux_livraison.setdefault(etat, {"total": 0.0, "nb": 0})
+            e["total"] = flt(e["total"] + v["total"], R.PRECISION)
+            e["nb"] += v["nb"]
     limite = frappe.utils.cint(limite) or 300
     return {
         "lignes": lignes[:limite],
@@ -65,6 +73,7 @@ def get_data(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         "totaux": totaux,
         "en_ecart": sum(1 for l in lignes if l["en_ecart"]),
         "sans_bl": sum(1 for l in lignes if not l["a_des_bl"] and l["nb_commandes"]),
+        "livraisons": totaux_livraison,
         "tolerances": R.tolerances(),
         "peut_decider": bool(set(frappe.get_roles()) & set(ROLES_DECISION)),
     }

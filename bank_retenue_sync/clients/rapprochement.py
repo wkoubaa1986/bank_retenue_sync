@@ -72,8 +72,38 @@ def commandes() -> dict:
 
 
 def bons_de_livraison() -> dict:
-    """BL VALIDÉS uniquement — c'est la question posée : « a-t-il des BL validés ? »."""
+    """BL VALIDÉS uniquement — c'est la question posée : « a-t-il des BL validés ? ».
+
+    ⚠️ LES RETOURS SONT DEDANS, ET C'EST VOULU. Un retour est un bon de livraison validé de
+    montant NÉGATIF (4 dans la base, −333,600 DT) : il vient naturellement en déduction, et
+    c'est bien le net livré qu'on veut comparer aux commandes. Le détail par état les isole.
+    """
     return _somme("Delivery Note", "customer", "docstatus = 1")
+
+
+def livraisons_detail() -> dict:
+    """{client: {livres, retours, brouillons, annules}} — chaque état avec son total et son nb.
+
+    Trois choses que la colonne « BL validés » ne peut pas dire à elle seule :
+      - ce qui est REVENU (retour de BL), et qui explique un écart en faveur du client ;
+      - ce qui est resté en BROUILLON — 45 bons pour 25 705 DT dans la base : de la marchandise
+        sortie que rien ne constate, et la première cause d'un « livré moins que commandé » ;
+      - ce qui a été ANNULÉ, qui explique pourquoi une commande paraît non honorée.
+    """
+    out = {}
+    for r in frappe.db.sql(
+            """SELECT customer AS cle, docstatus, is_return,
+                      SUM(grand_total) AS total, COUNT(*) AS nb
+               FROM `tabDelivery Note` WHERE customer IS NOT NULL
+               GROUP BY customer, docstatus, is_return""", as_dict=True):
+        etat = ("annules" if r.docstatus == 2
+                else "brouillons" if r.docstatus == 0
+                else "retours" if r.is_return else "livres")
+        e = out.setdefault(r.cle, {})
+        poste = e.setdefault(etat, {"total": 0.0, "nb": 0})
+        poste["total"] = flt(poste["total"] + flt(r.total), PRECISION)
+        poste["nb"] += int(r.nb or 0)
+    return out
 
 
 def reglements() -> dict:
@@ -176,6 +206,7 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     # Lus UNE fois : `lignes` boucle sur des milliers de clients, et un get_single_value par
     # ligne rechargerait le réglage autant de fois.
     seuils = tolerances()
+    livr = livraisons_detail()
     pe_reprise = paiements_ouverture()
     vent = ventilation(exclure=pe_reprise)
     rep_pay, rep_jrn = reprise_paiements(), reprise_journal()
@@ -205,6 +236,7 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             "commandes": cde_total, "nb_commandes": cde_nb,
             "bl": bl_total, "nb_bl": bl_nb,
             "a_des_bl": bool(bl_nb),
+            "livraisons": livr.get(c.name, {}),
             "paiements": pay_total, "nb_paiements": pay_nb,
             "journal": jrn_net, "nb_journal": jrn_nb,
             "regle": regle,
