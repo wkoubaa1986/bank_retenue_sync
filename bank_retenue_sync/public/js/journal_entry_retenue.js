@@ -53,6 +53,7 @@ function fenetre(frm, etat) {
         description: __("Ce que le portail attend comme « numéro chez le déclarant »."),
       },
       { fieldtype: "HTML", fieldname: "manques" },
+      { fieldtype: "HTML", fieldname: "lecture" },
     ],
     primary_action_label: __("Enregistrer et vérifier"),
     primary_action: async (v) => {
@@ -103,12 +104,75 @@ function fenetre(frm, etat) {
           )}</div>`
   );
 
+  // 🤖 Lire la facture : le scan est deja attache a l-ecriture, autant lui demander le
+  // fournisseur ET son matricule fiscal plutot que de les retaper.
+  if (etat.statut !== "Émis" && !etat.supplier) {
+    d.fields_dict.lecture.$wrapper.html(
+      `<button class="btn btn-sm btn-default" data-lire style="margin-top:8px">🤖 ${__(
+        "Lire la facture (fournisseur et matricule)")}</button>
+       <div data-resultat style="margin-top:8px"></div>`);
+    d.fields_dict.lecture.$wrapper.find("[data-lire]").on("click", () => lire(frm, d));
+  }
+
   if (!manques.length && etat.statut !== "Émis") {
     d.set_secondary_action_label(__("Répéter à blanc"));
     d.set_secondary_action(() => lancer(frm, d, true));
     d.set_primary_action(__("Émettre pour de bon"), () => confirmer(frm, d));
   }
   d.show();
+}
+
+// La lecture PROPOSE, elle ne crée rien : un doublon de fournisseur éparpille ses factures sur
+// deux fiches et aucun solde ne veut plus rien dire. La création est un second bouton.
+async function lire(frm, d) {
+  const $z = d.fields_dict.lecture.$wrapper.find("[data-resultat]");
+  $z.html(`<span class="text-muted">${__("Lecture en cours…")}</span>`);
+  let r;
+  try {
+    r = (await frappe.call({ method: `${API}.lire_facture`, freeze: true,
+                             freeze_message: __("Lecture de la facture…"),
+                             args: { journal_entry: frm.doc.name } })).message;
+  } catch (e) { $z.empty(); return; }
+  if (!r.lu) {
+    $z.html(`<div class="alert alert-warning" style="margin:0">${
+      frappe.utils.escape_html(r.raison || "")}</div>`);
+    return;
+  }
+  const esc = frappe.utils.escape_html;
+  const cands = (r.candidats || []).map(
+    (c) => `<button class="btn btn-xs btn-default" data-choisir="${esc(c.name)}"
+              style="margin:2px 4px 0 0">${esc(c.supplier_name)}</button>`).join("");
+  $z.html(`<div class="alert alert-info" style="margin:0">
+      <div><b>${__("Fournisseur lu")} :</b> ${esc(r.fournisseur || "—")}</div>
+      <div><b>${__("Matricule fiscal lu")} :</b> ${esc(r.matricule || "—")}</div>
+      ${cands ? `<div style="margin-top:6px">${__("Fiches proches — choisissez plutôt :")}
+                 ${cands}</div>` : ""}
+      ${r.matricule
+        ? `<button class="btn btn-sm btn-primary" data-creer style="margin-top:8px">${__(
+            "Créer la fiche fournisseur avec ce matricule")}</button>`
+        : `<div style="margin-top:6px">${__(
+            "Sans matricule lu, la fiche ne servirait pas : le portail l-exige. Complétez-le à la main sur la fiche fournisseur."
+          )}</div>`}
+    </div>`);
+  $z.find("[data-creer]").on("click", async () => {
+    let e;
+    try {
+      e = (await frappe.call({
+        method: `${API}.creer_fournisseur`, freeze: true,
+        args: { journal_entry: frm.doc.name, nom: r.fournisseur, matricule: r.matricule },
+      })).message;
+    } catch (err) { return; }
+    d.hide();
+    fenetre(frm, e);
+  });
+  $z.find("[data-choisir]").on("click", async function () {
+    const e = (await frappe.call({
+      method: `${API}.completer`, freeze: true,
+      args: { journal_entry: frm.doc.name, supplier: $(this).attr("data-choisir") },
+    })).message;
+    d.hide();
+    fenetre(frm, e);
+  });
 }
 
 // ⚠️ DEUX GESTES, JAMAIS UN. La répétition ne déclare rien ; la soumission, si — et elle ne

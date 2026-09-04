@@ -353,3 +353,112 @@ def completer(journal_entry: str, supplier=None, numero_facture=None) -> dict:
     doc.save()
     frappe.db.commit()
     return etat(journal_entry)
+
+
+# ------------------------------------------------------------------ lire la facture
+
+
+def _scan_de(journal_entry: str):
+    """La photo de facture attachee a l'ecriture. -> (contenu, mimetype, nom) | None.
+
+    La caisse en attache DEUX : le justificatif nomme d'apres le numero de facture, et une copie
+    nommee « facture-<piece> ». N'importe laquelle fait l'affaire — c'est la meme image.
+    """
+    fichiers = frappe.get_all(
+        "File", filters={"attached_to_doctype": "Journal Entry",
+                         "attached_to_name": journal_entry},
+        fields=["name", "file_name", "file_url"], order_by="creation")
+    absents = []
+    for f in fichiers:
+        try:
+            doc = frappe.get_doc("File", f.name)
+            contenu = doc.get_content()
+        except Exception as e:
+            # ⚠️ « PIÈCE JOINTE ABSENTE » N'EST PAS « AUCUNE PIÈCE JOINTE ». Un bench restauré
+            # depuis une sauvegarde de BASE SEULE connaît les fichiers sans les avoir sur disque
+            # (constaté le 04/09/2026 en dev). Dire « aucune pièce jointe » enverrait chercher
+            # une photo qui existe pourtant.
+            absents.append("%s (%s)" % (f.file_name, type(e).__name__))
+            continue
+        if not contenu:
+            absents.append("%s (vide)" % f.file_name)
+            continue
+        nom = (f.file_name or "").lower()
+        mime = ("application/pdf" if nom.endswith(".pdf")
+                else "image/png" if nom.endswith(".png") else "image/jpeg")
+        return contenu, mime, f.file_name
+    return {"absents": absents} if absents else None
+
+
+@frappe.whitelist()
+def lire_facture(journal_entry: str) -> dict:
+    """Relit le scan de la facture pour en tirer le fournisseur et son MATRICULE FISCAL.
+
+    ⚠️ ON NE CREE RIEN ICI. La lecture propose ; la creation d'une fiche fournisseur est un
+    second geste (`creer_fournisseur`), parce qu'un doublon de fournisseur se paie longtemps :
+    les factures se repartissent alors sur deux fiches et aucun solde ne veut plus rien dire.
+
+    ⚠️ ET LE MATRICULE DU FOURNISSEUR, JAMAIS LE NOTRE. Une facture porte les deux ; la consigne
+    envoyee au modele l'exclut explicitement (cf. `caisse_depenses._consigne_matricule`).
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    scan = _scan_de(journal_entry)
+    if not scan:
+        return {"lu": False, "raison": _("aucune pièce jointe sur cette écriture")}
+    if isinstance(scan, dict):
+        return {"lu": False,
+                "raison": _("la pièce jointe est référencée mais son fichier est introuvable "
+                            "sur ce serveur : {0}").format(", ".join(scan["absents"]))}
+    contenu, mime, nom_fichier = scan
+    try:
+        from customization_app.caisse_depenses import _decrire
+    except Exception:
+        return {"lu": False, "raison": _("le module de lecture (customization_app) est absent")}
+
+    try:
+        lu = _decrire(contenu, mime)
+    except Exception as e:
+        return {"lu": False, "raison": str(e)[:200]}
+    # `_decrire` a rendu selon les versions (description, matricule) ou un tuple plus long :
+    # on ne prend que ce dont on a besoin, sans supposer sa longueur.
+    description = lu[0] if len(lu) > 0 else ""
+    mat = (lu[1] if len(lu) > 1 else "") or ""
+
+    fournisseur = frappe.db.get_value(DOCTYPE, journal_entry, "fournisseur_lu") or ""
+    candidats = []
+    try:
+        from customization_app.caisse_depenses import _rapprocher_fournisseur
+
+        r = _rapprocher_fournisseur(fournisseur, mat)
+        candidats = r.get("candidats") or []
+        certain = r.get("certain")
+    except Exception:
+        certain = None
+
+    return {"lu": True, "fichier": nom_fichier, "description": description,
+            "fournisseur": fournisseur, "matricule": mat.strip(),
+            "candidat_certain": certain, "candidats": candidats}
+
+
+@frappe.whitelist()
+def creer_fournisseur(journal_entry: str, nom=None, matricule=None) -> dict:
+    """Cree (ou retrouve) la fiche fournisseur et la rattache a la ligne.
+
+    ⚠️ EN CAS DE DOUTE ON REFUSE, ON NE CREE PAS. `caisse_depenses._supplier` porte deja cette
+    regle : si des fiches proches existent, il leve et l'ecran demande de choisir. On ne la
+    contourne pas — un doublon de fournisseur eparpille ses factures sur deux soldes.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from customization_app.caisse_depenses import _supplier
+
+    doc = frappe.get_doc(DOCTYPE, journal_entry)
+    if doc.statut == "Émis":
+        frappe.throw(_("Un certificat a déjà été émis pour cette écriture."))
+    nom = (nom or doc.fournisseur_lu or "").strip()
+    if not nom:
+        frappe.throw(_("Aucun nom de fournisseur à créer."))
+    supplier = _supplier(nom, matricule=matricule)
+    if not supplier:
+        frappe.throw(_("La fiche fournisseur n'a pas pu être créée."))
+    frappe.db.commit()
+    return completer(journal_entry, supplier=supplier)

@@ -189,3 +189,48 @@ class TestBoutonSurLEcriture(unittest.TestCase):
     def test_un_statut_humain_n_est_pas_ecrase(self):
         """« Ignoré » est une décision : le recalcul ne doit pas la défaire."""
         self.assertIn('doc.statut if doc.statut in ("Émis", "Ignoré")', self.source(F._reetat))
+
+
+class TestLectureDeLaFacture(unittest.TestCase):
+    """Extraire le fournisseur ET son matricule du scan déjà attaché à l'écriture."""
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_la_lecture_ne_cree_rien(self):
+        """⚠️ Un doublon de fournisseur se paie longtemps : ses factures se répartissent sur
+        deux fiches et aucun solde ne veut plus rien dire. La lecture propose, la création est
+        un second geste."""
+        src = self.source(F.lire_facture)
+        self.assertNotIn("_supplier(", src)
+        self.assertIn("ON NE CREE RIEN ICI", src)
+
+    def test_la_creation_garde_le_garde_fou_du_doute(self):
+        """`caisse_depenses._supplier` refuse quand des fiches proches existent. On ne le
+        contourne pas."""
+        self.assertIn("from customization_app.caisse_depenses import _supplier",
+                      self.source(F.creer_fournisseur))
+
+    def test_une_ligne_deja_emise_refuse_la_creation(self):
+        self.assertIn('if doc.statut == "Émis":', self.source(F.creer_fournisseur))
+
+    def test_fichier_ABSENT_et_AUCUN_fichier_sont_deux_messages(self):
+        """⚠️ Un bench restauré depuis une sauvegarde de BASE SEULE connaît les fichiers sans
+        les avoir sur disque (constaté en dev le 04/09/2026). Dire « aucune pièce jointe »
+        enverrait chercher une photo qui existe pourtant."""
+        src = self.source(F.lire_facture)
+        self.assertIn("aucune pièce jointe sur cette écriture", src)
+        self.assertIn("son fichier est introuvable", src)
+
+    def test_le_pdf_et_l_image_sont_tous_deux_acceptes(self):
+        """Les fournisseurs envoient les deux ; le lecteur sait lire l'un et l'autre."""
+        src = self.source(F._scan_de)
+        self.assertIn("application/pdf", src)
+        self.assertIn("image/png", src)
+
+    def test_la_longueur_du_retour_de_decrire_n_est_pas_supposee(self):
+        """`_decrire` a rendu selon les versions un couple ou un tuple plus long : indexer en
+        dur casserait à la prochaine évolution de la caisse."""
+        self.assertIn("len(lu) > 1", self.source(F.lire_facture))
