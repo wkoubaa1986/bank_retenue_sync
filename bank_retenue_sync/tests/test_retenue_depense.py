@@ -405,3 +405,74 @@ class TestDepotPourUneEcriture(unittest.TestCase):
 
         self.assertEqual(frappe.db.count("BRS Depot TEJ",
                                          {"piece_type": ["in", ["", None]]}), 0)
+
+
+class TestRapatriementDesCertificats(unittest.TestCase):
+    """⚠️ LA FILE NE SAIT RIEN DU CRON, ET LE CRON NE SAIT RIEN DE LA FILE.
+
+    `tej/emis.verifier_depots` tourne cinq fois par jour, interroge le portail et conclut les
+    dépôts — mais il travaille sur `BRS Depot TEJ`, pas sur la file. Sans report, la ligne
+    resterait « À émettre » alors que le certificat existe, et quelqu'un finirait par le
+    redemander : deux fois la même déclaration.
+    """
+
+    def source(self, fn):
+        return inspect.getsource(fn)
+
+    def test_seuls_les_depots_d_ECRITURE_sont_rapatries(self):
+        """Ceux des factures d'achat ont leur propre chemin ; les toucher ici les écraserait."""
+        src = self.source(F.rapatrier_certificats)
+        self.assertIn('"piece_type": "Journal Entry"', src)
+        self.assertIn("M_depot.GENERE", src)
+
+    def test_une_ligne_deja_a_jour_n_est_pas_reecrite(self):
+        self.assertIn('ligne.certificat == d.reference', self.source(F.rapatrier_certificats))
+
+    def test_rien_ne_bascule_sans_reference(self):
+        """Sans elle, rien ne prouve qu'un certificat existe."""
+        self.assertIn("if not d.reference", self.source(F.rapatrier_certificats))
+
+    def test_le_rapatriement_precede_la_synchronisation(self):
+        """Une ligne déjà certifiée ne doit pas être reproposée à l'émission le temps d'une
+        boucle."""
+        src = self.source(F.synchroniser)
+        self.assertLess(src.index("rapatrier_certificats()"), src.index("for c in candidates"))
+
+    def test_l_ecran_le_fait_aussi_avant_de_repondre(self):
+        """Le cron a pu conclure entre deux interrogations : sinon la fenêtre tournerait
+        indéfiniment sur un certificat déjà généré."""
+        self.assertIn("rapatrier_certificats()", self.source(F.suivre))
+
+
+class TestCertificatPoseSurLaBonnePiece(unittest.TestCase):
+    """⚠️ LE DOCTYPE ÉTAIT ÉCRIT EN DUR DANS L'ATTACHEMENT DU PDF.
+
+    Pour une retenue prélevée en caisse, le certificat serait parti se poser sur une facture
+    d'achat qui n'existe pas — et l'écriture serait restée sans justificatif, le seul document
+    qui prouve la retenue au contrôle fiscal.
+    """
+
+    def test_l_attachement_accepte_la_nature_de_la_piece(self):
+        from bank_retenue_sync.tej import emis as E
+
+        self.assertIn("piece_type", inspect.signature(E.attacher_pdf).parameters)
+        self.assertIn("pdf.attacher({\"reference\": reference}, contenu, piece_type, facture)",
+                      inspect.getsource(E.attacher_pdf))
+
+    def test_la_recherche_du_certificat_aussi(self):
+        """Chercher au mauvais endroit le déclarerait absent et inviterait à le réémettre."""
+        from bank_retenue_sync.tej import emis as E
+
+        self.assertIn("piece_type", inspect.signature(E._certificat_attache).parameters)
+
+    def test_le_suivi_transmet_la_nature_du_depot(self):
+        from bank_retenue_sync.tej import emis as E
+
+        self.assertIn("attacher_pdf(facture, vu[\"reference\"], piece_type)",
+                      inspect.getsource(E.suivre_depot))
+
+    def test_le_defaut_reste_la_facture_d_achat(self):
+        from bank_retenue_sync.tej import emis as E
+
+        self.assertEqual(inspect.signature(E.attacher_pdf).parameters["piece_type"].default,
+                         "Purchase Invoice")

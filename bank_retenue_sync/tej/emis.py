@@ -170,13 +170,17 @@ def _certificat_manuel(facture: str):
     return None
 
 
-def _certificat_attache(facture: str):
-    """Le certificat deja attache a cette facture, ou None. La reference vit dans le nom.
+def _certificat_attache(facture: str, piece_type: str = "Purchase Invoice"):
+    """Le certificat deja attache a cette piece, ou None. La reference vit dans le nom.
 
     Deux provenances : le PDF telecharge par ce module (`certificat_ras_<reference>.pdf`), et le
     certificat attache a la main (reference inconnue — `manuel: True`). Les deux prouvent la meme
-    chose : la retenue est deja certifiee, il n'y a rien a soumettre."""
-    f = frappe.db.get_value("File", {"attached_to_doctype": "Purchase Invoice",
+    chose : la retenue est deja certifiee, il n'y a rien a soumettre.
+
+    `piece_type` : la retenue se preleve sur une facture d'achat, ou sur une ECRITURE quand la
+    depense passe par la caisse. Chercher le certificat au mauvais endroit le declarerait absent
+    et inviterait a le reemettre — deux fois la meme declaration."""
+    f = frappe.db.get_value("File", {"attached_to_doctype": piece_type,
                                      "attached_to_name": facture,
                                      "file_name": ["like", "certificat_ras_%"]},
                             ["file_name", "file_url"], as_dict=1)
@@ -571,22 +575,28 @@ def _reference_creee(reponse):
     return cc.get("reference") or (reponse or {}).get("reference")
 
 
-def attacher_pdf(facture: str, reference: str) -> dict:
-    """Telecharge le certificat emis et le pose sur la facture d'achat. -> dict.
+def attacher_pdf(facture: str, reference: str,
+                 piece_type: str = "Purchase Invoice") -> dict:
+    """Telecharge le certificat emis et le pose SUR LA PIECE D'ORIGINE. -> dict.
 
     Meme mecanique que pour les certificats recus (`tej/pdf.py`) : nom stable, attachement
     idempotent — un justificatif en double au controle fiscal est un probleme, pas un detail.
+
+    ⚠️ LA PIECE N'EST PAS TOUJOURS UNE FACTURE. Le doctype etait ecrit en dur ici : pour une
+    retenue prelevee en caisse, le certificat serait parti se poser sur une facture d'achat qui
+    n'existe pas, et l'ECRITURE serait restee sans justificatif — le seul document qui prouve la
+    retenue au controle fiscal.
     """
     from bank_retenue_sync.bank import movements
 
-    existant = _certificat_attache(facture)
+    existant = _certificat_attache(facture, piece_type)
     if existant:
         return {"statut": "deja attache", **existant}
 
     job = movements.start_job(ROUTE_JOB_PDF_EMIS, {"reference": reference})
     movements.wait_job(job, timeout=DELAI_JOB)
     contenu = _telecharger(reference)
-    res = pdf.attacher({"reference": reference}, contenu, "Purchase Invoice", facture)
+    res = pdf.attacher({"reference": reference}, contenu, piece_type, facture)
     return {"reference": reference, **res}
 
 
@@ -961,6 +971,9 @@ def suivre_depot(ligne) -> dict:
     """
     nom = ligne["name"] if isinstance(ligne, dict) else ligne.name
     facture = ligne["facture"] if isinstance(ligne, dict) else ligne.facture
+    # La nature de la piece voyage avec le depot : c'est elle qui dit ou poser le certificat.
+    piece_type = ((ligne.get("piece_type") if isinstance(ligne, dict) else ligne.piece_type)
+                  or "Purchase Invoice")
     try:
         vu = M_depot.interroger(ligne)
     except Exception as e:
@@ -975,7 +988,7 @@ def suivre_depot(ligne) -> dict:
         resultat = {"depot": nom, "statut": M_depot.GENERE, "reference": vu["reference"]}
         # Le PDF suit le certificat, pas le depot : il n'existait pas avant cet instant.
         try:
-            resultat["pdf"] = attacher_pdf(facture, vu["reference"])
+            resultat["pdf"] = attacher_pdf(facture, vu["reference"], piece_type)
         except Exception as e:
             resultat["pdf"] = {"statut": "echec", "erreur": str(e)[:200]}
             frappe.log_error(title="PDF du certificat TEJ %s" % facture,

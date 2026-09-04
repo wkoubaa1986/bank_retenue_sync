@@ -89,12 +89,47 @@ def candidates(depuis=None) -> list:
     return [l for l in lignes if not exclue(l.cheque_no)]
 
 
+def rapatrier_certificats() -> int:
+    """Reporte sur la file les certificats que le cron des depots a fait generer. -> nb.
+
+    ⚠️ LA FILE NE SAIT RIEN DU CRON, ET LE CRON NE SAIT RIEN DE LA FILE. `tej/emis.verifier_depots`
+    tourne cinq fois par jour, interroge le portail et conclut les depots — mais il travaille sur
+    `BRS Depot TEJ`, pas ici. Sans ce report, la ligne resterait « À émettre » alors que le
+    certificat existe, et quelqu'un finirait par le redemander : deux fois la meme declaration.
+    """
+    if not frappe.db.exists("DocType", M_depot.DOCTYPE):
+        return 0
+    faits = 0
+    for d in frappe.get_all(M_depot.DOCTYPE,
+                            filters={"piece_type": "Journal Entry",
+                                     "statut": M_depot.GENERE},
+                            fields=["facture", "reference", "modified"]):
+        if not d.reference or not frappe.db.exists(DOCTYPE, d.facture):
+            continue
+        ligne = frappe.get_doc(DOCTYPE, d.facture)
+        if ligne.statut == "Émis" and ligne.certificat == d.reference:
+            continue
+        ligne.statut = "Émis"
+        ligne.certificat = d.reference
+        ligne.emis_le = ligne.emis_le or d.modified
+        ligne.note = ""
+        ligne.flags.ignore_permissions = True
+        ligne.save()
+        faits += 1
+    if faits:
+        frappe.db.commit()
+    return faits
+
+
 def synchroniser(depuis=None) -> dict:
     """Remplit la file depuis les écritures. Idempotent : une ligne par écriture, jamais deux.
 
     Ne touche JAMAIS une ligne déjà émise : la référence du certificat est la preuve d'une
     déclaration partie, et rien ici ne doit pouvoir l'effacer.
     """
+    # Ce que le cron a conclu depuis le dernier passage arrive AVANT le reste : une ligne deja
+    # certifiee ne doit pas etre reproposee a l'emission le temps d'une boucle.
+    rapatries = rapatrier_certificats()
     crees, revus = 0, 0
     for c in candidates(depuis):
         lu = lire_piece(c.user_remark)
@@ -127,7 +162,7 @@ def synchroniser(depuis=None) -> dict:
         doc.flags.ignore_permissions = True
         doc.save()
     frappe.db.commit()
-    return {"crees": crees, "revus": revus}
+    return {"crees": crees, "revus": revus, "certificats_rapatries": rapatries}
 
 
 def _fournisseur(nom):
@@ -332,6 +367,9 @@ def executer_soumission(ligne: str, depot_nom: str = None) -> dict:
 def suivre(ligne: str) -> dict:
     """Ou en est la soumission lancee en file. -> dict. L'ecran interroge, il n'attend pas."""
     frappe.only_for(["System Manager", "Accounts Manager", "Accounts User"])
+    # Le cron a pu conclure entre deux interrogations de l'ecran : on regarde d'abord ce qu'il a
+    # rapporte, sinon la fenetre tournerait indefiniment sur un certificat deja genere.
+    rapatrier_certificats()
     doc = frappe.get_doc(DOCTYPE, ligne)
     depot = M_depot.en_cours(doc.journal_entry, piece_type="Journal Entry")
     return {
