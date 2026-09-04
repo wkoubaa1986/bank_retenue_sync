@@ -144,9 +144,69 @@ class TestAdaptateurDEmission(unittest.TestCase):
 
     def test_l_etat_ne_bascule_qu_avec_une_reference(self):
         """Sans elle, rien ne prouve qu'une déclaration est partie — et marquer « Émis » ferait
-        perdre la ligne de vue pour toujours."""
-        self.assertIn('if not frappe.utils.cint(dry_run) and reference:',
-                      self.source(F.emettre))
+        perdre la ligne de vue pour toujours. La bascule vit dans la tâche de fond."""
+        self.assertIn("if reference:", self.source(F.executer_soumission))
+
+
+class TestSoumissionEnTacheDeFond(unittest.TestCase):
+    """⚠️ LA SOUMISSION NE SE FAIT PAS DANS LA REQUÊTE DESK.
+
+    La création pilote un NAVIGATEUR sur le portail — régénération de l'export puis remplissage
+    du formulaire — sur un service à worker unique. Attendre dans la requête bloque l'écran
+    plusieurs minutes puis se fait couper par le proxy AVANT toute réponse : la déclaration part
+    et personne ne le sait. C'est ce que faisait cette fonction jusqu'au 04/09/2026, et
+    l'utilisateur l'a vu tourner dans le vide sur ACC-JV-2026-00698 en production.
+
+    `tej/emis.soumettre` réglait déjà le problème pour les factures d'achat ; on applique ici la
+    même mécanique.
+    """
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_la_soumission_est_mise_en_file(self):
+        src = self.source(F.emettre)
+        self.assertIn("frappe.enqueue(", src)
+        self.assertIn('queue="long"', src)
+        self.assertIn('"statut": "en file"', src)
+
+    def test_un_depot_est_reserve_AVANT_la_mise_en_file(self):
+        """Sans réservation, deux clics lanceraient deux déclarations — et c'est entre l'envoi
+        et la réponse qu'un second clic coûte le plus cher."""
+        src = self.source(F.emettre)
+        self.assertIn("M_depot.reserver(ctx)", src)
+        self.assertLess(src.index("M_depot.reserver"), src.index("frappe.enqueue"))
+
+    def test_un_depot_en_analyse_bloque_un_second_envoi(self):
+        self.assertIn("M_depot.en_cours(doc.journal_entry)", self.source(F.emettre))
+
+    def test_la_REPETITION_reste_synchrone(self):
+        """Elle ne déclare rien, et son résultat n'a d'intérêt que tout de suite, sous les yeux
+        de celui qui compare les montants."""
+        self.assertIn("if frappe.utils.cint(dry_run):", self.source(F.emettre))
+
+    def test_tout_echec_laisse_le_depot_incertain_jamais_libre(self):
+        """⚠️ Une erreur ne prouve pas que rien n'est parti : le clic « Valider » a pu aboutir
+        avant la panne. Rendre la pièce réémettable serait le geste qui déclare en double."""
+        src = self.source(F.executer_soumission)
+        self.assertIn("M_depot.INCERTAIN", src)
+        self.assertIn("est_un_refus(e)", src)
+        self.assertIn("raise", src)
+
+    def test_un_refus_du_portail_n_est_pas_une_panne(self):
+        """TEJ a examiné la saisie et l'a rejetée : rien n'est parti, et laisser la pièce
+        bloquée sur un « incertain » ferait courir l'utilisateur au portail pour rien."""
+        self.assertIn("M_depot.REFUSE", self.source(F.executer_soumission))
+
+    def test_l_ecran_interroge_au_lieu_d_attendre(self):
+        import inspect
+
+        self.assertIn("ligne", inspect.signature(F.suivre).parameters)
+        src = self.source(F.suivre)
+        self.assertIn('"progression"', src)
+        self.assertIn('"depot"', src)
 
     def test_la_synchronisation_ne_touche_jamais_une_ligne_emise(self):
         """La référence du certificat est la preuve d'une déclaration partie."""

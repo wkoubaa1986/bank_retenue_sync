@@ -32,6 +32,7 @@ from frappe import _
 from frappe.utils import flt, getdate
 
 from bank_retenue_sync.achat import retenue_depense as R
+from bank_retenue_sync.tej import depot as M_depot
 
 DOCTYPE = "BRS Retenue Achat A Emettre"
 DEPUIS = "2026-09-01"
@@ -248,11 +249,21 @@ def _ht_et_taux(je, ttc, retenue):
 
 @frappe.whitelist()
 def emettre(ligne: str, dry_run: bool = True) -> dict:
-    """Repete ou soumet le certificat d'une ligne de la file. -> dict.
+    """Repete (synchrone) ou LANCE la soumission en tache de fond. -> dict.
 
-    ⚠️ RIEN NE PART SANS `dry_run=False` EXPLICITE, demande a l'ecran — c'est la doctrine de
-    `tej/emis`, et elle vaut ici pour la meme raison : un certificat soumis se lit chez le
-    fournisseur et chez l'administration.
+    ⚠️ LA SOUMISSION NE SE FAIT PAS DANS LA REQUETE DESK, ET C'EST LE POINT LE PLUS IMPORTANT
+    DE CETTE FONCTION. La creation pilote un NAVIGATEUR sur le portail — regeneration de
+    l'export, puis remplissage du formulaire — sur un service a worker unique. Attendre dans la
+    requete, c'est bloquer l'ecran plusieurs minutes puis, le plus souvent, se faire couper par
+    le proxy AVANT toute reponse : la declaration part, et personne ne le sait. C'est exactement
+    ce que faisait cette fonction jusqu'au 04/09/2026, et l'utilisateur l'a vu tourner dans le
+    vide sur ACC-JV-2026-00698.
+
+    `tej/emis.soumettre` reglait deja le probleme pour les factures d'achat ; on applique ici la
+    meme mecanique — reservation d'un `BRS Depot TEJ`, mise en file, et suivi par `suivre()`.
+
+    La REPETITION reste synchrone : elle ne declare rien, et son resultat n'a d'interet que
+    tout de suite, sous les yeux de celui qui compare les montants.
     """
     frappe.only_for(["System Manager", "Accounts Manager"])
     from bank_retenue_sync.tej import emis as E
@@ -262,9 +273,48 @@ def emettre(ligne: str, dry_run: bool = True) -> dict:
     if ctx["manques"]:
         return {"statut": "impossible", **ctx}
 
-    res = E.emettre(doc.journal_entry, dry_run=frappe.utils.cint(dry_run) == 1, ctx=ctx)
+    if frappe.utils.cint(dry_run):
+        return E.emettre(doc.journal_entry, dry_run=True, ctx=ctx)
+
+    # Les controles locaux restent synchrones : ils sont instantanes, et un refus doit se voir
+    # tout de suite plutot que d'arriver par une notification trois minutes plus tard.
+    en_cours = M_depot.en_cours(doc.journal_entry)
+    if en_cours:
+        return {"statut": "depot en analyse", "depot": M_depot.vue(en_cours), **ctx}
+
+    nom = M_depot.reserver(ctx)
+    frappe.db.commit()
+    frappe.enqueue("bank_retenue_sync.tej.emis_journal.executer_soumission",
+                   queue="long", timeout=2400, ligne=ligne, depot_nom=nom)
+    return {"statut": "en file",
+            "depot": M_depot.vue(frappe.get_doc(M_depot.DOCTYPE, nom)), **ctx}
+
+
+def executer_soumission(ligne: str, depot_nom: str = None) -> dict:
+    """La soumission reelle, hors requete desk. Appelee par `frappe.enqueue`.
+
+    ⚠️ TOUT ECHEC LAISSE LE DEPOT `incertain`, JAMAIS LIBRE. Une erreur ici ne prouve pas que
+    rien n'est parti : le clic « Valider » a pu aboutir avant la panne. Rendre la piece
+    reemettable serait exactement le geste qui declare en double.
+    """
+    from bank_retenue_sync.tej import emis as E
+
+    doc = frappe.get_doc(DOCTYPE, ligne)
+    try:
+        res = E.emettre(doc.journal_entry, dry_run=False, ctx=contexte(ligne),
+                        depot_reserve=depot_nom)
+    except Exception as e:
+        if depot_nom:
+            if E.est_un_refus(e):
+                M_depot.marquer(depot_nom, M_depot.REFUSE,
+                                "le portail a refusé la saisie : %s" % str(e)[:400])
+            else:
+                M_depot.marquer(depot_nom, M_depot.INCERTAIN, str(e)[:400])
+        frappe.db.commit()
+        raise
+
     reference = res.get("reference") or res.get("certificat")
-    if not frappe.utils.cint(dry_run) and reference:
+    if reference:
         # L'etat ne bascule QU'AVEC une reference : sans elle, rien ne prouve qu'une declaration
         # est partie, et marquer « Émis » ferait perdre la ligne de vue pour toujours.
         doc.statut = "Émis"
@@ -274,6 +324,30 @@ def emettre(ligne: str, dry_run: bool = True) -> dict:
         doc.save()
         frappe.db.commit()
     return res
+
+
+@frappe.whitelist()
+def suivre(ligne: str) -> dict:
+    """Ou en est la soumission lancee en file. -> dict. L'ecran interroge, il n'attend pas."""
+    frappe.only_for(["System Manager", "Accounts Manager", "Accounts User"])
+    doc = frappe.get_doc(DOCTYPE, ligne)
+    depot = M_depot.en_cours(doc.journal_entry)
+    return {
+        "statut": doc.statut,
+        "certificat": doc.certificat,
+        "emis_le": str(doc.emis_le or ""),
+        "depot": M_depot.vue(depot) if depot else None,
+        "progression": E_progression(depot) if depot else None,
+    }
+
+
+def E_progression(depot):
+    from bank_retenue_sync.tej import emis as E
+
+    try:
+        return E.progression(depot)
+    except Exception:
+        return None
 
 
 @frappe.whitelist()

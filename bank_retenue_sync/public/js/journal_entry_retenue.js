@@ -201,8 +201,6 @@ async function lire(frm, d, fichier) {
   });
 }
 
-// ⚠️ DEUX GESTES, JAMAIS UN. La répétition ne déclare rien ; la soumission, si — et elle ne
-// s-annule pas. La confirmation nomme la pièce pour qu-on ne la donne pas machinalement.
 function confirmer(frm, d) {
   frappe.confirm(
     __("Déclarer définitivement cette retenue sur TEJ pour {0} ? Un certificat soumis se lit chez le fournisseur et chez l-administration ; l-annuler laisse une trace.",
@@ -216,11 +214,20 @@ async function lancer(frm, d, dry_run) {
   try {
     res = (await frappe.call({
       method: `${API}.emettre`, freeze: true,
-      freeze_message: dry_run ? __("Répétition sur TEJ…") : __("Émission sur TEJ…"),
+      freeze_message: dry_run ? __("Répétition sur TEJ…") : __("Mise en file…"),
       args: { ligne: frm.doc.name, dry_run: dry_run ? 1 : 0 },
     })).message;
   } catch (e) { return; }
   d.hide();
+
+  // ⚠️ LA SOUMISSION NE REND PAS UN RESULTAT, ELLE REND UNE FILE. Le portail se pilote au
+  // navigateur : plusieurs minutes, sur un service a worker unique. La requete rend la main
+  // tout de suite et l-ecran INTERROGE — attendre dans la requete bloquait l-ecran puis se
+  // faisait couper par le proxy, la declaration partant sans que personne le sache.
+  if (!dry_run && res && res.statut === "en file") {
+    suivre(frm);
+    return;
+  }
   frappe.msgprint({
     title: dry_run ? __("Répétition") : __("Émission"),
     indicator: res && (res.reference || res.statut === "ok") ? "green" : "orange",
@@ -229,3 +236,54 @@ async function lancer(frm, d, dry_run) {
   });
   frm.reload_doc();
 }
+
+// Le suivi : une fenetre qui se met a jour toute seule, sans bloquer l-ecran. On peut la
+// fermer — la tache continue, et le bouton de la fiche dira ou elle en est.
+function suivre(frm) {
+  const d = new frappe.ui.Dialog({
+    title: __("Émission en cours — {0}", [frm.doc.name]),
+    fields: [{ fieldtype: "HTML", fieldname: "vue" }],
+    primary_action_label: __("Fermer"),
+    primary_action: () => { arret = true; d.hide(); frm.reload_doc(); },
+  });
+  let arret = false;
+  const $v = () => d.fields_dict.vue.$wrapper;
+  $v().html(`<div class="text-muted">${__("Lancement…")}</div>`);
+  d.show();
+
+  const tic = async () => {
+    if (arret) return;
+    let r;
+    try {
+      r = (await frappe.call({ method: `${API}.suivre`,
+                               args: { ligne: frm.doc.name } })).message;
+    } catch (e) { return; }
+    if (r.statut === "Émis") {
+      arret = true;
+      $v().html(`<div class="alert alert-success" style="margin:0">
+        ${__("Certificat émis")} : <b>${frappe.utils.escape_html(r.certificat || "")}</b></div>`);
+      frm.reload_doc();
+      return;
+    }
+    const p = r.progression || {};
+    const dep = r.depot || {};
+    const barre = p.pct != null
+      ? `<div style="margin:10px 0"><div style="background:var(--gray-200);border-radius:4px;
+           height:8px;overflow:hidden"><div style="background:#2490ef;height:8px;width:${
+             Math.max(0, Math.min(100, p.pct))}%"></div></div>
+         <div class="text-muted" style="font-size:11px;margin-top:4px">${p.pct}% — ${
+           frappe.utils.escape_html(p.step || "")}</div></div>`
+      : "";
+    $v().html(`<div>${__(
+        "Le portail se pilote au navigateur : comptez quelques minutes. Vous pouvez fermer cette fenêtre, la tâche continue."
+      )}</div>${barre}
+      ${dep.statut ? `<div class="text-muted" style="font-size:12px">${__("Dépôt")} :
+        ${frappe.utils.escape_html(dep.statut)}</div>` : ""}
+      ${p.erreur ? `<div style="color:#dc2626">${frappe.utils.escape_html(p.erreur)}</div>` : ""}
+      <p style="margin-top:8px"><b>${__("Ne relancez pas.")}</b></p>`);
+    setTimeout(tic, 5000);
+  };
+  tic();
+}
+
+// ⚠️ DEUX GESTES, JAMAIS UN. La répétition ne déclare rien ; la soumission, si — et elle ne
