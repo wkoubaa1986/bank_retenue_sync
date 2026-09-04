@@ -413,3 +413,47 @@ class TestDetailDesLivraisons(unittest.TestCase):
 
     def test_chaque_client_porte_son_detail(self):
         self.assertIn('"livraisons": livr.get(c.name, {})', inspect.getsource(R.lignes))
+
+
+class TestExclusionLieeALaSituation(unittest.TestCase):
+    """« Cet écart-là est normal » n'est pas « ce client ne m'intéressera plus jamais ».
+
+    ⚠️ SANS MÉMOIRE DE L'ÉTAT D'ALORS, un nouvel impayé chez un client déjà écarté resterait
+    invisible pour toujours — l'exclusion deviendrait un angle mort permanent (demande
+    utilisateur 04/09/2026). On garde donc les deux deltas du jour de la décision, et le client
+    ressort dès qu'ils bougent.
+    """
+
+    def test_les_deux_deltas_du_jour_sont_memorises(self):
+        src = inspect.getsource(R.ignores)
+        self.assertIn('"delta_paiement": flt(r.delta_paiement', src)
+        self.assertIn('"delta_bl": flt(r.delta_bl', src)
+
+    def test_l_exclusion_ne_tient_que_si_RIEN_n_a_bouge(self):
+        src = inspect.getsource(R.lignes)
+        self.assertIn('ligne["ignore"] = not bouge', src)
+
+    def test_le_changement_se_mesure_sur_les_MEMES_seuils(self):
+        """Un écart de 0,50 DT n'est pas un changement de situation : le même seuil qui décide
+        qu'un delta mérite du rouge décide qu'il a bougé."""
+        src = inspect.getsource(R.lignes)
+        self.assertIn('decision["delta_paiement"],\n                                        seuils["montant"]', src)
+
+    def test_on_dit_CE_QUI_a_change(self):
+        """Sans cela, le client revient sans qu'on sache pourquoi, et la première réaction
+        serait de le ré-ignorer sans regarder."""
+        self.assertIn('ligne["depuis_decision"]', inspect.getsource(R.lignes))
+
+    def test_la_situation_est_enregistree_a_la_decision(self):
+        from bank_retenue_sync.api import rapprochement_client as API
+
+        src = inspect.getsource(API.ignorer)
+        for champ in ("delta_paiement", "delta_bl", "commandes", "bl", "regle"):
+            self.assertIn("doc.%s = etat" % champ, src)
+
+    def test_un_client_sans_etat_lisible_reste_excluable(self):
+        """Le DocType peut exister avant que la ligne soit calculable : l'exclusion ne doit pas
+        échouer pour autant."""
+        from bank_retenue_sync.api import rapprochement_client as API
+
+        self.assertIn("if etat:", inspect.getsource(API.ignorer))

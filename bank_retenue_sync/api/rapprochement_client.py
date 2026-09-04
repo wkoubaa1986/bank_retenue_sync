@@ -166,17 +166,30 @@ def ignorer(client, motif=None) -> dict:
         frappe.throw(_("Indique pourquoi l'écart de ce client est accepté."))
     if not frappe.db.exists("Customer", client):
         frappe.throw(_("Client introuvable"))
+    # ⚠️ ON MÉMORISE LA SITUATION QU'ON VIENT DE REGARDER. « Cet écart-là est normal » n'est pas
+    # « ce client ne m'intéressera plus jamais » : sans cet instantané, un nouvel impayé chez un
+    # client déjà écarté resterait invisible pour toujours. Il ressortira dès que ses chiffres
+    # bougeront (demande utilisateur 04/09/2026).
+    etat = next((l for l in R.lignes(recherche=client, masquer_ignores=0)
+                 if l["client"] == client), None)
     if frappe.db.exists(R.DOCTYPE_IGNORE, client):
         doc = frappe.get_doc(R.DOCTYPE_IGNORE, client)
         doc.motif = motif
     else:
         doc = frappe.get_doc({"doctype": R.DOCTYPE_IGNORE, "client": client, "motif": motif})
+    if etat:
+        doc.delta_paiement = etat["delta_paiement"]
+        doc.delta_bl = etat["delta_bl"]
+        doc.commandes = etat["commandes"]
+        doc.bl = etat["bl"]
+        doc.regle = etat["regle"]
     doc.auteur = frappe.session.user
     doc.date_ignore = frappe.utils.now_datetime()
     doc.flags.ignore_permissions = True
     doc.save()
     frappe.db.commit()
-    return {"client": client, "ignore": True, "motif": motif}
+    return {"client": client, "ignore": True, "motif": motif,
+            "situation": {"delta_paiement": doc.delta_paiement, "delta_bl": doc.delta_bl}}
 
 
 @frappe.whitelist()

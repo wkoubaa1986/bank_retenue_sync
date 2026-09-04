@@ -9,9 +9,14 @@
                                   border-radius: 6px; border: 1px solid var(--border-color, #d5dae1);
                                   background: var(--control-bg, #fff); color: inherit; }
   .rc-bar input[type=search] { min-width: 230px; }
-  .rc-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
-              font-weight: 400; white-space: nowrap; cursor: pointer; margin: 0 0 4px; }
-  .rc-check input { margin: 0; }
+  /* La case elle-meme doit etre dimensionnee : sans taille explicite, certains navigateurs la
+     rendent a la taille de la police du label et elle sort en gros carre noir. */
+  .rc-check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px;
+              font-weight: 400; white-space: nowrap; cursor: pointer; margin: 0 0 4px;
+              text-transform: none; letter-spacing: 0; color: inherit; }
+  .rc-check input[type=checkbox] { -webkit-appearance: checkbox; appearance: checkbox;
+              width: 15px; height: 15px; min-width: 15px; margin: 0; padding: 0;
+              accent-color: #2b6cb0; flex: 0 0 auto; }
   .rc-kpis { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0 10px; }
   .rc-kpi { flex: 1 1 150px; border: 1px solid var(--border-color, #e6e9ee); border-radius: 10px;
             padding: 10px 12px; background: var(--card-bg, #fff); }
@@ -28,6 +33,15 @@
                white-space: nowrap; background: var(--subtle-fg, #fafbfc); }
   .rc-tbl td { padding: 7px 10px; border-bottom: 1px solid var(--border-color, #f0f2f5);
                vertical-align: top; }
+  /* La colonne des actions : trois boutons ne tiennent pas sur une ligne dans un tableau deja
+     large — ils debordaient et « Ignorer » se retrouvait coupe hors de l-ecran. Elle se colle
+     donc a droite et reste visible pendant le defilement horizontal. */
+  .rc-tbl th:last-child, .rc-tbl td:last-child {
+      position: sticky; right: 0; z-index: 1; background: var(--card-bg, #fff);
+      box-shadow: -6px 0 6px -6px rgba(0, 0, 0, .18); width: 1%; }
+  .rc-tbl tbody tr:hover td:last-child { background: var(--subtle-fg, #fafbfc); }
+  .rc-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end;
+                min-width: 168px; }
   .rc-tbl tbody tr:hover { background: var(--subtle-fg, #fafbfc); }
   .rc-tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .rc-nom { font-weight: 600; }

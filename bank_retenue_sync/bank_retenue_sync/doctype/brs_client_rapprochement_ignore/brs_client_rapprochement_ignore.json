@@ -6,7 +6,20 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": ["client", "motif", "column_break_1", "auteur", "date_ignore"],
+ "field_order": [
+  "client",
+  "motif",
+  "column_break_1",
+  "auteur",
+  "date_ignore",
+  "section_situation",
+  "delta_paiement",
+  "delta_bl",
+  "column_break_situation",
+  "commandes",
+  "bl",
+  "regle"
+ ],
  "fields": [
   {
    "fieldname": "client",
@@ -23,7 +36,10 @@
    "in_list_view": 1,
    "label": "Pourquoi l'écart est accepté"
   },
-  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
   {
    "fieldname": "auteur",
    "fieldtype": "Link",
@@ -36,6 +52,46 @@
    "fieldtype": "Datetime",
    "label": "Décidé le",
    "read_only": 1
+  },
+  {
+   "description": "L-exclusion ne vaut que pour CETTE situation. Si les chiffres du client bougent ensuite, il ressort de lui-même dans la liste.",
+   "fieldname": "section_situation",
+   "fieldtype": "Section Break",
+   "label": "Situation au moment de la décision"
+  },
+  {
+   "fieldname": "delta_paiement",
+   "fieldtype": "Currency",
+   "label": "Écart de règlement",
+   "read_only": 1
+  },
+  {
+   "fieldname": "delta_bl",
+   "fieldtype": "Currency",
+   "label": "Écart de livraison",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_situation",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "commandes",
+   "fieldtype": "Currency",
+   "label": "Commandes TTC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bl",
+   "fieldtype": "Currency",
+   "label": "BL validés",
+   "read_only": 1
+  },
+  {
+   "fieldname": "regle",
+   "fieldtype": "Currency",
+   "label": "Réglé",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
@@ -46,10 +102,26 @@
  "name": "BRS Client Rapprochement Ignore",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "role": "System Manager",
-   "share": 1, "write": 1},
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "role": "Accounts Manager",
-   "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "modified",
  "sort_order": "DESC",

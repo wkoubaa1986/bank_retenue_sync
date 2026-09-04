@@ -155,11 +155,21 @@ def avances() -> dict:
 
 
 def ignores() -> dict:
-    """{client: motif} — les clients dont on a décidé que l'écart ne se corrigerait pas."""
+    """{client: {motif, deltas au moment de la décision}} — les exclusions et leur contexte.
+
+    ⚠️ UNE EXCLUSION NE VAUT QUE POUR LA SITUATION QU'ON A REGARDÉE. « Cet écart-là est
+    normal » n'est pas « ce client ne m'intéressera plus jamais » : sans mémoire de l'état
+    d'alors, un nouvel impayé chez un client déjà écarté resterait invisible pour toujours
+    (demande utilisateur 04/09/2026). On garde donc les deux deltas du jour de la décision, et
+    le client ressort dès qu'ils bougent.
+    """
     if not frappe.db.exists("DocType", DOCTYPE_IGNORE):
         return {}
-    return {r.client: (r.motif or "")
-            for r in frappe.get_all(DOCTYPE_IGNORE, fields=["client", "motif"],
+    return {r.client: {"motif": r.motif or "",
+                       "delta_paiement": flt(r.delta_paiement, PRECISION),
+                       "delta_bl": flt(r.delta_bl, PRECISION)}
+            for r in frappe.get_all(DOCTYPE_IGNORE,
+                                    fields=["client", "motif", "delta_paiement", "delta_bl"],
                                     limit_page_length=0)}
 
 
@@ -248,8 +258,8 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             # parfaitement à jour.
             "delta_paiement": flt(regle - reprise - cde_total, PRECISION),
             "delta_bl": flt(bl_total - cde_total, PRECISION),
-            "ignore": c.name in ign,
-            "motif": ign.get(c.name, ""),
+            "ignore": False,
+            "motif": "",
         }
 
         # LE DÉTAIL PAR TYPE, trié du plus gros au plus petit — c'est ainsi qu'on lit une
@@ -290,6 +300,25 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         ligne["ecart_paiement"] = ecart_significatif(ligne["delta_paiement"], seuils["montant"])
         ligne["ecart_bl"] = ecart_significatif(ligne["delta_bl"], seuils["bl"])
         ligne["en_ecart"] = ligne["ecart_paiement"] or ligne["ecart_bl"]
+
+        # L'exclusion ne tient que tant que la situation n'a pas bougé.
+        decision = ign.get(c.name)
+        if decision:
+            ligne["motif"] = decision["motif"]
+            bouge = (ecart_significatif(ligne["delta_paiement"] - decision["delta_paiement"],
+                                        seuils["montant"])
+                     or ecart_significatif(ligne["delta_bl"] - decision["delta_bl"],
+                                           seuils["bl"]))
+            ligne["ignore"] = not bouge
+            ligne["situation_changee"] = bouge
+            if bouge:
+                # On dit CE QUI a changé : sans cela, le client revient sans qu'on sache
+                # pourquoi, et la première réaction serait de le ré-ignorer.
+                ligne["depuis_decision"] = {
+                    "delta_paiement": flt(ligne["delta_paiement"] - decision["delta_paiement"],
+                                          PRECISION),
+                    "delta_bl": flt(ligne["delta_bl"] - decision["delta_bl"], PRECISION),
+                }
 
         # Un client sans aucune pièce n'a rien à dire : il encombrerait la liste sans jamais
         # rien révéler (613 clients sans groupe, la plupart n'ont jamais rien commandé).

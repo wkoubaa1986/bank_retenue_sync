@@ -144,9 +144,8 @@ class RapprochementClient {
     const sans = d.sans_bl ? `${d.sans_bl} client(s) sans aucun BL` : "tous ont au moins un BL";
     const b = (d.livraisons || {}).brouillons;
     const r = (d.livraisons || {}).retours;
-    return [`${this._m(t.delta_bl)} vs commandes`, sans,
-            b ? `${this._m(b.total)} en brouillon (${b.nb})` : "",
-            r ? `${this._m(r.total)} de retours (${r.nb})` : ""]
+    return [b ? `${this._m(b.total)} en brouillon (${b.nb})` : `${this._m(t.delta_bl)} vs commandes`,
+            r ? `${this._m(r.total)} de retours` : sans]
       .filter(Boolean).join(" · ");
   }
 
@@ -163,8 +162,15 @@ class RapprochementClient {
     // d-oeuvre) n-en produit pas. On le signale sans le peindre en rouge.
     const badgeBl = l.nb_commandes && !l.a_des_bl
       ? `<span class="rc-badge rc-jaune">aucun BL</span>` : "";
+    // Un client dont la situation a BOUGÉ depuis son exclusion revient dans la liste, et on
+    // dit ce qui a changé — sinon la première réaction serait de le ré-ignorer sans regarder.
+    const bouge = l.situation_changee && l.depuis_decision;
     const badgeIgn = l.ignore
-      ? `<span class="rc-badge rc-gris" title="${this._esc(l.motif)}">ecart accepte</span>` : "";
+      ? `<span class="rc-badge rc-gris" title="${this._esc(l.motif)}">ecart accepte</span>`
+      : bouge
+        ? `<span class="rc-badge rc-alerte" title="${this._esc(l.motif)}">revenu : reglement
+           ${this._m(l.depuis_decision.delta_paiement)}, livraison
+           ${this._m(l.depuis_decision.delta_bl)} depuis l-exclusion</span>` : "";
     const avances = [
       l.avance_non_affectee ? `<div class="rc-rouge">${this._m(l.avance_non_affectee)} non affectee</div>` : "",
       l.avance_sur_commande ? `<div class="rc-meta">${this._m(l.avance_sur_commande)} sur commande</div>` : "",
@@ -199,7 +205,7 @@ class RapprochementClient {
       <td class="num ${dp}">${this._m(l.delta_paiement)}</td>
       <td class="num ${db}">${this._m(l.delta_bl)}</td>
       <td>${avances}</td>
-      <td class="num">${actions}</td>
+      <td><div class="rc-actions">${actions}</div></td>
     </tr>
     ${this._ventilation(l)}
     ${this._livraisons(l)}`;
@@ -397,9 +403,9 @@ class RapprochementClient {
       fields: [
         { fieldname: "motif", fieldtype: "Small Text", reqd: 1,
           label: __("Pourquoi cet ecart est-il normal ?"),
-          description: __("Litige solde autrement, reprise d-historique, compte de regularisation…") },
+          description: __("Litige solde autrement, reprise d-historique, compte de regularisation… L-exclusion ne vaut que pour la situation actuelle : si les chiffres du client bougent, il ressortira de lui-meme.") },
       ],
-      primary_action_label: __("Accepter l-ecart"),
+      primary_action_label: __("Accepter cet ecart"),
       primary_action: async (v) => {
         try {
           await frappe.call({
