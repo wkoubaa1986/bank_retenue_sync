@@ -104,3 +104,44 @@ class TestPrudenceDeLEcriture(unittest.TestCase):
     def test_la_piece_dit_pourquoi_elle_existe(self):
         """Six mois plus tard, personne ne doit se demander d'où sort cette dette."""
         self.assertIn("encaissement partiel", inspect.getsource(D._creer_dette))
+
+
+class TestEcheancierRemisDAplomb(unittest.TestCase):
+    """L'échéancier doit suivre la dette rétablie, sinon le prochain encaissement ne fera rien.
+
+    ⚠️ Le Server Script cherche une ligne d'échéancier dont le montant ÉGALE la dette annoncée :
+
+        if iterm.mode_of_payment == "Dette non payée" and iterm.payment_amount == ipay.valeur:
+
+    Après réparation, SAL-ORD-2026-03046 portait encore « Dette non payée 708,00 » pour une
+    dette réelle de 534,781. Aucune correspondance : le script serait passé sans rien faire et
+    sans le dire.
+    """
+
+    def source(self):
+        return inspect.getsource(D._rafraichir_echeancier)
+
+    def test_seul_un_echeancier_a_UNE_ligne_de_dette_est_touche(self):
+        """Un échéancier composite se rectifie à la main, pas au jugé."""
+        self.assertIn("len(dettes) != 1", self.source())
+
+    def test_l_echeancier_retombe_sur_le_total_de_la_commande(self):
+        """Réduire la seule ligne de dette laisserait un échéancier qui ne somme plus au grand
+        total — ERPNext le refuse à la première réouverture de la commande."""
+        src = self.source()
+        self.assertIn("deja = flt(flt(cas[\"total\"]) - autres", src)
+        self.assertIn('"payment_amount": deja', src)
+
+    def test_le_complement_est_pose_meme_si_la_dette_etait_deja_bonne(self):
+        """⚠️ Une première version rendait la main dès que la ligne de dette valait le bon
+        montant, et laissait l'échéancier à 534,781 pour une commande de 708,00."""
+        self.assertNotIn("< 0.005:\n        return None", self.source())
+
+    def test_le_libelle_ne_surestime_rien(self):
+        """Cette ligne porte le déjà-réglé ET le reliquat que le compte du client ne réclamait
+        pas — 6,650 DT sur FM WATER PLUS. L'appeler « déjà encaissé » tout court serait faux."""
+        self.assertIn("reliquat non réclamé", self.source())
+
+    def test_seule_une_commande_est_concernee(self):
+        """Une facture n'a pas d'échéancier de commande à rectifier."""
+        self.assertIn('cas["cible_type"] != "Sales Order"', self.source())

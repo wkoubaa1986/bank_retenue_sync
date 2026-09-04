@@ -225,8 +225,14 @@ def _creer_dette(cas: dict):
     pe.received_amount = cas["montant"]
     pe.reference_no = cas["cible"]
     pe.reference_date = frappe.utils.nowdate()
-    pe.remarks = ("Dette rétablie : un encaissement partiel avait supprimé la pièce entière "
-                  "au lieu d'en laisser le reste (commande %s)." % cas["commande"])
+    # ⚠️ SANS `custom_remarks`, ERPNEXT RÉÉCRIT LA REMARQUE. `set_remarks()` regénère le texte
+    # standard (« Amount TND … received from … ») à la validation et efface l'explication —
+    # constaté sur ACC-PAY-2026-06659, où le motif du rétablissement avait disparu. La case
+    # `custom_remarks` est précisément là pour figer un texte écrit à la main.
+    pe.custom_remarks = 1
+    pe.remarks = ("Dette rétablie le %s : un encaissement partiel avait supprimé la pièce "
+                  "entière au lieu d'en laisser le reste (commande %s)."
+                  % (frappe.utils.nowdate(), cas["commande"]))
     pe.append("references", {
         "reference_doctype": cas["cible_type"],
         "reference_name": cas["cible"],
@@ -235,7 +241,69 @@ def _creer_dette(cas: dict):
     pe.flags.ignore_permissions = True
     pe.insert()
     pe.submit()
+    _rafraichir_echeancier(cas)
     return pe.name
+
+
+def _rafraichir_echeancier(cas: dict):
+    """Remet l'échéancier de la commande en accord avec la dette rétablie.
+
+    ⚠️ SANS CELA, LE PROCHAIN ENCAISSEMENT NE FERA RIEN, EN SILENCE. Le Server Script cherche
+    une ligne d'échéancier dont le montant ÉGALE la dette annoncée :
+
+        if iterm.mode_of_payment == "Dette non payée" and iterm.payment_amount == ipay.valeur:
+
+    Sur SAL-ORD-2026-03046, l'échéancier porte encore la ligne d'origine — « Dette non payée
+    708,00 » — alors que la dette réelle vaut 534,781. Aucune correspondance : le script
+    passerait sans rien faire et sans le dire.
+
+    On ne touche QUE la ligne de dette, et seulement si elle est seule de son espèce : un
+    échéancier composite se rectifie à la main, pas au jugé.
+    """
+    if cas["cible_type"] != "Sales Order":
+        return None
+    lignes = frappe.get_all(
+        "Payment Schedule", filters={"parent": cas["cible"], "parenttype": "Sales Order"},
+        fields=["name", "mode_of_payment", "payment_amount"], limit_page_length=0)
+    dettes = [l for l in lignes if l["mode_of_payment"] == MODE_DETTE]
+    if len(dettes) != 1:
+        return None
+    ligne = dettes[0]
+    avant = flt(ligne["payment_amount"])
+    # ⚠️ NE PAS SORTIR TOT SI LA LIGNE DE DETTE EST DÉJÀ BONNE. Le complément qui fait retomber
+    # l'échéancier sur le total est une AUTRE question : une première version rendait la main
+    # dès que la dette était au bon montant et laissait l'échéancier à 534,781 pour une commande
+    # de 708,00.
+    if abs(avant - cas["montant"]) >= 0.005:
+        frappe.db.set_value("Payment Schedule", ligne["name"],
+                            {"payment_amount": cas["montant"],
+                             "description": "Reste de la dette après encaissement partiel"},
+                            update_modified=False)
+
+    # ⚠️ ET L'ÉCHÉANCIER DOIT RETOMBER SUR LE TOTAL DE LA COMMANDE. Réduire la seule ligne de
+    # dette de 708 à 534,781 laisserait un échéancier qui ne somme plus au grand total — ERPNext
+    # le refuse à la première réouverture de la commande. On pose donc en face une ligne de ce
+    # qui a DÉJÀ été encaissé, celle que le script aurait dû écrire lui-même.
+    autres = sum(flt(l["payment_amount"]) for l in lignes if l["name"] != ligne["name"])
+    deja = flt(flt(cas["total"]) - autres - flt(cas["montant"]), PRECISION)
+    pose = None
+    if deja > 0.005:
+        pose = frappe.get_doc({
+            "doctype": "Payment Schedule",
+            "parent": cas["cible"], "parenttype": "Sales Order",
+            "parentfield": "payment_schedule", "docstatus": 1,
+            "due_date": frappe.utils.nowdate(),
+            "mode_of_payment": "Espèces",
+            "payment_amount": deja,
+            # Le libellé ne surestime rien : cette ligne porte ce qui a déjà été réglé ET,
+            # le cas échéant, le reliquat que le compte du client ne réclamait pas (6,650 DT
+            # sur FM WATER PLUS, écart entre le trou de la commande et la dette réelle).
+            "description": "Déjà réglé, et reliquat non réclamé, avant rétablissement de la dette",
+        })
+        pose.flags.ignore_permissions = True
+        pose.insert()
+    return {"ligne": ligne["name"], "avant": avant, "apres": cas["montant"],
+            "deja_encaisse": deja, "ligne_posee": pose.name if pose else None}
 
 
 def reparer(insert=False, limite=None, clients=None) -> dict:
