@@ -176,6 +176,7 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     # Lus UNE fois : `lignes` boucle sur des milliers de clients, et un get_single_value par
     # ligne rechargerait le réglage autant de fois.
     seuils = tolerances()
+    vent = ventilation()
 
     out = []
     for c in _clients(groupe, type_client, recherche):
@@ -208,6 +209,24 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             "ignore": c.name in ign,
             "motif": ign.get(c.name, ""),
         }
+
+        # LE DÉTAIL PAR TYPE, trié du plus gros au plus petit — c'est ainsi qu'on lit une
+        # ventilation : par ce qui pèse.
+        cats = sorted(vent.get(c.name, []), key=lambda x: -abs(x["total"]))
+        if jrn_net:
+            # L'écriture de journal est un type de règlement à part entière : réduction
+            # accordée sur commande, avoir, régularisation. Elle n'a ni mode ni compte de
+            # destination, d'où sa catégorie propre — et elle n'est PAS de l'argent encaissé.
+            cats.append({"cle": CLE_JOURNAL, "mode": "Écriture de journal", "compte": "",
+                         "groupe": "", "libelle": "Écriture de journal — réduction, avoir, "
+                                                  "régularisation",
+                         "encaisse": False, "total": jrn_net, "nb": jrn_nb})
+        ligne["ventilation"] = cats
+        # ⚠️ CE QUI EST VRAIMENT ARRIVÉ. « Réglé » compte tout, y compris les dettes non payées
+        # (71 706 DT au total) et les pertes : des pièces qui soldent une commande sans qu-un
+        # dinar ait bougé. Les distinguer est le seul moyen de savoir ce qu-on a encaissé.
+        ligne["encaisse_reel"] = flt(sum(x["total"] for x in cats if x["encaisse"]), PRECISION)
+        ligne["non_encaisse"] = flt(ligne["regle"] - ligne["encaisse_reel"], PRECISION)
         ligne["ecart_paiement"] = ecart_significatif(ligne["delta_paiement"], seuils["montant"])
         ligne["ecart_bl"] = ecart_significatif(ligne["delta_bl"], seuils["bl"])
         ligne["en_ecart"] = ligne["ecart_paiement"] or ligne["ecart_bl"]
@@ -221,4 +240,76 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         if frappe.utils.cint(seulement_ecarts) and not ligne["en_ecart"]:
             continue
         out.append(ligne)
+    return out
+
+
+# ---------------------------------------------------------------- ventilation
+
+# ⚠️ `account_type` NE SERT À RIEN ICI. Dans ce plan comptable, TOUS les comptes de destination
+# sont typés « Bank » ou « Cash » — y compris « Dettes », « Chèques », « Perte de non paiement »
+# et « Livraison Aramex ». S'y fier ferait passer 71 706 DT de dettes non payées pour de
+# l'argent encaissé. C'est le GROUPE PARENT qui tranche, et lui seul (mesuré le 04/09/2026).
+GROUPE_BANQUE = "Comptes bancaires - A&S"
+GROUPE_CAISSE = "Liquidités - A&S"
+GROUPE_CREANCE = "Liste créance - A&S"
+
+#: Ce que devient le groupe dans le libellé d'une catégorie. Un groupe inconnu garde son nom :
+#: une nouvelle famille de comptes apparaît alors d'elle-même, sans toucher au code.
+LIBELLE_GROUPE = {
+    GROUPE_BANQUE: "encaissé en banque",
+    GROUPE_CAISSE: "en caisse",
+    GROUPE_CREANCE: "en attente, pas encore encaissé",
+    "Charges Indirectes - A&S": "perte assumée",
+    "Actifs d'Impôts - A&S": "retenue à la source",
+}
+
+#: Les groupes où l'argent est RÉELLEMENT arrivé. Tout le reste est une promesse : un chèque en
+#: portefeuille, une dette portée au compte de créance, une retenue à la source, une perte.
+GROUPES_ENCAISSES = (GROUPE_BANQUE, GROUPE_CAISSE)
+
+CLE_JOURNAL = "journal"
+
+
+def _groupes_de_comptes() -> dict:
+    """{compte: groupe parent} — une requête, pas une par ligne."""
+    return {r.name: r.parent_account or ""
+            for r in frappe.get_all("Account", filters={"is_group": 0},
+                                    fields=["name", "parent_account"], limit_page_length=0)}
+
+
+def categorie(mode, compte, groupe) -> dict:
+    """La catégorie d'un règlement : son mode ET l'endroit où l'argent a atterri.
+
+    Les deux ensemble, jamais l'un sans l'autre. « Chèque » ne dit pas s'il a été encaissé ;
+    « compte bancaire » ne dit pas par quel moyen. C'est leur croisement qui produit les
+    indicateurs demandés — chèques encaissés, chèques en portefeuille, espèces en caisse,
+    espèces versées en banque — et il en produira d'autres tout seul si un mode ou un compte
+    apparaît.
+    """
+    mode = (mode or "Sans mode").strip()
+    suffixe = LIBELLE_GROUPE.get(groupe, (groupe or "compte inconnu").replace(" - A&S", ""))
+    return {
+        "cle": "%s|%s" % (mode, compte or ""),
+        "mode": mode,
+        "compte": compte or "",
+        "groupe": groupe or "",
+        "libelle": "%s — %s" % (mode, suffixe),
+        "encaisse": groupe in GROUPES_ENCAISSES,
+    }
+
+
+def ventilation() -> dict:
+    """{client: [catégorie…]} — le détail des règlements, par mode et par destination."""
+    groupes = _groupes_de_comptes()
+    out = {}
+    for r in frappe.db.sql(
+            """SELECT party AS cle, mode_of_payment AS mode, paid_to AS compte,
+                      SUM(paid_amount) AS total, COUNT(*) AS nb
+               FROM `tabPayment Entry`
+               WHERE docstatus = 1 AND payment_type = 'Receive' AND party_type = 'Customer'
+                 AND party IS NOT NULL
+               GROUP BY party, mode_of_payment, paid_to""", as_dict=True):
+        cat = categorie(r.mode, r.compte, groupes.get(r.compte, ""))
+        cat.update({"total": flt(r.total, PRECISION), "nb": int(r.nb or 0)})
+        out.setdefault(r.cle, []).append(cat)
     return out

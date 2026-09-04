@@ -28,6 +28,13 @@ class RapprochementClient {
     this.$root.on("input", '[data-f="recherche"]', relire);
     this.$root.on("click", '[data-action="actualiser"]', () => this._charger());
     this.$root.on("click", '[data-action="excel"]', () => this._exporter());
+    this.$root.on("click", "[data-ventiler]", (e) => {
+      const nom = $(e.currentTarget).attr("data-ventiler");
+      const $d = this.$root.find(`[data-ventil-de="${CSS.escape(nom)}"]`);
+      const ouvert = !$d.prop("hidden");
+      $d.prop("hidden", ouvert);
+      $(e.currentTarget).text(ouvert ? "Types" : "Replier");
+    });
     this.$root.on("click", "[data-detail]", (e) =>
       this._detail($(e.currentTarget).attr("data-detail")));
     this.$root.on("click", "[data-ignorer]", (e) =>
@@ -150,6 +157,8 @@ class RapprochementClient {
     ].join("") || `<span class="rc-meta">—</span>`;
 
     const actions = [
+      l.ventilation && l.ventilation.length
+        ? `<button class="rc-act" data-ventiler="${this._esc(l.client)}">Types</button>` : "",
       `<button class="rc-act" data-detail="${this._esc(l.client)}">Detail</button>`,
       d.peut_decider
         ? (l.ignore
@@ -175,7 +184,40 @@ class RapprochementClient {
       <td class="num ${db}">${this._m(l.delta_bl)}</td>
       <td>${avances}</td>
       <td class="num">${actions}</td>
-    </tr>`;
+    </tr>
+    ${this._ventilation(l)}`;
+  }
+
+  /** Le detail des reglements PAR TYPE, deplie sous la ligne du client.
+   *
+   * ⚠️ « Regle » ne veut pas dire « encaisse ». Une piece de mode « Dette non payee » solde une
+   * commande sans qu-un dinar ait bouge — 71 706 DT sur l-ensemble de la base — et un cheque en
+   * portefeuille n-est pas encore de l-argent. C-est le GROUPE du compte de destination qui
+   * tranche, jamais son `account_type` : dans ce plan comptable, Dettes, Cheques et Perte sont
+   * tous types « Bank ».
+   */
+  _ventilation(l) {
+    const cats = l.ventilation || [];
+    if (!cats.length) return "";
+    const lignes = cats.map((c) => `
+      <div class="rc-vent">
+        <span class="rc-pastille ${c.encaisse ? "rc-ok" : "rc-jaune"}">${
+          c.encaisse ? "encaisse" : "en attente"}</span>
+        <span>${this._esc(c.libelle)}</span>
+        <span class="rc-meta">${this._esc(c.compte || "")}</span>
+        <span class="num">${this._m(c.total)}</span>
+        <span class="rc-meta num">${c.nb} piece(s)</span>
+      </div>`).join("");
+    return `<tr class="rc-detail" data-ventil-de="${this._esc(l.client)}" hidden>
+      <td colspan="10">
+        <div class="rc-vents">
+          <div class="rc-vent-tete">Reglements par type —
+            <b class="rc-vert">${this._m(l.encaisse_reel)} encaisses</b>
+            ${l.non_encaisse
+              ? ` · <b class="rc-jaune-txt">${this._m(l.non_encaisse)} en attente ou sans
+                  mouvement d-argent</b>` : ""}</div>
+          ${lignes}
+        </div></td></tr>`;
   }
 
   async _detail(client) {

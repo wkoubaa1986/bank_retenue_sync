@@ -202,3 +202,81 @@ class TestPaiementsGroupes(unittest.TestCase):
 
     def test_les_affectations_annulees_sont_ecartees(self):
         self.assertIn("per.docstatus < 2", self.source())
+
+
+class TestVentilationParType(unittest.TestCase):
+    """Le détail des règlements par TYPE, déplié sous chaque client.
+
+    ⚠️ « RÉGLÉ » NE VEUT PAS DIRE « ENCAISSÉ ». Une pièce de mode « Dette non payée » solde une
+    commande sans qu'un dinar ait bougé, un chèque en portefeuille n'est pas encore de l'argent,
+    et une retenue à la source n'arrivera jamais sur le compte. Sur la base réelle, 66 059 DT
+    sur 997 770 sont dans ce cas.
+    """
+
+    def test_le_type_de_compte_ne_peut_PAS_servir_a_trancher(self):
+        """⚠️ MESURÉ LE 04/09/2026 : dans ce plan comptable, TOUS les comptes de destination
+        sont typés « Bank » ou « Cash » — y compris Dettes, Chèques, Livraison Aramex et Perte
+        de non paiement. S'y fier ferait passer les dettes non payées pour de l'argent reçu.
+        C'est le GROUPE PARENT qui tranche."""
+        import inspect
+
+        src = inspect.getsource(R._groupes_de_comptes)
+        self.assertIn("parent_account", src)
+        self.assertNotIn("account_type", src)
+
+    def test_seuls_la_banque_et_la_caisse_sont_de_l_argent_recu(self):
+        self.assertEqual(R.GROUPES_ENCAISSES, (R.GROUPE_BANQUE, R.GROUPE_CAISSE))
+        self.assertNotIn(R.GROUPE_CREANCE, R.GROUPES_ENCAISSES)
+
+    def test_un_cheque_encaisse_et_un_cheque_en_portefeuille_sont_deux_types(self):
+        """C'est la distinction demandée : le mode seul ne dit pas si l'argent est arrivé."""
+        encaisse = R.categorie("Chèque", "STE430127B - Zitouna - A&S", R.GROUPE_BANQUE)
+        portefeuille = R.categorie("Chèque", "Chèques - A&S", R.GROUPE_CREANCE)
+        self.assertTrue(encaisse["encaisse"])
+        self.assertFalse(portefeuille["encaisse"])
+        self.assertNotEqual(encaisse["cle"], portefeuille["cle"])
+        self.assertIn("encaissé en banque", encaisse["libelle"])
+        self.assertIn("pas encore encaissé", portefeuille["libelle"])
+
+    def test_les_especes_de_caisse_et_versees_en_banque_se_distinguent(self):
+        caisse = R.categorie("Espèces", "Espèces - A&S", R.GROUPE_CAISSE)
+        versees = R.categorie("Espèces", "Compte TAWFIR - Banque Zitouna - A&S", R.GROUPE_BANQUE)
+        self.assertTrue(caisse["encaisse"] and versees["encaisse"])
+        self.assertNotEqual(caisse["libelle"], versees["libelle"])
+
+    def test_une_dette_non_payee_n_est_pas_de_l_argent(self):
+        c = R.categorie("Dette non payée", "Dettes - A&S", R.GROUPE_CREANCE)
+        self.assertFalse(c["encaisse"])
+
+    def test_un_groupe_inconnu_garde_son_nom_au_lieu_de_disparaitre(self):
+        """Une nouvelle famille de comptes doit apparaître d'elle-même dans la ventilation,
+        sans qu'on touche au code — sinon elle serait silencieusement rangée ailleurs."""
+        c = R.categorie("Chèque", "Nouveau compte - A&S", "Famille inedite - A&S")
+        self.assertIn("Famille inedite", c["libelle"])
+        self.assertFalse(c["encaisse"])
+
+    def test_un_mode_absent_ne_fait_pas_disparaitre_la_ligne(self):
+        c = R.categorie(None, "Espèces - A&S", R.GROUPE_CAISSE)
+        self.assertIn("Sans mode", c["libelle"])
+
+    def test_la_cle_croise_le_mode_ET_le_compte(self):
+        """Deux comptes bancaires différents restent deux lignes : le total par compte est ce
+        qui permet de retrouver l'argent."""
+        a = R.categorie("Virement", "STE430127B - Zitouna - A&S", R.GROUPE_BANQUE)
+        b = R.categorie("Virement", "Economiq Aqua Solution - A&S", R.GROUPE_BANQUE)
+        self.assertNotEqual(a["cle"], b["cle"])
+
+    def test_l_ecriture_de_journal_est_un_type_a_part_et_non_encaisse(self):
+        """Réduction accordée, avoir, régularisation : cela solde une commande, cela ne fait
+        pas entrer d'argent."""
+        import inspect
+
+        src = inspect.getsource(R.lignes)
+        self.assertIn("CLE_JOURNAL", src)
+        self.assertIn('"encaisse": False', src)
+
+    def test_la_ventilation_est_ramenee_en_une_requete(self):
+        import inspect
+
+        self.assertIn("GROUP BY party, mode_of_payment, paid_to",
+                      inspect.getsource(R.ventilation))
