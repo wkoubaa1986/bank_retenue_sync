@@ -20,3 +20,4 @@ bank_retenue_sync.patches.politique_achat_local #2026-08-13-ecarts
 bank_retenue_sync.patches.politique_achat_local #2026-08-13-tej
 bank_retenue_sync.patches.initialiser_seuils_rapprochement
 bank_retenue_sync.patches.retablir_dette_fm_water_plus
+bank_retenue_sync.patches.depot_tej_piece_dynamique

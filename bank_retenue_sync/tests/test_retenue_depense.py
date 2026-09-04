@@ -5,6 +5,7 @@ Convention : `unittest.TestCase` pur. Le modèle est ACC-JV-2026-00698 (04/09/20
 """
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from bank_retenue_sync.achat import retenue_depense as D
@@ -180,7 +181,7 @@ class TestSoumissionEnTacheDeFond(unittest.TestCase):
         self.assertLess(src.index("M_depot.reserver"), src.index("frappe.enqueue"))
 
     def test_un_depot_en_analyse_bloque_un_second_envoi(self):
-        self.assertIn("M_depot.en_cours(doc.journal_entry)", self.source(F.emettre))
+        self.assertIn("M_depot.en_cours(doc.journal_entry", self.source(F.emettre))
 
     def test_la_REPETITION_reste_synchrone(self):
         """Elle ne déclare rien, et son résultat n'a d'intérêt que tout de suite, sous les yeux
@@ -343,3 +344,64 @@ class TestChoixDeLaPieceJointe(unittest.TestCase):
 
         self.assertIn("fichier", inspect.signature(F.lire_facture).parameters)
         self.assertIn('"pieces": pieces', inspect.getsource(F.lire_facture))
+
+
+class TestDepotPourUneEcriture(unittest.TestCase):
+    """⚠️ LE DÉPÔT DOIT POUVOIR POINTER UNE ÉCRITURE, PAS SEULEMENT UNE FACTURE.
+
+    `BRS Depot TEJ.facture` était un lien vers « Purchase Invoice » et rien d'autre. Or une
+    retenue se prélève aussi sur une dépense de caisse, qui ne produit pas de facture mais une
+    écriture de journal. La réservation levait alors :
+
+        LinkValidationError : Impossible de trouver Facture d'achat : ACC-JV-2026-00698
+
+    Découvert le 05/09/2026 en voulant enregistrer, à la main, le dépôt IN260054 déjà parti sur
+    le portail. La soumission asynchrone depuis une écriture n'aurait donc même pas pu commencer.
+    """
+
+    def source(self, fn):
+        return inspect.getsource(fn)
+
+    def test_le_champ_est_un_lien_dynamique(self):
+        import frappe
+
+        champ = frappe.get_meta("BRS Depot TEJ").get_field("facture")
+        self.assertEqual(champ.fieldtype, "Dynamic Link")
+        self.assertEqual(champ.options, "piece_type")
+
+    def test_les_deux_natures_de_piece_sont_offertes(self):
+        import frappe
+
+        champ = frappe.get_meta("BRS Depot TEJ").get_field("piece_type")
+        self.assertEqual(set((champ.options or "").split("\n")),
+                         {"Purchase Invoice", "Journal Entry"})
+
+    def test_la_reservation_declare_la_nature(self):
+        """Le champ est obligatoire : sans lui, plus aucune réservation ne passerait — pas même
+        celles des factures d'achat."""
+        from bank_retenue_sync.tej import depot as D
+
+        src = inspect.getsource(D)
+        self.assertEqual(src.count('doc.piece_type = ctx.get("piece_type")'), 2)
+
+    def test_le_defaut_reste_la_facture_d_achat(self):
+        """Tout le code existant passe un contexte sans `piece_type` : il doit continuer de
+        marcher exactement comme avant."""
+        from bank_retenue_sync.tej import depot as D
+
+        self.assertIn('ctx.get("piece_type") or "Purchase Invoice"', inspect.getsource(D))
+
+    def test_le_contexte_d_une_ecriture_annonce_sa_nature(self):
+        self.assertIn('"piece_type": "Journal Entry"', self.source(F.contexte))
+
+    def test_la_barriere_anti_doublon_distingue_les_natures(self):
+        src = self.source(F.emettre)
+        self.assertIn('piece_type="Journal Entry"', src)
+
+    def test_les_lignes_anciennes_sont_rattrapees(self):
+        """Un lien dynamique sans son champ de type ne valide plus rien : les lignes déjà en
+        base seraient devenues invalides au premier enregistrement."""
+        import frappe
+
+        self.assertEqual(frappe.db.count("BRS Depot TEJ",
+                                         {"piece_type": ["in", ["", None]]}), 0)

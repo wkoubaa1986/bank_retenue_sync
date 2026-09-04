@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "piece_type",
   "facture",
   "fournisseur",
   "beneficiaire",
@@ -27,12 +28,22 @@
  ],
  "fields": [
   {
-   "fieldname": "facture",
-   "fieldtype": "Link",
-   "label": "Facture d'achat",
-   "options": "Purchase Invoice",
-   "in_list_view": 1,
+   "default": "Purchase Invoice",
+   "description": "Une retenue se prélève sur une facture d-achat, ou directement sur une écriture de journal quand la dépense est passée par la caisse.",
+   "fieldname": "piece_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Nature de la pièce",
+   "options": "Purchase Invoice\nJournal Entry",
+   "reqd": 1
+  },
+  {
    "columns": 2,
+   "fieldname": "facture",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "label": "Pièce d'origine",
+   "options": "piece_type",
    "reqd": 1,
    "search_index": 1
   },
@@ -55,12 +66,12 @@
    "fieldtype": "Column Break"
   },
   {
+   "columns": 2,
    "description": "Le n° de facture fournisseur. C'est la SEULE reference que nous maitrisons avant que TEJ n'attribue son identifiant, et le filtre de « Mes certificats generes ».",
    "fieldname": "numero_declarant",
    "fieldtype": "Data",
-   "label": "Numero chez le declarant",
    "in_list_view": 1,
-   "columns": 2,
+   "label": "Numero chez le declarant",
    "read_only": 1,
    "search_index": 1
   },
@@ -82,24 +93,24 @@
    "label": "Depot"
   },
   {
+   "columns": 1,
    "default": "en_envoi",
    "description": "en_envoi : la soumission est partie en tache de fond, on ne sait pas encore si le portail l'a acceptee. en_analyse : le depot existe chez l'administration, TEJ ne l'a pas encore analyse — RESOUMETTRE PRODUIRAIT UN DOUBLON. genere : le certificat existe, sa reference est renseignee. incertain : la tache ne s'est jamais conclue — A VERIFIER SUR LE PORTAIL AVANT TOUT NOUVEAU GESTE. echec / refuse / abandonne : tranches a la main.",
    "fieldname": "statut",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Statut",
    "options": "en_envoi\nen_analyse\ngenere\nincertain\nechec\nrefuse\nabandonne",
-   "in_list_view": 1,
-   "columns": 1,
    "reqd": 1,
    "search_index": 1
   },
   {
+   "columns": 2,
    "description": "Le numero rendu par TEJ au clic sur « Valider » (ex. IN260051). Il existe AVANT le certificat, et c'est la seule preuve que la declaration est partie.",
    "fieldname": "numero_depot",
    "fieldtype": "Data",
-   "label": "Numero de depot",
    "in_list_view": 1,
-   "columns": 2,
+   "label": "Numero de depot",
    "read_only": 1,
    "search_index": 1
   },

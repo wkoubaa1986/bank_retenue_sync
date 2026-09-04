@@ -219,6 +219,8 @@ def contexte(ligne: str) -> dict:
         "montant_ht": ht,
         "taux_tva": taux,
         "retenue_facture": flt(doc.retenue, 3),
+        # La nature de la piece : c'est elle qui permet au depot de pointer une ECRITURE.
+        "piece_type": "Journal Entry",
         "exercice": getdate(doc.date_piece).year if doc.date_piece else None,
         "deja_emis": doc.certificat or None,
         "manques": manques,
@@ -278,7 +280,7 @@ def emettre(ligne: str, dry_run: bool = True) -> dict:
 
     # Les controles locaux restent synchrones : ils sont instantanes, et un refus doit se voir
     # tout de suite plutot que d'arriver par une notification trois minutes plus tard.
-    en_cours = M_depot.en_cours(doc.journal_entry)
+    en_cours = M_depot.en_cours(doc.journal_entry, piece_type="Journal Entry")
     if en_cours:
         return {"statut": "depot en analyse", "depot": M_depot.vue(en_cours), **ctx}
 
@@ -331,7 +333,7 @@ def suivre(ligne: str) -> dict:
     """Ou en est la soumission lancee en file. -> dict. L'ecran interroge, il n'attend pas."""
     frappe.only_for(["System Manager", "Accounts Manager", "Accounts User"])
     doc = frappe.get_doc(DOCTYPE, ligne)
-    depot = M_depot.en_cours(doc.journal_entry)
+    depot = M_depot.en_cours(doc.journal_entry, piece_type="Journal Entry")
     return {
         "statut": doc.statut,
         "certificat": doc.certificat,

@@ -97,13 +97,18 @@ def lire_statut(reponse) -> dict:
     }
 
 
-def en_cours(facture: str, sauf: str = None):
-    """Le depot non conclu de cette facture, ou None. C'est la quatrieme barriere anti-doublon.
+def en_cours(facture: str, sauf: str = None, piece_type: str = None):
+    """Le depot non conclu de cette piece, ou None. C'est la quatrieme barriere anti-doublon.
 
     `sauf` : le nom d'une ligne a ignorer — celle que la tache de fond vient de reserver pour
     elle-meme. Sans ce parametre, la soumission se bloquerait sur sa propre reservation.
+
+    `piece_type` : « Purchase Invoice » ou « Journal Entry ». Facultatif — deux pieces de nature
+    differente ne portent jamais le meme nom ici — mais le passer rend le filtre exact.
     """
     filtres = {"facture": facture, "statut": ["in", EN_COURS]}
+    if piece_type:
+        filtres["piece_type"] = piece_type
     if sauf:
         filtres["name"] = ["!=", sauf]
     nom = frappe.db.get_value(DOCTYPE, filtres, "name")
@@ -184,6 +189,12 @@ def reserver(ctx: dict) -> str:
     plus cher.
     """
     doc = frappe.new_doc(DOCTYPE)
+    # ⚠️ LA NATURE DE LA PIECE SE DECLARE. `facture` est un lien DYNAMIQUE depuis le 05/09/2026 :
+    # une retenue se preleve sur une facture d'achat, mais aussi sur une ECRITURE quand la
+    # depense est passee par la caisse. Sans ce champ, la reservation levait
+    # « LinkValidationError : Impossible de trouver Facture d'achat : ACC-JV-2026-00698 » — et la
+    # soumission depuis une ecriture ne pouvait meme pas commencer.
+    doc.piece_type = ctx.get("piece_type") or "Purchase Invoice"
     doc.facture = ctx.get("facture")
     doc.fournisseur = ctx.get("fournisseur")
     doc.beneficiaire = ctx.get("matricule")
@@ -232,6 +243,12 @@ def enregistrer(ctx: dict, creation: dict, job: str = None) -> str:
     qu'il soit en base.
     """
     doc = frappe.new_doc(DOCTYPE)
+    # ⚠️ LA NATURE DE LA PIECE SE DECLARE. `facture` est un lien DYNAMIQUE depuis le 05/09/2026 :
+    # une retenue se preleve sur une facture d'achat, mais aussi sur une ECRITURE quand la
+    # depense est passee par la caisse. Sans ce champ, la reservation levait
+    # « LinkValidationError : Impossible de trouver Facture d'achat : ACC-JV-2026-00698 » — et la
+    # soumission depuis une ecriture ne pouvait meme pas commencer.
+    doc.piece_type = ctx.get("piece_type") or "Purchase Invoice"
     doc.facture = ctx.get("facture")
     doc.fournisseur = ctx.get("fournisseur")
     doc.beneficiaire = ctx.get("matricule")
