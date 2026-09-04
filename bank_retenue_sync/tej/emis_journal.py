@@ -358,18 +358,71 @@ def completer(journal_entry: str, supplier=None, numero_facture=None) -> dict:
 # ------------------------------------------------------------------ lire la facture
 
 
-def _scan_de(journal_entry: str):
-    """La photo de facture attachee a l'ecriture. -> (contenu, mimetype, nom) | None.
+#: Les extensions que le modele sait lire. Un .docx n'est ni une image ni un PDF : le lui
+#: envoyer ne rend rien, et il y en a dans les pieces jointes reelles (« DETAIL DE VIREMENT.docx »).
+_LISIBLES = (".pdf", ".png", ".jpg", ".jpeg", ".webp")
 
-    La caisse en attache DEUX : le justificatif nomme d'apres le numero de facture, et une copie
-    nommee « facture-<piece> ». N'importe laquelle fait l'affaire — c'est la meme image.
+#: Ce qui DESIGNE une facture, et ce qui designe autre chose. Mesure sur les 16 ecritures de
+#: depense a pieces multiples : on y trouve des pages d'une meme facture (« -p1 », « -p2 »), mais
+#: aussi des documents de PAIEMENT — « DETAIL DE VIREMENT.docx », « Notification de paiement.pdf »,
+#: « Bon de paiement.pdf ». Prendre la premiere piece venue lisait l'avis de virement au lieu de
+#: la facture (04/09/2026).
+_MOTS_FACTURE = ("fac", "facture", "invoice")
+_MOTS_AUTRES = ("paiement", "virement", "notification", "bon de", "chq", "cheque", "chèque",
+                "recu", "reçu", "bordereau")
+
+
+def score_piece(nom) -> int:
+    """A quel point ce nom de fichier ressemble a une FACTURE. Fonction pure, plus haut = mieux.
+
+    Rend -1 pour ce qu'on ne sait pas lire : autant l'ecarter que d'envoyer un .docx au modele.
     """
+    n = (nom or "").lower()
+    if not n.endswith(_LISIBLES):
+        return -1
+    score = 0
+    if any(n.startswith(m) or (" " + m) in n or n.startswith("facture-") for m in _MOTS_FACTURE):
+        score += 10
+    if any(m in n for m in _MOTS_AUTRES):
+        score -= 8
+    # ⚠️ LA PAGE 1 PORTE L'EN-TETE, donc le matricule fiscal. Sur une facture de trois pages,
+    # lire la page 2 ne rend ni le nom ni le matricule.
+    if "-p1" in n or " p1" in n:
+        score += 4
+    elif any(("-p%d" % i) in n or (" p%d" % i) in n for i in range(2, 10)):
+        score -= 4
+    return score
+
+
+def pieces_jointes(journal_entry: str) -> list:
+    """Les pieces jointes de l'ecriture, la plus probable en premier. -> [{nom, score, lisible}]."""
     fichiers = frappe.get_all(
         "File", filters={"attached_to_doctype": "Journal Entry",
                          "attached_to_name": journal_entry},
-        fields=["name", "file_name", "file_url"], order_by="creation")
+        fields=["name", "file_name"], order_by="creation")
+    out = [{"fichier": f.name, "nom": f.file_name or "",
+            "score": score_piece(f.file_name), "lisible": score_piece(f.file_name) >= 0}
+           for f in fichiers]
+    return sorted(out, key=lambda x: -x["score"])
+
+
+def _scan_de(journal_entry: str, fichier: str = None):
+    """La photo de facture attachee a l'ecriture. -> (contenu, mimetype, nom) | None.
+
+    ⚠️ « LA PREMIERE PIECE JOINTE » N'EST PAS « LA FACTURE ». Seize ecritures de depense en
+    portent plusieurs : des pages d'une meme facture, mais aussi des avis de virement, des
+    notifications de paiement, des bons de paiement — et des .docx que le modele ne sait pas
+    lire. On classe donc par ressemblance a une facture (`score_piece`) au lieu de prendre la
+    premiere venue, et `fichier` permet a l'utilisateur de trancher lui-meme.
+    """
+    classees = pieces_jointes(journal_entry)
+    if fichier:
+        classees = [p for p in classees if p["fichier"] == fichier]
+    else:
+        classees = [p for p in classees if p["lisible"]]
     absents = []
-    for f in fichiers:
+    for p in classees:
+        f = frappe._dict({"name": p["fichier"], "file_name": p["nom"]})
         try:
             doc = frappe.get_doc("File", f.name)
             contenu = doc.get_content()
@@ -391,7 +444,7 @@ def _scan_de(journal_entry: str):
 
 
 @frappe.whitelist()
-def lire_facture(journal_entry: str) -> dict:
+def lire_facture(journal_entry: str, fichier: str = None) -> dict:
     """Relit le scan de la facture pour en tirer le fournisseur et son MATRICULE FISCAL.
 
     ⚠️ ON NE CREE RIEN ICI. La lecture propose ; la creation d'une fiche fournisseur est un
@@ -402,11 +455,13 @@ def lire_facture(journal_entry: str) -> dict:
     envoyee au modele l'exclut explicitement (cf. `caisse_depenses._consigne_matricule`).
     """
     frappe.only_for(["System Manager", "Accounts Manager"])
-    scan = _scan_de(journal_entry)
+    pieces = pieces_jointes(journal_entry)
+    scan = _scan_de(journal_entry, fichier)
     if not scan:
-        return {"lu": False, "raison": _("aucune pièce jointe sur cette écriture")}
+        return {"lu": False, "pieces": pieces,
+                "raison": _("aucune pièce jointe sur cette écriture")}
     if isinstance(scan, dict):
-        return {"lu": False,
+        return {"lu": False, "pieces": pieces,
                 "raison": _("la pièce jointe est référencée mais son fichier est introuvable "
                             "sur ce serveur : {0}").format(", ".join(scan["absents"]))}
     contenu, mime, nom_fichier = scan
@@ -435,7 +490,7 @@ def lire_facture(journal_entry: str) -> dict:
     except Exception:
         certain = None
 
-    return {"lu": True, "fichier": nom_fichier, "description": description,
+    return {"lu": True, "fichier": nom_fichier, "pieces": pieces, "description": description,
             "fournisseur": fournisseur, "matricule": mat.strip(),
             "candidat_certain": certain, "candidats": candidats}
 

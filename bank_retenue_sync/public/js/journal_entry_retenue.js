@@ -124,18 +124,40 @@ function fenetre(frm, etat) {
 
 // La lecture PROPOSE, elle ne crée rien : un doublon de fournisseur éparpille ses factures sur
 // deux fiches et aucun solde ne veut plus rien dire. La création est un second bouton.
-async function lire(frm, d) {
+async function lire(frm, d, fichier) {
   const $z = d.fields_dict.lecture.$wrapper.find("[data-resultat]");
   $z.html(`<span class="text-muted">${__("Lecture en cours…")}</span>`);
   let r;
   try {
     r = (await frappe.call({ method: `${API}.lire_facture`, freeze: true,
                              freeze_message: __("Lecture de la facture…"),
-                             args: { journal_entry: frm.doc.name } })).message;
+                             args: { journal_entry: frm.doc.name, fichier: fichier || null },
+                           })).message;
   } catch (e) { $z.empty(); return; }
+  // ⚠️ « LA PREMIERE PIECE JOINTE » N-EST PAS « LA FACTURE ». Une ecriture en porte souvent
+  // plusieurs : des pages d-une meme facture, mais aussi des avis de virement et des bons de
+  // paiement. Le serveur classe et choisit le plus probable — l-ecran montre lequel, et permet
+  // d-en essayer un autre.
+  const autres = (r.pieces || []).filter((p) => p.nom !== r.fichier && p.lisible);
+  const choix = autres.length
+    ? `<div style="margin-top:6px;font-size:12px">${__("Lu sur")} :
+         <b>${frappe.utils.escape_html(r.fichier || "—")}</b> —
+         ${__("essayer plutôt")} ${autres.map(
+           (p) => `<button class="btn btn-xs btn-default" data-piece="${
+             frappe.utils.escape_html(p.fichier)}" style="margin:2px 4px 0 0">${
+             frappe.utils.escape_html(p.nom)}</button>`).join("")}</div>`
+    : "";
   if (!r.lu) {
-    $z.html(`<div class="alert alert-warning" style="margin:0">${
-      frappe.utils.escape_html(r.raison || "")}</div>`);
+    const lisibles = (r.pieces || []).filter((p) => p.lisible);
+    $z.html(`<div class="alert alert-warning" style="margin:0">
+      ${frappe.utils.escape_html(r.raison || "")}
+      ${lisibles.length > 1 ? `<div style="margin-top:6px">${__("Autres pièces jointes")} :
+        ${lisibles.map((p) => `<button class="btn btn-xs btn-default" data-piece="${
+          frappe.utils.escape_html(p.fichier)}" style="margin:2px 4px 0 0">${
+          frappe.utils.escape_html(p.nom)}</button>`).join("")}</div>` : ""}</div>`);
+    $z.find("[data-piece]").on("click", function () {
+      lire(frm, d, $(this).attr("data-piece"));
+    });
     return;
   }
   const esc = frappe.utils.escape_html;
@@ -147,6 +169,7 @@ async function lire(frm, d) {
       <div><b>${__("Matricule fiscal lu")} :</b> ${esc(r.matricule || "—")}</div>
       ${cands ? `<div style="margin-top:6px">${__("Fiches proches — choisissez plutôt :")}
                  ${cands}</div>` : ""}
+      ${choix}
       ${r.matricule
         ? `<button class="btn btn-sm btn-primary" data-creer style="margin-top:8px">${__(
             "Créer la fiche fournisseur avec ce matricule")}</button>`
@@ -154,6 +177,9 @@ async function lire(frm, d) {
             "Sans matricule lu, la fiche ne servirait pas : le portail l-exige. Complétez-le à la main sur la fiche fournisseur."
           )}</div>`}
     </div>`);
+  $z.find("[data-piece]").on("click", function () {
+    lire(frm, d, $(this).attr("data-piece"));
+  });
   $z.find("[data-creer]").on("click", async () => {
     let e;
     try {

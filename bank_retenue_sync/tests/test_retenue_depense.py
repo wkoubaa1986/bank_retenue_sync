@@ -234,3 +234,52 @@ class TestLectureDeLaFacture(unittest.TestCase):
         """`_decrire` a rendu selon les versions un couple ou un tuple plus long : indexer en
         dur casserait à la prochaine évolution de la caisse."""
         self.assertIn("len(lu) > 1", self.source(F.lire_facture))
+
+
+class TestChoixDeLaPieceJointe(unittest.TestCase):
+    """⚠️ « LA PREMIÈRE PIÈCE JOINTE » N'EST PAS « LA FACTURE ».
+
+    Seize écritures de dépense en portent plusieurs. Mesuré le 04/09/2026 :
+      - des PAGES d'une même facture (« -p1 », « -p2 », « -p3 ») ;
+      - des documents de PAIEMENT : « DETAIL DE VIREMENT.docx », « Notification de
+        paiement.pdf », « Bon de paiement.pdf », « Chq de paiement » ;
+      - des .docx que le modèle ne sait pas lire.
+
+    Prendre la première venue faisait lire l'avis de virement au lieu de la facture.
+    """
+
+    def test_une_facture_bat_un_document_de_paiement(self):
+        self.assertGreater(F.score_piece("Fac N° 35301-SOGEQ.pdf"),
+                           F.score_piece("Fac SONEDE-Notification de paiement.pdf"))
+        self.assertGreater(F.score_piece("Fac N° 00402-Patisserie TULIPE.pdf"),
+                           F.score_piece("Fac Patisserie TULIP - Bon de paiement.pdf"))
+
+    def test_la_page_1_bat_les_suivantes(self):
+        """L'en-tête porte le matricule fiscal : lire la page 2 ne rend ni le nom ni le
+        matricule."""
+        self.assertGreater(F.score_piece("Fac N°36355-SOGEQ-p1.pdf"),
+                           F.score_piece("Fac N°36355-SOGEQ-p2.pdf"))
+        self.assertGreater(F.score_piece("Fac N°36355-SOGEQ-p1.pdf"),
+                           F.score_piece("Fac N°36355-SOGEQ-p3.pdf"))
+
+    def test_ce_qu_on_ne_sait_pas_lire_est_ecarte(self):
+        """Envoyer un .docx au modèle ne rend rien."""
+        self.assertEqual(F.score_piece("DETAIL DE VIREMENT-SOGEQ.docx"), -1)
+        self.assertEqual(F.score_piece("note.txt"), -1)
+
+    def test_les_formats_lisibles_sont_acceptes(self):
+        for nom in ("facture.pdf", "facture.PNG", "facture.jpg", "facture.jpeg"):
+            self.assertGreaterEqual(F.score_piece(nom), 0, nom)
+
+    def test_le_cheque_ne_gagne_jamais(self):
+        """Sur ACC-JV-2026-00698 : « facture-… » bat « …-Chq de paiement »."""
+        self.assertGreater(F.score_piece("facture-ACC-JV-2026-00693877c30.pdf"),
+                           F.score_piece("Fac N° 9260543 -MS TechAutomation-Chq de paiement.pdf"))
+
+    def test_l_utilisateur_peut_trancher_lui_meme(self):
+        """Le classement est une proposition, pas un verdict : l'écran laisse essayer une autre
+        pièce."""
+        import inspect
+
+        self.assertIn("fichier", inspect.signature(F.lire_facture).parameters)
+        self.assertIn('"pieces": pieces', inspect.getsource(F.lire_facture))
