@@ -283,6 +283,8 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         # ⚠️ CE QUI EST VRAIMENT ARRIVÉ. « Réglé » compte tout, y compris les dettes non payées
         # (71 706 DT au total) et les pertes : des pièces qui soldent une commande sans qu-un
         # dinar ait bougé. Les distinguer est le seul moyen de savoir ce qu-on a encaissé.
+        # `encaisse_reel` : ce qui SOLDE la créance, cash ou non — la retenue à la source et
+        # l'écriture de journal en font partie. Le nom du champ est historique.
         ligne["encaisse_reel"] = flt(sum(x["total"] for x in cats if x["encaisse"]), PRECISION)
         ligne["non_encaisse"] = flt(ligne["regle"] - ligne["encaisse_reel"], PRECISION)
         ligne["ecart_paiement"] = ecart_significatif(ligne["delta_paiement"], seuils["montant"])
@@ -310,6 +312,7 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
 GROUPE_BANQUE = "Comptes bancaires - A&S"
 GROUPE_CAISSE = "Liquidités - A&S"
 GROUPE_CREANCE = "Liste créance - A&S"
+GROUPE_IMPOTS = "Actifs d'Impôts - A&S"
 
 #: Ce que devient le groupe dans le libellé d'une catégorie. Un groupe inconnu garde son nom :
 #: une nouvelle famille de comptes apparaît alors d'elle-même, sans toucher au code.
@@ -318,12 +321,20 @@ LIBELLE_GROUPE = {
     GROUPE_CAISSE: "en caisse",
     GROUPE_CREANCE: "en attente, pas encore encaissé",
     "Charges Indirectes - A&S": "perte assumée",
-    "Actifs d'Impôts - A&S": "retenue à la source",
+    GROUPE_IMPOTS: "versé au Trésor pour notre compte",
 }
 
-#: Les groupes où l'argent est RÉELLEMENT arrivé. Tout le reste est une promesse : un chèque en
-#: portefeuille, une dette portée au compte de créance, une retenue à la source, une perte.
-GROUPES_ENCAISSES = (GROUPE_BANQUE, GROUPE_CAISSE)
+#: Les groupes qui SOLDENT RÉELLEMENT la créance du client. Le drapeau ne dit pas « c'est du
+#: cash » mais « le client ne doit plus cela » — c'est la question que pose l'écran.
+#:
+#: ⚠️ LA RETENUE À LA SOURCE EN FAIT PARTIE (décision utilisateur 04/09/2026). Le client la verse
+#: au Trésor pour notre compte : il a payé, nous recevons un crédit d'impôt au lieu d'espèces.
+#: La ranger en « attente » faisait paraître 4 862 DT impayés sur 154 pièces alors que rien
+#: n'est dû. Même raisonnement que pour l'écriture de journal, admise la veille.
+#:
+#: Ce qui reste dehors est une promesse, pas un règlement : un chèque en portefeuille, une dette
+#: portée au compte de créance, une perte assumée.
+GROUPES_ENCAISSES = (GROUPE_BANQUE, GROUPE_CAISSE, GROUPE_IMPOTS)
 
 CLE_JOURNAL = "journal"
 CLE_REPRISE = "reprise"

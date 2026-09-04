@@ -217,7 +217,7 @@ class RapprochementClient {
     const etats = l.livraisons || {};
     if (!Object.keys(etats).length) return "";
     const libelles = {
-      livres: ["Bons de livraison valides", "rc-ok", "encaisse"],
+      livres: ["Bons de livraison valides", "rc-ok", "livre"],
       retours: ["Retours de marchandise", "rc-jaune", "en deduction"],
       brouillons: ["Bons NON valides (brouillon)", "rc-alerte", "ne compte pas"],
       annules: ["Bons annules", "rc-gris", "ne compte pas"],
@@ -264,7 +264,7 @@ class RapprochementClient {
     const lignes = cats.map((c) => `
       <div class="rc-vent">
         <span class="rc-pastille ${c.encaisse ? "rc-ok" : "rc-jaune"}">${
-          c.encaisse ? "encaisse" : "en attente"}</span>
+          c.encaisse ? "regle" : "en attente"}</span>
         <span>${this._esc(c.libelle)}</span>
         <span class="rc-meta">${this._esc(c.compte || "")}</span>
         <span class="num">${this._m(c.total)}</span>
@@ -278,7 +278,7 @@ class RapprochementClient {
             ${Math.abs((l.total_ventile || 0) - (l.regle || 0)) > 0.005
               ? ` <span class="rc-rouge">(la colonne Regle annonce ${this._m(l.regle)})</span>`
               : ` = colonne Regle`}
-            · <b class="rc-vert">${this._m(l.encaisse_reel)} encaisses</b>
+            · <b class="rc-vert">${this._m(l.encaisse_reel)} qui soldent</b>
             ${l.non_encaisse
               ? ` · <b class="rc-jaune-txt">${this._m(l.non_encaisse)} en attente</b>` : ""}
             ${l.reprise

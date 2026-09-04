@@ -224,9 +224,28 @@ class TestVentilationParType(unittest.TestCase):
         self.assertIn("parent_account", src)
         self.assertNotIn("account_type", src)
 
-    def test_seuls_la_banque_et_la_caisse_sont_de_l_argent_recu(self):
-        self.assertEqual(R.GROUPES_ENCAISSES, (R.GROUPE_BANQUE, R.GROUPE_CAISSE))
+    def test_ce_qui_SOLDE_la_creance_n_est_pas_que_du_cash(self):
+        """⚠️ LE DRAPEAU DIT « LE CLIENT NE DOIT PLUS CELA », pas « l'argent est en caisse ».
+
+        La retenue à la source en fait partie (décision utilisateur 04/09/2026) : le client la
+        verse au Trésor pour notre compte, il a donc payé — nous recevons un crédit d'impôt au
+        lieu d'espèces. La ranger en « attente » faisait paraître 4 916 DT impayés sur 155
+        pièces alors que rien n'est dû. Même raisonnement que pour l'écriture de journal.
+        """
+        self.assertEqual(R.GROUPES_ENCAISSES,
+                         (R.GROUPE_BANQUE, R.GROUPE_CAISSE, R.GROUPE_IMPOTS))
+
+    def test_ce_qui_reste_dehors_est_une_promesse(self):
+        """Un chèque en portefeuille, une dette au compte de créance, une perte assumée : rien
+        de tout cela n'éteint la créance."""
         self.assertNotIn(R.GROUPE_CREANCE, R.GROUPES_ENCAISSES)
+        self.assertNotIn("Charges Indirectes - A&S", R.GROUPES_ENCAISSES)
+
+    def test_la_retenue_a_la_source_solde(self):
+        c = R.categorie("Retenue a la source vente", "Avance  impôt société - A&S",
+                        R.GROUPE_IMPOTS)
+        self.assertTrue(c["encaisse"])
+        self.assertIn("Trésor", c["libelle"])
 
     def test_un_cheque_encaisse_et_un_cheque_en_portefeuille_sont_deux_types(self):
         """C'est la distinction demandée : le mode seul ne dit pas si l'argent est arrivé."""
