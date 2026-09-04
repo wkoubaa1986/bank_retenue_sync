@@ -215,14 +215,7 @@ class RapprochementClient {
         ["Date", (r) => frappe.datetime.str_to_user(r.posting_date)],
         ["Total", (r) => this._m(r.grand_total), "num"],
         ["Statut", (r) => this._esc(r.status || "")]]) +
-      bloc("Reglements", d.paiements, [
-        ["Piece", (r) => lien("Payment Entry", r.name)],
-        ["Date", (r) => frappe.datetime.str_to_user(r.posting_date)],
-        ["Montant", (r) => this._m(r.paid_amount), "num"],
-        ["Mode", (r) => this._esc(r.mode_of_payment || "")],
-        ["Compte", (r) => this._esc(r.paid_to || "")],
-        ["Non affecte", (r) => r.unallocated_amount
-          ? `<span class="rc-rouge">${this._m(r.unallocated_amount)}</span>` : "—", "num"]]) +
+      this._blocPaiements(d.paiements, lien) +
       bloc("Ecritures de journal", d.journal, [
         ["Ecriture", (r) => lien("Journal Entry", r.name)],
         ["Date", (r) => frappe.datetime.str_to_user(r.posting_date)],
@@ -236,9 +229,56 @@ class RapprochementClient {
       const $d = dlg.$wrapper.find(`[data-detail-de="${CSS.escape(nom)}"]`);
       const ouvert = !$d.prop("hidden");
       $d.prop("hidden", ouvert);
-      $(e.currentTarget).text(ouvert ? "▸" : "▾");
+      $(e.currentTarget).html(ouvert ? "&#9656;" : "&#9662;");
     });
     dlg.show();
+  }
+
+  /** Les règlements, chacun dépliable sur ce qu-il solde.
+   *
+   * ⚠️ UN RÈGLEMENT EST SOUVENT GROUPÉ : le client paie 3 960 DT et la pièce couvre quatre
+   * commandes. La ligne seule ne dit alors rien d-utile — on lit un montant sans savoir ce
+   * qu-il éteint, et l-écart du client devient impossible à expliquer.
+   */
+  _blocPaiements(paiements, lien) {
+    if (!paiements || !paiements.length) {
+      return `<h6 style="margin:14px 0 6px">Reglements (0)</h6>
+              <div class="rc-meta">Aucune piece.</div>`;
+    }
+    const groupes = paiements.filter((p) => p.groupe).length;
+    const lignes = paiements.map((p) => {
+      const chevron = p.nb_affectations
+        ? `<span class="rc-chev" data-plier="${this._esc(p.name)}">&#9656;</span>` : "";
+      const badge = p.groupe
+        ? `<span class="rc-badge rc-gris">${p.nb_affectations} pieces</span>` : "";
+      const orphelin = p.unallocated_amount
+        ? `<span class="rc-rouge">${this._m(p.unallocated_amount)}</span>` : "—";
+      const detail = (p.affectations || []).map((a) => `
+        <div class="rc-aff">
+          <span>${lien(a.doctype, a.nom)}</span>
+          <span class="rc-meta">${a.doctype === "Sales Invoice" ? "facture" : "commande"}</span>
+          <span class="num">${this._m(a.affecte)}</span>
+          <span class="rc-meta">${a.total ? `sur ${this._m(a.total)}` : ""}</span>
+        </div>`).join("");
+      return `<tr class="rc-pay">
+          <td>${chevron} ${lien("Payment Entry", p.name)} ${badge}</td>
+          <td>${frappe.datetime.str_to_user(p.posting_date)}</td>
+          <td class="num">${this._m(p.paid_amount)}</td>
+          <td>${this._esc(p.mode_of_payment || "")}</td>
+          <td>${this._esc(p.paid_to || "")}</td>
+          <td class="num">${orphelin}</td>
+        </tr>
+        ${p.nb_affectations
+          ? `<tr class="rc-detail" data-detail-de="${this._esc(p.name)}" hidden>
+               <td colspan="6"><div class="rc-affs">${detail}</div></td></tr>`
+          : ""}`;
+    }).join("");
+    const sous = groupes ? ` — dont ${groupes} groupe(s) sur plusieurs pieces` : "";
+    return `<h6 style="margin:14px 0 6px">Reglements (${paiements.length})${sous}</h6>
+      <div class="rc-scroll"><table class="rc-tbl">
+        <thead><tr><th>Piece</th><th>Date</th><th class="num">Montant</th><th>Mode</th>
+          <th>Compte</th><th class="num">Non affecte</th></tr></thead>
+        <tbody>${lignes}</tbody></table></div>`;
   }
 
   _ignorer(client, nom) {
