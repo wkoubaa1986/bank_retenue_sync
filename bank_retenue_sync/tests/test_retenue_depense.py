@@ -151,3 +151,41 @@ class TestAdaptateurDEmission(unittest.TestCase):
     def test_la_synchronisation_ne_touche_jamais_une_ligne_emise(self):
         """La référence du certificat est la preuve d'une déclaration partie."""
         self.assertIn('if doc.statut == "Émis":', self.source(F.synchroniser))
+
+
+class TestBoutonSurLEcriture(unittest.TestCase):
+    """Le geste depuis la fiche de l'écriture — « appuyer sur le bouton et lancer l'émission »."""
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_l_etat_se_recalcule_a_la_lecture(self):
+        """⚠️ Le matricule vit sur la fiche du fournisseur et le rattachement peut avoir été
+        défait ailleurs. Afficher un statut mémorisé faisait annoncer « À émettre » sur une
+        ligne à laquelle il manquait son fournisseur — vu en test le 04/09/2026."""
+        self.assertIn("_reetat(doc)", self.source(F.etat))
+
+    def test_une_ecriture_non_validee_n_est_pas_concernee(self):
+        """Avant validation, ni le montant ni la date de la retenue ne sont définitifs."""
+        self.assertIn("je.docstatus != 1", self.source(F.etat))
+
+    def test_les_flux_automatiques_et_l_anterieur_sont_ecartes(self):
+        src = self.source(F.etat)
+        self.assertIn("exclue(je.cheque_no)", src)
+        self.assertIn("< DEPUIS", src)
+
+    def test_l_ecran_ne_recopie_PAS_le_matricule(self):
+        """Il se corrige sur la fiche du fournisseur : deux endroits pour la même donnée
+        finiraient par se contredire."""
+        src = self.source(F.completer)
+        self.assertNotIn("matricule=", src.split("def completer")[1].split("doc.save")[0]
+                         .replace("_matricule(supplier)", ""))
+
+    def test_completer_refuse_une_ligne_deja_emise(self):
+        self.assertIn('if doc.statut == "Émis":', self.source(F.completer))
+
+    def test_un_statut_humain_n_est_pas_ecrase(self):
+        """« Ignoré » est une décision : le recalcul ne doit pas la défaire."""
+        self.assertIn('doc.statut if doc.statut in ("Émis", "Ignoré")', self.source(F._reetat))

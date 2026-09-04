@@ -141,6 +141,22 @@ def _matricule(supplier):
     return (frappe.db.get_value("Supplier", supplier, "tax_id") or "") if supplier else ""
 
 
+def _reetat(doc):
+    """Remet matricule, manques et statut d'accord avec la réalité. -> la liste des manques."""
+    doc.matricule = _matricule(doc.supplier)
+    manques = _manques(doc)
+    note = " · ".join(manques)
+    statut = doc.statut if doc.statut in ("Émis", "Ignoré") else (
+        "Incomplet" if manques else "À émettre")
+    if (doc.matricule or "") != (doc.get_db_value("matricule") or "") \
+            or note != (doc.note or "") or statut != doc.statut:
+        doc.note, doc.statut = note, statut
+        doc.flags.ignore_permissions = True
+        doc.save()
+        frappe.db.commit()
+    return manques
+
+
 def _manques(doc) -> list:
     """Ce qui empêche encore d'émettre. C'est cette liste que l'écran affiche."""
     manques = []
@@ -265,3 +281,75 @@ def rafraichir(depuis=None) -> dict:
     """Bouton « Actualiser la file »."""
     frappe.only_for(["System Manager", "Accounts Manager"])
     return synchroniser(depuis)
+
+
+@frappe.whitelist()
+def etat(journal_entry: str) -> dict:
+    """L'etat de la retenue d'une ecriture, pour le bouton pose sur sa fiche. -> dict.
+
+    Cree la ligne de file si elle manque : l'utilisateur qui ouvre l'ecriture ne devrait pas
+    avoir a lancer une synchronisation pour voir ou il en est.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager", "Accounts User"])
+    je = frappe.db.get_value("Journal Entry", journal_entry,
+                             ["posting_date", "cheque_no", "docstatus"], as_dict=True)
+    if not je:
+        return {"concernee": False, "raison": _("écriture introuvable")}
+    if je.docstatus != 1:
+        return {"concernee": False, "raison": _("l'écriture n'est pas validée")}
+    if exclue(je.cheque_no):
+        return {"concernee": False, "raison": _("écriture d'un flux automatique")}
+    if str(je.posting_date) < DEPUIS:
+        return {"concernee": False,
+                "raison": _("écriture antérieure au {0} : hors du périmètre").format(DEPUIS)}
+    if not any(c.name == journal_entry for c in candidates()):
+        return {"concernee": False, "raison": _("aucune retenue à la source sur cette écriture")}
+
+    if not frappe.db.exists(DOCTYPE, journal_entry):
+        synchroniser()
+    if not frappe.db.exists(DOCTYPE, journal_entry):
+        return {"concernee": False, "raison": _("la file n'a pas pu être alimentée")}
+
+    doc = frappe.get_doc(DOCTYPE, journal_entry)
+    # ⚠️ L'ÉTAT SE RECALCULE À LA LECTURE. Le matricule vit sur la fiche du fournisseur et le
+    # rattachement peut avoir été défait ailleurs : afficher un statut mémorisé ferait annoncer
+    # « À émettre » sur une ligne à laquelle il manque son fournisseur — vu en test.
+    _reetat(doc)
+    ctx = contexte(journal_entry)
+    return {
+        "concernee": True, "ligne": doc.name, "statut": doc.statut,
+        "retenue": flt(doc.retenue, 3), "montant_ttc": flt(doc.montant_ttc, 3),
+        "fournisseur_lu": doc.fournisseur_lu, "supplier": doc.supplier,
+        "matricule": doc.matricule, "numero_facture": doc.numero_facture,
+        "certificat": doc.certificat, "emis_le": str(doc.emis_le or ""),
+        "montant_ht": ctx["montant_ht"], "taux_tva": ctx["taux_tva"],
+        "manques": ctx["manques"],
+        "peut_emettre": not ctx["manques"] and doc.statut != "Émis",
+    }
+
+
+@frappe.whitelist()
+def completer(journal_entry: str, supplier=None, numero_facture=None) -> dict:
+    """Rattache le fournisseur et le n° de facture depuis la fiche de l'ecriture.
+
+    C'est le seul geste que l'ecran peut faire pour debloquer une emission : le matricule, lui,
+    se corrige sur la fiche du fournisseur — on ne le recopie pas ici, sinon deux verites.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    if not frappe.db.exists(DOCTYPE, journal_entry):
+        synchroniser()
+    doc = frappe.get_doc(DOCTYPE, journal_entry)
+    if doc.statut == "Émis":
+        frappe.throw(_("Un certificat a déjà été émis pour cette écriture."))
+    if supplier:
+        doc.supplier = supplier
+        doc.matricule = _matricule(supplier)
+    if numero_facture is not None:
+        doc.numero_facture = (numero_facture or "").strip()
+    manques = _manques(doc)
+    doc.note = " · ".join(manques)
+    doc.statut = "Incomplet" if manques else "À émettre"
+    doc.flags.ignore_permissions = True
+    doc.save()
+    frappe.db.commit()
+    return etat(journal_entry)

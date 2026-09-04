@@ -224,7 +224,13 @@ fixtures = []
 # table des taxes est figee. `before_submit` refuse tant qu'il manque la preuve, le stock, la
 # retenue ou la concordance des totaux : c'est le dernier instant ou refuser coute moins cher que
 # corriger.
-doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
+doctype_js = {
+    "Purchase Invoice": "public/js/purchase_invoice.js",
+    # Retenue a la source prelevee sur une DEPENSE DE CAISSE : la piece est une ecriture de
+    # journal, pas une facture. Le bouton y ouvre la meme emission TEJ, par l'adaptateur de
+    # `tej/emis_journal` (demande utilisateur 04/09/2026).
+    "Journal Entry": "public/js/journal_entry_retenue.js",
+}
 
 # Boutons « Écarts Aramex » (perte / ajustement / avoir) sur le brouillon d'encaissement.
 # ⚠️ PAS via doctype_js : « Encaissement Paiement » est un DocType CUSTOM et FormMeta.add_code
