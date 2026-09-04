@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"bq_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Identification bancaire</b></span>\", \"col\": 12}}, {\"id\": \"bq_sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Identification bancaire\", \"col\": 4}}, {\"id\": \"bq_sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Mouvements bancaires\", \"col\": 4}}, {\"id\": \"bq_sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Reglages\", \"col\": 4}}, {\"id\": \"cartetechno1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Carte technologique\", \"col\": 4}}, {\"id\": \"paiementsafaire1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a faire\", \"col\": 4}}, {\"id\": \"11f42982a7\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Cl\\u00f4ture mensuelle</b></span>\", \"col\": 12}}, {\"id\": \"20194f6b4e\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Facturation mensuelle\", \"col\": 4}}]",
+ "content": "[{\"id\": \"bq_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Identification bancaire</b></span>\", \"col\": 12}}, {\"id\": \"bq_sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Identification bancaire\", \"col\": 4}}, {\"id\": \"bq_sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Mouvements bancaires\", \"col\": 4}}, {\"id\": \"bq_sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Reglages\", \"col\": 4}}, {\"id\": \"cartetechno1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Carte technologique\", \"col\": 4}}, {\"id\": \"paiementsafaire1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a faire\", \"col\": 4}}, {\"id\": \"11f42982a7\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Cl\\u00f4ture mensuelle</b></span>\", \"col\": 12}}, {\"id\": \"20194f6b4e\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Facturation mensuelle\", \"col\": 4}}, {\"id\": \"rapprochementClientRac\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Rapprochement client\", \"col\": 3}}]",
  "creation": "2026-08-12 11:39:03.851761",
  "custom_blocks": [],
  "docstatus": 0,
@@ -64,6 +64,13 @@
    "doc_view": "",
    "label": "Facturation mensuelle",
    "link_to": "facturation-mensuelle",
+   "type": "Page"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "",
+   "label": "Rapprochement client",
+   "link_to": "rapprochement-client",
    "type": "Page"
   }
  ],

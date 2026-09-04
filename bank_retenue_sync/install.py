@@ -72,6 +72,10 @@ def _ajouter_entete(ws, texte: str) -> bool:
     return True
 
 
+PAGE_RAPPROCHEMENT = "rapprochement-client"
+LABEL_RAPPROCHEMENT = "Rapprochement client"
+
+
 def _ajouter_raccourci_partenaire():
     """Raccourci « Economiq Aqua Solution » dans l espace Banque.
 
@@ -80,6 +84,16 @@ def _ajouter_raccourci_partenaire():
     du partenaire se suit toute l annee. Deux gestes differents, deux ecrans.
     """
     return _poser_raccourci(PAGE_PARTENAIRE, LABEL_PARTENAIRE, ENTETE_CLOTURE, "Purple")
+
+
+def _ajouter_raccourci_rapprochement():
+    """Raccourci « Rapprochement client » dans l espace Banque.
+
+    L ecran repond a une question qu aucun autre ne pose : pour CE client, est-ce que ses
+    commandes, ses bons de livraison et ses reglements se repondent ? Les 108 clients en ecart
+    du 04/09/2026 n etaient visibles nulle part — il fallait ouvrir chaque fiche.
+    """
+    return _poser_raccourci(PAGE_RAPPROCHEMENT, LABEL_RAPPROCHEMENT, ENTETE_CLOTURE, "Blue")
 
 
 def _poser_raccourci(page: str, label: str, entete: str, couleur: str):
@@ -120,6 +134,7 @@ def after_migrate():
     _ajouter_carte_tresorerie()
     _ajouter_raccourci_cloture()
     _ajouter_raccourci_partenaire()
+    _ajouter_raccourci_rapprochement()
 
 
 def _ajouter_carte_tresorerie():

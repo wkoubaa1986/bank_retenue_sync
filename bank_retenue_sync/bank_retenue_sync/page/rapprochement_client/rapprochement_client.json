@@ -1,0 +1,21 @@
+{
+ "content": null,
+ "creation": "2026-09-04 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-09-04 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "rapprochement-client",
+ "owner": "Administrator",
+ "page_name": "rapprochement-client",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "Accounts Manager"},
+  {"role": "Accounts User"}
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "title": "Rapprochement client"
+}
