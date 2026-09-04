@@ -66,7 +66,11 @@
   "section_tej_emis",
   "tej_emis_type_operation",
   "column_break_tej_emis",
-  "tej_emis_operation"
+  "tej_emis_operation",
+  "section_rapprochement_client",
+  "tolerance_ecart_montant",
+  "column_break_rapprochement",
+  "tolerance_ecart_bl"
  ],
  "fields": [
   {
@@ -129,11 +133,11 @@
    "label": "Journaliser les appels sortants"
   },
   {
+   "description": "Dernier export de mouvements reussi. Mis a jour par la verification bancaire ; sert de base a l'alerte de panne.",
    "fieldname": "derniere_synchro_bancaire",
    "fieldtype": "Datetime",
    "label": "Derniere synchro bancaire reussie",
-   "read_only": 1,
-   "description": "Dernier export de mouvements reussi. Mis a jour par la verification bancaire ; sert de base a l'alerte de panne."
+   "read_only": 1
   },
   {
    "fieldname": "alerte_synchro_envoyee",
@@ -268,32 +272,32 @@
   },
   {
    "default": "1",
+   "description": "Coche : l'ecriture de retenue creee et le reglement repris sont VALIDES aussitot (creation comme ajustement). Decoche : ils restent en brouillon, a valider a la main — plus prudent, mais un ajustement annule un reglement deja valide, et tant que les brouillons ne sont pas valides la facture concernee reapparait comme due.",
    "fieldname": "auto_submit_ras_ajustement",
    "fieldtype": "Check",
-   "label": "Valider automatiquement les ecritures de retenue",
-   "description": "Coche : l'ecriture de retenue creee et le reglement repris sont VALIDES aussitot (creation comme ajustement). Decoche : ils restent en brouillon, a valider a la main — plus prudent, mais un ajustement annule un reglement deja valide, et tant que les brouillons ne sont pas valides la facture concernee reapparait comme due."
+   "label": "Valider automatiquement les ecritures de retenue"
   },
   {
    "default": "Dette non payée",
+   "description": "Le mode qui ne correspond a AUCUN argent compte : la facture y est eteinte contre un compte de dettes, le montant est deduit de la facture et non d'une caisse. Lui seul peut etre revu a la baisse lors d'une regularisation. Un reglement en especes, cheque ou virement, lui, a ete compte par quelqu'un : son montant ne bouge jamais, c'est son AFFECTATION qui change.",
    "fieldname": "ras_mode_dette",
    "fieldtype": "Link",
    "label": "Mode de paiement « dette »",
-   "options": "Mode of Payment",
-   "description": "Le mode qui ne correspond a AUCUN argent compte : la facture y est eteinte contre un compte de dettes, le montant est deduit de la facture et non d'une caisse. Lui seul peut etre revu a la baisse lors d'une regularisation. Un reglement en especes, cheque ou virement, lui, a ete compte par quelqu'un : son montant ne bouge jamais, c'est son AFFECTATION qui change."
+   "options": "Mode of Payment"
   },
   {
    "default": "1",
+   "description": "Coche : une fois la reprise VALIDEE, le reglement d'origine annule est supprime — il ne reste que l'ecriture juste. La suppression n'a jamais lieu tant que le remplacant est en brouillon, ni si un autre document (rapprochement bancaire, avoir) le reference encore : dans ce cas il est conserve et la raison est affichee. Decoche : le reglement annule reste en place comme trace.",
    "fieldname": "supprimer_reglement_annule",
    "fieldtype": "Check",
-   "label": "Supprimer le reglement annule apres reprise",
-   "description": "Coche : une fois la reprise VALIDEE, le reglement d'origine annule est supprime — il ne reste que l'ecriture juste. La suppression n'a jamais lieu tant que le remplacant est en brouillon, ni si un autre document (rapprochement bancaire, avoir) le reference encore : dans ce cas il est conserve et la raison est affichee. Decoche : le reglement annule reste en place comme trace."
+   "label": "Supprimer le reglement annule apres reprise"
   },
   {
    "default": "1",
+   "description": "Coche : des qu'une retenue est rapprochee ou regularisee, le certificat est demande au portail et attache a la facture (a la commande si elle n'est pas encore facturee), en tache de fond — une session de scraping prend plusieurs minutes. Decoche : les PDF n'arrivent que par le bouton « Telecharger les PDF » ou la tache quotidienne.",
    "fieldname": "pdf_auto_apres_rapprochement",
    "fieldtype": "Check",
-   "label": "Telecharger le certificat PDF des le rapprochement",
-   "description": "Coche : des qu'une retenue est rapprochee ou regularisee, le certificat est demande au portail et attache a la facture (a la commande si elle n'est pas encore facturee), en tache de fond — une session de scraping prend plusieurs minutes. Decoche : les PDF n'arrivent que par le bouton « Telecharger les PDF » ou la tache quotidienne."
+   "label": "Telecharger le certificat PDF des le rapprochement"
   },
   {
    "fieldname": "last_tej_sync",
@@ -315,10 +319,10 @@
    "label": "Point de depart du rapprochement"
   },
   {
+   "description": "Date a partir de laquelle l'ecart est suivi. Tout ce qui precede est repute acquis et neutralise par le montant ci-contre : la page n'affiche alors que l'ecart CREE depuis cette date. Sans date, l'ecart reste brut.",
    "fieldname": "ecart_ouverture_date",
    "fieldtype": "Date",
-   "label": "Rapprocher a partir du",
-   "description": "Date a partir de laquelle l'ecart est suivi. Tout ce qui precede est repute acquis et neutralise par le montant ci-contre : la page n'affiche alors que l'ecart CREE depuis cette date. Sans date, l'ecart reste brut."
+   "label": "Rapprocher a partir du"
   },
   {
    "fieldname": "column_break_ouverture",
@@ -326,34 +330,34 @@
   },
   {
    "default": "0",
+   "description": "Ecart (solde banque moins solde ERPNext) constate a la date de depart, accepte tel quel. Il est soustrait de l'ecart affiche, de sorte que le rapprochement reparte de zero. Le bouton « Mesurer » des Reglages calcule la valeur du jour. Alternative : comptabiliser le residu (compte temporaire) et lier l'ecriture ci-dessous — l'ecart accepte reste alors a 0.",
    "fieldname": "ecart_ouverture",
    "fieldtype": "Currency",
-   "precision": "3",
    "label": "Ecart residuel accepte a cette date",
-   "description": "Ecart (solde banque moins solde ERPNext) constate a la date de depart, accepte tel quel. Il est soustrait de l'ecart affiche, de sorte que le rapprochement reparte de zero. Le bouton « Mesurer » des Reglages calcule la valeur du jour. Alternative : comptabiliser le residu (compte temporaire) et lier l'ecriture ci-dessous — l'ecart accepte reste alors a 0."
+   "precision": "3"
   },
   {
+   "description": "Ecriture de journal qui a COMPTABILISE le residu de rapprochement (banque vers compte temporaire). Le rapprochement la reconnait comme piece de constat : elle n'attend aucun mouvement bancaire et ne pese jamais dans la projection.",
    "fieldname": "ecart_ouverture_piece",
    "fieldtype": "Link",
-   "options": "Journal Entry",
    "label": "Ecriture d'alignement du residu",
-   "description": "Ecriture de journal qui a COMPTABILISE le residu de rapprochement (banque vers compte temporaire). Le rapprochement la reconnait comme piece de constat : elle n'attend aucun mouvement bancaire et ne pese jamais dans la projection."
+   "options": "Journal Entry"
   },
   {
    "default": "700",
+   "description": "Sous ce solde REEL (lu chez tej-bank-service), une alerte de recharge est posee a chaque passage de la tache des paiements de carte. Une seule alerte par jour : un rappel repete toutes les heures cesserait d'etre lu. Mettre a 0 desactive l'alerte.",
    "fieldname": "seuil_recharge_carte",
    "fieldtype": "Currency",
-   "precision": "3",
    "label": "Seuil d'alerte de recharge de la carte technologique",
-   "description": "Sous ce solde REEL (lu chez tej-bank-service), une alerte de recharge est posee a chaque passage de la tache des paiements de carte. Une seule alerte par jour : un rappel repete toutes les heures cesserait d'etre lu. Mettre a 0 desactive l'alerte."
+   "precision": "3"
   },
   {
    "default": "1500",
+   "description": "Montant propose au tableau « Paiements a faire » quand le solde REEL de la carte passe sous le seuil. Une recharge type, pas un appoint : virer seulement ce qui manque pour repasser le seuil ferait replonger la carte des le premier debit. Plafonne par le solde disponible en banque.",
    "fieldname": "montant_recharge_carte",
    "fieldtype": "Currency",
-   "precision": "3",
    "label": "Montant d'une recharge de la carte technologique",
-   "description": "Montant propose au tableau « Paiements a faire » quand le solde REEL de la carte passe sous le seuil. Une recharge type, pas un appoint : virer seulement ce qui manque pour repasser le seuil ferait replonger la carte des le premier debit. Plafonne par le solde disponible en banque."
+   "precision": "3"
   },
   {
    "fieldname": "section_achat",
@@ -362,24 +366,24 @@
   },
   {
    "default": "1",
+   "description": "Refuse la validation d'une facture d'un fournisseur tunisien tant que le scan n'est pas joint, que le stock et le magasin ne sont pas renseignes, ou que les totaux saisis different de ceux du scan. Decoche : plus aucun controle.",
    "fieldname": "controle_achat_actif",
    "fieldtype": "Check",
-   "label": "Controler les factures d'achat locales",
-   "description": "Refuse la validation d'une facture d'un fournisseur tunisien tant que le scan n'est pas joint, que le stock et le magasin ne sont pas renseignes, ou que les totaux saisis different de ceux du scan. Decoche : plus aucun controle."
+   "label": "Controler les factures d'achat locales"
   },
   {
    "default": "2026-01-01",
+   "description": "Les factures comptabilisees AVANT cette date ne sont ni controlees ni retenues : l'exercice est clos. Vide : 01/01/2026.",
    "fieldname": "controle_achat_plancher",
    "fieldtype": "Date",
-   "label": "Plancher des controles d'achat",
-   "description": "Les factures comptabilisees AVANT cette date ne sont ni controlees ni retenues : l'exercice est clos. Vide : 01/01/2026."
+   "label": "Plancher des controles d'achat"
   },
   {
    "default": "1000",
+   "description": "TTC a partir duquel la retenue est due (1 000 DT).",
    "fieldname": "ras_achat_seuil",
    "fieldtype": "Currency",
-   "label": "Seuil de la retenue a la source achat",
-   "description": "TTC a partir duquel la retenue est due (1 000 DT)."
+   "label": "Seuil de la retenue a la source achat"
   },
   {
    "default": "1",
@@ -395,22 +399,22 @@
    "default": "Retenue a la source achat - A&S",
    "fieldname": "ras_achat_compte",
    "fieldtype": "Link",
-   "options": "Account",
-   "label": "Compte de retenue a la source achat"
+   "label": "Compte de retenue a la source achat",
+   "options": "Account"
   },
   {
    "default": "Retenue a la source achat",
    "fieldname": "ras_achat_mode",
    "fieldtype": "Link",
-   "options": "Mode of Payment",
-   "label": "Mode de paiement de la retenue achat"
+   "label": "Mode de paiement de la retenue achat",
+   "options": "Mode of Payment"
   },
   {
    "default": "1",
+   "description": "En dessous, l'ecart entre le HT saisi et le HT du scan est tenu pour du bruit de lecture. Le seuil retenu est le PLUS GRAND de ce plancher et du pourcentage ci-contre. Large a dessein : le HT est la grandeur que le modele lit le moins bien (1,012 DT d'ecart constate sur un scan par ailleurs juste).",
    "fieldname": "ecart_achat_minimal",
    "fieldtype": "Currency",
-   "label": "Ecart bloquant sur le HT : plancher",
-   "description": "En dessous, l'ecart entre le HT saisi et le HT du scan est tenu pour du bruit de lecture. Le seuil retenu est le PLUS GRAND de ce plancher et du pourcentage ci-contre. Large a dessein : le HT est la grandeur que le modele lit le moins bien (1,012 DT d'ecart constate sur un scan par ailleurs juste)."
+   "label": "Ecart bloquant sur le HT : plancher"
   },
   {
    "default": "1",
@@ -419,26 +423,26 @@
    "label": "Ecart bloquant sur le HT : pourcentage du TTC"
   },
   {
+   "description": "Pose sur les factures d'achat locales dont le magasin est vide. Vide : celui de Stock Settings, sinon le plus utilise.",
    "fieldname": "magasin_achat_defaut",
    "fieldtype": "Link",
-   "options": "Warehouse",
    "label": "Magasin par defaut des achats",
-   "description": "Pose sur les factures d'achat locales dont le magasin est vide. Vide : celui de Stock Settings, sinon le plus utilise."
+   "options": "Warehouse"
   },
   {
    "default": "1.5",
+   "description": "Ecart absolu admis entre le TTC saisi et le TTC du scan. 1,5 DT couvre le bruit de lecture constate (1,012 DT) sans laisser passer une erreur de saisie.",
    "fieldname": "ecart_achat_ttc",
    "fieldtype": "Currency",
-   "precision": "3",
    "label": "Ecart bloquant sur le TTC",
-   "description": "Ecart absolu admis entre le TTC saisi et le TTC du scan. 1,5 DT couvre le bruit de lecture constate (1,012 DT) sans laisser passer une erreur de saisie."
+   "precision": "3"
   },
   {
    "default": "0.1",
+   "description": "Serre a dessein : la TVA se lit au millime exact sur les scans deja traites. Un seuil calcule sur le TTC lui laissait 6,2 % de tolerance, par ou une TVA ramenee de 175,311 a 170,000 est passee sans un mot.",
    "fieldname": "ecart_achat_tva_taux",
    "fieldtype": "Percent",
-   "label": "Ecart bloquant sur la TVA : pourcentage de la TVA lue",
-   "description": "Serre a dessein : la TVA se lit au millime exact sur les scans deja traites. Un seuil calcule sur le TTC lui laissait 6,2 % de tolerance, par ou une TVA ramenee de 175,311 a 170,000 est passee sans un mot."
+   "label": "Ecart bloquant sur la TVA : pourcentage de la TVA lue"
   },
   {
    "fieldname": "section_tej_emis",
@@ -446,23 +450,46 @@
    "label": "Certificats de retenue emis (TEJ)"
   },
   {
+   "default": "Acquisitions des marchandises, matériel équipements et de services",
+   "description": "Libelle EXACT de la liste « Type d'operation » du portail TEJ. Les huit valeurs acceptees ont ete relevees sur le portail meme, en repetition : Remuneration des activites non commerciales / Revenus des capitaux mobiliers / Jeux de pari et loterie / Dividendes / Jetons de presences et tantiemes / Acquisitions des marchandises, materiel equipements et de services / Loyers / Cessions Fc et immeubles.",
    "fieldname": "tej_emis_type_operation",
    "fieldtype": "Data",
-   "label": "TEJ — Type d'operation",
-   "description": "Libelle EXACT de la liste « Type d'operation » du portail TEJ. Les huit valeurs acceptees ont ete relevees sur le portail meme, en repetition : Remuneration des activites non commerciales / Revenus des capitaux mobiliers / Jeux de pari et loterie / Dividendes / Jetons de presences et tantiemes / Acquisitions des marchandises, materiel equipements et de services / Loyers / Cessions Fc et immeubles.",
-   "default": "Acquisitions des marchandises, matériel équipements et de services"
+   "label": "TEJ — Type d'operation"
   },
   {
    "fieldname": "column_break_tej_emis",
    "fieldtype": "Column Break"
   },
   {
+   "default": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%",
+   "description": "⚠️ CE CHOIX FIXE LE TAUX, ET LE PORTAIL LE CALCULE LUI-MEME. Releve en repetition sur une facture reelle : « IS 15% » -> 1 %, « autres que 15% et 10% » -> 1,5 %, « personnes physiques 2/3 / IS 10% » -> 0,5 %. Le defaut est la variante a 1 %, celle qui correspond au taux que l'app calcule (ras_achat_taux) et au certificat deja emis a la main en juillet 2026. Elle depend en realite du REGIME FISCAL DU FOURNISSEUR : un fournisseur au regime de droit commun releve de 1,5 %, et la facture serait alors sous-retenue. La repetition avant soumission compare les deux montants.",
    "fieldname": "tej_emis_operation",
    "fieldtype": "Select",
    "label": "TEJ — Operation",
-   "description": "⚠️ CE CHOIX FIXE LE TAUX, ET LE PORTAIL LE CALCULE LUI-MEME. Releve en repetition sur une facture reelle : « IS 15% » -> 1 %, « autres que 15% et 10% » -> 1,5 %, « personnes physiques 2/3 / IS 10% » -> 0,5 %. Le defaut est la variante a 1 %, celle qui correspond au taux que l'app calcule (ras_achat_taux) et au certificat deja emis a la main en juillet 2026. Elle depend en realite du REGIME FISCAL DU FOURNISSEUR : un fournisseur au regime de droit commun releve de 1,5 %, et la facture serait alors sous-retenue. La repetition avant soumission compare les deux montants.",
-   "options": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux autres que 15% et 10%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services auprès des personnes physiques bénéficiant de la déduction de 2/3 et des peronnes morales soumis à l'IS au taux de 10%",
-   "default": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%"
+   "options": "Montants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux de 15%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services, auprès des personnes physiques et des peronnes morales soumis à l'IS au taux autres que 15% et 10%\nMontants égaux ou supérieurs à 1.000 D y compris la TVA au titre des acquisitions des marchandises, matériel équipements et de services auprès des personnes physiques bénéficiant de la déduction de 2/3 et des peronnes morales soumis à l'IS au taux de 10%"
+  },
+  {
+   "fieldname": "section_rapprochement_client",
+   "fieldtype": "Section Break",
+   "label": "Rapprochement client"
+  },
+  {
+   "default": "1",
+   "description": "En dessous de ce montant, la différence entre ce qu-un client a réglé et le total de ses commandes n-est pas signalée. 1 DT par défaut : c-est le timbre fiscal, qui sépare une commande de sa facture sur presque tous les dossiers.",
+   "fieldname": "tolerance_ecart_montant",
+   "fieldtype": "Currency",
+   "label": "Écart de règlement accepté"
+  },
+  {
+   "fieldname": "column_break_rapprochement",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "En dessous de ce montant, la différence entre les bons de livraison validés et le total des commandes n-est pas signalée.",
+   "fieldname": "tolerance_ecart_bl",
+   "fieldtype": "Currency",
+   "label": "Écart de livraison accepté"
   }
  ],
  "issingle": 1,

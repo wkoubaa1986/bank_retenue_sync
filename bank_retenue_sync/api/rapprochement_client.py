@@ -27,7 +27,7 @@ def get_filtres() -> dict:
         "groupes": frappe.get_all("Customer Group", filters={"is_group": 0}, pluck="name",
                                   order_by="name"),
         "types": ["Company", "Individual"],
-        "tolerance": R.TOLERANCE,
+        "tolerances": R.tolerances(),
     }
 
 
@@ -64,7 +64,7 @@ def get_data(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         "totaux": totaux,
         "en_ecart": sum(1 for l in lignes if l["en_ecart"]),
         "sans_bl": sum(1 for l in lignes if not l["a_des_bl"] and l["nb_commandes"]),
-        "tolerance": R.TOLERANCE,
+        "tolerances": R.tolerances(),
         "peut_decider": bool(set(frappe.get_roles()) & set(ROLES_DECISION)),
     }
 
@@ -85,13 +85,7 @@ def detail(client) -> dict:
             "Delivery Note", filters={"customer": client, "docstatus": 1},
             fields=["name", "posting_date", "grand_total", "status"],
             order_by="posting_date desc", limit_page_length=200),
-        "paiements": frappe.get_all(
-            "Payment Entry",
-            filters={"party": client, "party_type": "Customer", "docstatus": 1,
-                     "payment_type": "Receive"},
-            fields=["name", "posting_date", "paid_amount", "mode_of_payment", "paid_to",
-                    "reference_no", "unallocated_amount"],
-            order_by="posting_date desc", limit_page_length=200),
+        "paiements": _paiements_detailles(client),
         "journal": frappe.db.sql(
             """SELECT je.name, je.posting_date, jea.debit, jea.credit, je.user_remark
                FROM `tabJournal Entry Account` jea
@@ -99,6 +93,54 @@ def detail(client) -> dict:
                WHERE je.docstatus = 1 AND jea.party_type = 'Customer' AND jea.party = %s
                ORDER BY je.posting_date DESC LIMIT 200""", (client,), as_dict=True),
     }
+
+
+def _paiements_detailles(client) -> list:
+    """Les règlements du client, CHACUN avec ce qu'il solde.
+
+    ⚠️ UN RÈGLEMENT EST SOUVENT GROUPÉ. Le client paie 3 960 DT et la pièce couvre quatre
+    factures, parfois à cheval sur deux mois. La ligne seule ne dit alors rien d'utile : on
+    lit un montant sans savoir ce qu'il éteint, et un écart devient impossible à expliquer.
+    Chaque paiement porte donc son détail, déplié à la demande.
+
+    Une seule requête pour toutes les affectations : un `get_all` par paiement ferait 200
+    allers-retours sur un gros client (131 règlements sur ECONOMIQ AQUA SOLUTIONS).
+    """
+    paiements = frappe.get_all(
+        "Payment Entry",
+        filters={"party": client, "party_type": "Customer", "docstatus": 1,
+                 "payment_type": "Receive"},
+        fields=["name", "posting_date", "paid_amount", "mode_of_payment", "paid_to",
+                "reference_no", "unallocated_amount"],
+        order_by="posting_date desc", limit_page_length=200)
+    if not paiements:
+        return []
+
+    noms = [p.name for p in paiements]
+    ph = ",".join(["%s"] * len(noms))
+    refs = {}
+    for r in frappe.db.sql(
+            f"""SELECT per.parent, per.reference_doctype, per.reference_name,
+                       per.allocated_amount, per.total_amount, per.outstanding_amount
+                FROM `tabPayment Entry Reference` per
+                WHERE per.parent IN ({ph}) AND per.docstatus < 2
+                ORDER BY per.parent, per.idx""", tuple(noms), as_dict=True):
+        refs.setdefault(r.parent, []).append({
+            "doctype": r.reference_doctype,
+            "nom": r.reference_name,
+            "affecte": flt(r.allocated_amount, R.PRECISION),
+            "total": flt(r.total_amount, R.PRECISION),
+            "reste": flt(r.outstanding_amount, R.PRECISION),
+        })
+    for p in paiements:
+        lignes = refs.get(p.name, [])
+        p["affectations"] = lignes
+        p["nb_affectations"] = len(lignes)
+        # « Groupé » se lit sur le NOMBRE de pièces soldées, pas sur le montant : deux factures
+        # de 30 DT sont un paiement groupé, un règlement de 4 000 DT sur une seule facture ne
+        # l'est pas.
+        p["groupe"] = len(lignes) > 1
+    return paiements
 
 
 @frappe.whitelist()

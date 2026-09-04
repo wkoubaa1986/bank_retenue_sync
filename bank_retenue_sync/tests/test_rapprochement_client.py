@@ -125,3 +125,80 @@ class TestAgregation(unittest.TestCase):
 
         self.assertIn("if not (cde_nb or bl_nb or pay_nb or jrn_nb)",
                       inspect.getsource(R.lignes))
+
+
+class TestSeuilsReglables(unittest.TestCase):
+    """Les deux seuils se règlent — ils ne sont pas la même question.
+
+    Un écart de règlement et un écart de livraison n'ont pas le même montant acceptable : le
+    premier suit le timbre fiscal, le second dépend de ce qu'on tolère entre une commande et ce
+    qui en est sorti (demande utilisateur 04/09/2026).
+    """
+
+    def test_le_defaut_reste_le_timbre(self):
+        self.assertEqual(R.TOLERANCE, 1.0)
+
+    def test_un_seuil_explicite_prime_sur_le_defaut(self):
+        self.assertFalse(R.ecart_significatif(50.0, seuil=100.0))
+        self.assertTrue(R.ecart_significatif(150.0, seuil=100.0))
+
+    def test_le_seuil_zero_signale_le_moindre_centime(self):
+        """⚠️ ZÉRO EST UN CHOIX VALIDE — « signale-moi tout ». Un `or TOLERANCE` quelque part
+        dans la chaîne l'écraserait et rendrait le réglage muet ; mesuré sur la base, il fait
+        passer de 108 à 145 clients signalés."""
+        self.assertTrue(R.ecart_significatif(0.001, seuil=0))
+        self.assertFalse(R.ecart_significatif(0.0, seuil=0))
+
+    def test_les_deux_seuils_sont_lus_separement(self):
+        import inspect
+
+        src = inspect.getsource(R.lignes)
+        self.assertIn('seuils["montant"]', src)
+        self.assertIn('seuils["bl"]', src)
+
+    def test_les_seuils_sont_lus_une_seule_fois_par_page(self):
+        """`lignes` boucle sur des milliers de clients : un get_single_value par ligne
+        rechargerait le réglage autant de fois."""
+        import inspect
+
+        src = inspect.getsource(R.lignes)
+        self.assertEqual(src.count("tolerances()"), 1)
+
+    def test_un_reglage_absent_ne_fait_pas_echouer_l_ecran(self):
+        """Un bench où la migration n'est pas passée doit quand même pouvoir ouvrir la page."""
+        import inspect
+
+        self.assertIn("except Exception", inspect.getsource(R._reglage))
+
+
+class TestPaiementsGroupes(unittest.TestCase):
+    """Un règlement est souvent GROUPÉ, et la ligne seule ne dit alors rien.
+
+    Mesuré sur ECONOMIQ AQUA SOLUTIONS : 131 règlements, dont 16 couvrent plusieurs pièces —
+    un versement de 3 960 DT réparti sur deux commandes, un de 2 700 sur quatre. Lire le
+    montant sans savoir ce qu'il éteint rend l'écart du client inexplicable.
+    """
+
+    def source(self):
+        import inspect
+
+        from bank_retenue_sync.api import rapprochement_client as API
+
+        return inspect.getsource(API._paiements_detailles)
+
+    def test_les_affectations_sont_ramenees_en_une_requete(self):
+        """Un `get_all` par paiement ferait 131 allers-retours sur un gros client."""
+        src = self.source()
+        self.assertIn("per.parent IN", src)
+        self.assertNotIn("for p in paiements:\n        refs", src)
+
+    def test_l_ordre_de_la_piece_est_conserve(self):
+        self.assertIn("ORDER BY per.parent, per.idx", self.source())
+
+    def test_groupe_se_lit_sur_le_NOMBRE_de_pieces(self):
+        """Deux factures de 30 DT sont un paiement groupé ; un règlement de 4 000 DT sur une
+        seule facture ne l'est pas."""
+        self.assertIn("len(lignes) > 1", self.source())
+
+    def test_les_affectations_annulees_sont_ecartees(self):
+        self.assertIn("per.docstatus < 2", self.source())

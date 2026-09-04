@@ -18,3 +18,4 @@ bank_retenue_sync.patches.politique_achat_local #2026-08-13-ecarts
 # Et le vocabulaire TEJ, deux reglages de plus : sans eux le bouton « Certificat de retenue » refuse
 # d'emettre, et les libelles ne se devinent pas — ils ont ete arraches au portail en repetition.
 bank_retenue_sync.patches.politique_achat_local #2026-08-13-tej
+bank_retenue_sync.patches.initialiser_seuils_rapprochement

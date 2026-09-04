@@ -49,7 +49,7 @@ class RapprochementClient {
     } catch (e) {
       return this.$root.find('[data-role="contenu"]').html(this._erreur(e));
     }
-    this.tolerance = f.tolerance;
+    this.seuils = f.tolerances || { montant: 1, bl: 1 };
     this.$root.find('[data-f="groupe"]').html(
       `<option value="">Tous</option>` +
       (f.groupes || []).map((g) => `<option value="${this._esc(g)}">${this._esc(g)}</option>`).join("")
@@ -95,10 +95,10 @@ class RapprochementClient {
       ${this._kpi("Regle par les clients", this._m(t.regle),
                   `dont journal ${this._m(t.journal)}`)}
       ${this._kpi("Ecart de reglement", this._m(t.delta_paiement), "regle moins commandes",
-                  Math.abs(t.delta_paiement) > this.tolerance)}
+                  Math.abs(t.delta_paiement) > this.seuils.montant)}
       ${this._kpi("Avances non affectees", this._m(t.avance_non_affectee),
                   "argent recu qui ne pointe sur rien",
-                  Math.abs(t.avance_non_affectee) > this.tolerance)}
+                  Math.abs(t.avance_non_affectee) > this.seuils.montant)}
     </div>`;
 
     const lignes = d.lignes.map((l) => this._ligne(l, d)).join("");
@@ -114,9 +114,12 @@ class RapprochementClient {
         <th class="num">Ecart reglement</th><th class="num">Ecart livraison</th>
         <th>Avances</th><th></th>
       </tr></thead><tbody>${lignes}</tbody></table></div>` + tronque +
-      `<p class="rc-note">Un delta inferieur a ${this._m(d.tolerance)} n-est pas signale :
-       c-est le timbre fiscal, pas un ecart. « Regle » additionne les encaissements et le net
-       des ecritures de journal du client (avoirs, regularisations, pertes).</p>`;
+      `<p class="rc-note">Seuils appliques : reglement ${this._m(d.tolerances.montant)},
+       livraison ${this._m(d.tolerances.bl)} — en dessous, un delta n-est pas signale (par
+       defaut le timbre fiscal). Ils se reglent dans
+       <a href="/app/bank-retenue-sync-settings">Reglages</a>, section « Rapprochement client ».
+       « Regle » additionne les encaissements et le net des ecritures de journal du client
+       (avoirs, regularisations, pertes).</p>`;
   }
 
   _sousBl(d, t) {
@@ -227,6 +230,14 @@ class RapprochementClient {
         ["Credit", (r) => (r.credit ? this._m(r.credit) : "—"), "num"],
         ["Objet", (r) => this._esc((r.user_remark || "").slice(0, 90))]])
     );
+    // Le dépliage vit dans le dialogue, pas dans la page : ces lignes n-existent que là.
+    dlg.$wrapper.on("click", "[data-plier]", (e) => {
+      const nom = $(e.currentTarget).attr("data-plier");
+      const $d = dlg.$wrapper.find(`[data-detail-de="${CSS.escape(nom)}"]`);
+      const ouvert = !$d.prop("hidden");
+      $d.prop("hidden", ouvert);
+      $(e.currentTarget).text(ouvert ? "▸" : "▾");
+    });
     dlg.show();
   }
 

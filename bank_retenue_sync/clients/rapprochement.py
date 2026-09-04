@@ -25,9 +25,29 @@ from frappe.utils import flt
 PRECISION = 3
 
 # Le timbre fiscal — 1 DT — sépare une commande de sa facture sur presque tous les dossiers.
-# En dessous de ce seuil, un delta n'est pas un écart : c'est la mécanique normale. Au-dessus,
-# il y a quelque chose à regarder. (Règle déjà retenue ailleurs dans l'app pour le timbre.)
+# En dessous de ce seuil, un delta n'est pas un écart : c'est la mécanique normale. C'est le
+# DÉFAUT, pas une règle figée : les deux seuils se règlent dans « Bank Retenue Sync Settings »
+# (demande utilisateur 04/09/2026), parce que le montant acceptable n'est pas le même selon
+# qu'on regarde un règlement ou une livraison.
 TOLERANCE = 1.0
+CHAMP_TOLERANCE_MONTANT = "tolerance_ecart_montant"
+CHAMP_TOLERANCE_BL = "tolerance_ecart_bl"
+
+
+def _reglage(champ) -> float:
+    """Le seuil réglé, ou le défaut. Ne lève jamais : un écran de constat doit s'ouvrir même
+    quand le réglage n'existe pas encore (bench où la migration n'est pas passée)."""
+    try:
+        v = frappe.db.get_single_value("Bank Retenue Sync Settings", champ)
+    except Exception:
+        return TOLERANCE
+    # ⚠️ ZÉRO EST UN CHOIX VALIDE — « signale-moi le moindre centime » — alors que None veut
+    # dire « pas réglé ». Un `or TOLERANCE` aurait écrasé le zéro et rendu le réglage muet.
+    return TOLERANCE if v is None else flt(v)
+
+
+def tolerances() -> dict:
+    return {"montant": _reglage(CHAMP_TOLERANCE_MONTANT), "bl": _reglage(CHAMP_TOLERANCE_BL)}
 
 DOCTYPE_IGNORE = "BRS Client Rapprochement Ignore"
 
@@ -113,9 +133,9 @@ def ignores() -> dict:
                                     limit_page_length=0)}
 
 
-def ecart_significatif(delta) -> bool:
-    """Au-delà du timbre, il y a quelque chose à regarder."""
-    return abs(flt(delta)) > TOLERANCE
+def ecart_significatif(delta, seuil=None) -> bool:
+    """Au-delà du seuil, il y a quelque chose à regarder."""
+    return abs(flt(delta)) > (TOLERANCE if seuil is None else flt(seuil))
 
 
 def _clients(groupe=None, type_client=None, recherche=None, avec_bl=None) -> list:
@@ -153,6 +173,9 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     """Une ligne par client, avec ses trois totaux et ses deux deltas."""
     cdes, bls, regl, jrn = commandes(), bons_de_livraison(), reglements(), journal()
     av, ign = avances(), ignores()
+    # Lus UNE fois : `lignes` boucle sur des milliers de clients, et un get_single_value par
+    # ligne rechargerait le réglage autant de fois.
+    seuils = tolerances()
 
     out = []
     for c in _clients(groupe, type_client, recherche):
@@ -185,8 +208,8 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             "ignore": c.name in ign,
             "motif": ign.get(c.name, ""),
         }
-        ligne["ecart_paiement"] = ecart_significatif(ligne["delta_paiement"])
-        ligne["ecart_bl"] = ecart_significatif(ligne["delta_bl"])
+        ligne["ecart_paiement"] = ecart_significatif(ligne["delta_paiement"], seuils["montant"])
+        ligne["ecart_bl"] = ecart_significatif(ligne["delta_bl"], seuils["bl"])
         ligne["en_ecart"] = ligne["ecart_paiement"] or ligne["ecart_bl"]
 
         # Un client sans aucune pièce n'a rien à dire : il encombrerait la liste sans jamais
