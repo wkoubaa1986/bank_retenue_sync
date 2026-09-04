@@ -176,7 +176,9 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     # Lus UNE fois : `lignes` boucle sur des milliers de clients, et un get_single_value par
     # ligne rechargerait le réglage autant de fois.
     seuils = tolerances()
-    vent = ventilation()
+    pe_reprise = paiements_ouverture()
+    vent = ventilation(exclure=pe_reprise)
+    rep_pay, rep_jrn = reprise_paiements(), reprise_journal()
 
     out = []
     for c in _clients(groupe, type_client, recherche):
@@ -185,6 +187,10 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         pay_total, pay_nb = regl.get(c.name, (0.0, 0))
         jrn_net, jrn_nb = jrn.get(c.name, (0.0, 0))
         avance = av.get(c.name, {})
+
+        rep_p_total, rep_p_nb = rep_pay.get(c.name, (0.0, 0))
+        rep_j_total, rep_j_nb = rep_jrn.get(c.name, (0.0, 0))
+        reprise = flt(rep_p_total + rep_j_total, PRECISION)
 
         # Ce que le client a effectivement soldé : ses règlements PLUS ce que le journal a passé
         # en sa faveur (avoirs, régularisations, pertes). Les additionner est le seul moyen de
@@ -204,7 +210,11 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             "regle": regle,
             "avance_non_affectee": flt(avance.get("non_affectee"), PRECISION),
             "avance_sur_commande": flt(avance.get("sur_commande"), PRECISION),
-            "delta_paiement": flt(regle - cde_total, PRECISION),
+            "reprise": reprise,
+            # ⚠️ LA REPRISE SORT DU DELTA. Ces règlements soldent des factures d'ouverture, pas
+            # des commandes de cet ERP : les compter ferait paraître surpayés des clients
+            # parfaitement à jour.
+            "delta_paiement": flt(regle - reprise - cde_total, PRECISION),
             "delta_bl": flt(bl_total - cde_total, PRECISION),
             "ignore": c.name in ign,
             "motif": ign.get(c.name, ""),
@@ -213,15 +223,31 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         # LE DÉTAIL PAR TYPE, trié du plus gros au plus petit — c'est ainsi qu'on lit une
         # ventilation : par ce qui pèse.
         cats = sorted(vent.get(c.name, []), key=lambda x: -abs(x["total"]))
+        # Le journal du client, MOINS ce qui relève de la reprise : sinon la même écriture
+        # compterait dans les deux catégories.
+        jrn_courant = flt(jrn_net - rep_j_total, PRECISION)
+        jrn_nb_courant = max(0, jrn_nb - rep_j_nb)
+        if reprise:
+            cats.append({"cle": CLE_REPRISE, "mode": "Reprise d’historique", "compte": "",
+                         "groupe": "", "libelle": "Reprise d’historique — soldes d’avant la "
+                                                  "migration (factures d’ouverture)",
+                         "encaisse": True, "total": reprise, "nb": rep_p_nb + rep_j_nb})
+        jrn_net, jrn_nb = jrn_courant, jrn_nb_courant
         if jrn_net:
             # L'écriture de journal est un type de règlement à part entière : réduction
             # accordée sur commande, avoir, régularisation. Elle n'a ni mode ni compte de
-            # destination, d'où sa catégorie propre — et elle n'est PAS de l'argent encaissé.
+            # destination, d'où sa catégorie propre.
             cats.append({"cle": CLE_JOURNAL, "mode": "Écriture de journal", "compte": "",
                          "groupe": "", "libelle": "Écriture de journal — réduction, avoir, "
                                                   "régularisation",
-                         "encaisse": False, "total": jrn_net, "nb": jrn_nb})
+                         # Décision utilisateur 04/09/2026 : une écriture de journal sur un
+                         # compte client SOLDE réellement la créance — remise accordée, avoir,
+                         # régularisation. Elle compte donc comme encaissée.
+                         "encaisse": True, "total": jrn_net, "nb": jrn_nb})
         ligne["ventilation"] = cats
+        # Le total de la ventilation DOIT égaler la colonne « Réglé » : c'est le contrôle que
+        # l'utilisateur fait à l'œil, et un écran qui ne s'additionne pas ne se croit pas.
+        ligne["total_ventile"] = flt(sum(x["total"] for x in cats), PRECISION)
         # ⚠️ CE QUI EST VRAIMENT ARRIVÉ. « Réglé » compte tout, y compris les dettes non payées
         # (71 706 DT au total) et les pertes : des pièces qui soldent une commande sans qu-un
         # dinar ait bougé. Les distinguer est le seul moyen de savoir ce qu-on a encaissé.
@@ -268,6 +294,58 @@ LIBELLE_GROUPE = {
 GROUPES_ENCAISSES = (GROUPE_BANQUE, GROUPE_CAISSE)
 
 CLE_JOURNAL = "journal"
+CLE_REPRISE = "reprise"
+
+#: ⚠️ LA REPRISE D'HISTORIQUE N'EST PAS UNE VENTE DE CET ERP. Onze factures d'ouverture
+#: (31 322 DT) portent le solde que les clients devaient AVANT la migration ; vingt et un
+#: paiements les soldent, et treize écritures passent par le compte temporaire d'ouverture.
+#: Ces règlements n'ont, par construction, AUCUNE commande en face : les compter dans la
+#: comparaison ferait paraître surpayés des clients parfaitement à jour. Ils sortent donc du
+#: delta et s'affichent sur leur propre ligne (décision utilisateur 04/09/2026).
+COMPTES_OUVERTURE = "%vertur%"
+
+
+def paiements_ouverture() -> set:
+    """Les Payment Entry qui soldent une facture d'OUVERTURE. -> {noms}."""
+    return {r[0] for r in frappe.db.sql(
+        """SELECT DISTINCT pe.name
+           FROM `tabPayment Entry Reference` per
+           INNER JOIN `tabPayment Entry` pe ON pe.name = per.parent
+           INNER JOIN `tabSales Invoice` si ON si.name = per.reference_name
+           WHERE pe.docstatus = 1 AND pe.payment_type = 'Receive'
+             AND pe.party_type = 'Customer'
+             AND per.reference_doctype = 'Sales Invoice' AND si.is_opening = 'Yes'""")}
+
+
+def reprise_paiements() -> dict:
+    """{client: (total, nb)} — les règlements qui soldent une facture d'ouverture."""
+    noms = paiements_ouverture()
+    if not noms:
+        return {}
+    ph = ",".join(["%s"] * len(noms))
+    return {r.cle: (flt(r.total, PRECISION), int(r.nb or 0)) for r in frappe.db.sql(
+        f"""SELECT party AS cle, SUM(paid_amount) AS total, COUNT(*) AS nb
+            FROM `tabPayment Entry` WHERE name IN ({ph}) GROUP BY party""",
+        tuple(noms), as_dict=True)}
+
+
+def reprise_journal() -> dict:
+    """{client: (net, nb)} — les écritures passées par le compte d'ouverture.
+
+    Une reprise de solde arrive parfois par écriture plutôt que par facture : la contrepartie
+    est alors le compte temporaire d'ouverture. Même raison de la mettre à part.
+    """
+    return {r.cle: (flt(r.total, PRECISION), int(r.nb or 0)) for r in frappe.db.sql(
+        """SELECT jea.party AS cle, SUM(jea.credit - jea.debit) AS total,
+                  COUNT(DISTINCT jea.parent) AS nb
+           FROM `tabJournal Entry Account` jea
+           INNER JOIN `tabJournal Entry` je ON je.name = jea.parent
+           WHERE je.docstatus = 1 AND jea.party_type = 'Customer' AND jea.party IS NOT NULL
+             AND (je.voucher_type = 'Opening Entry' OR EXISTS (
+                   SELECT 1 FROM `tabJournal Entry Account` autre
+                   WHERE autre.parent = je.name AND autre.name != jea.name
+                     AND autre.account LIKE %s))
+           GROUP BY jea.party""", (COMPTES_OUVERTURE,), as_dict=True)}
 
 
 def _groupes_de_comptes() -> dict:
@@ -298,17 +376,26 @@ def categorie(mode, compte, groupe) -> dict:
     }
 
 
-def ventilation() -> dict:
-    """{client: [catégorie…]} — le détail des règlements, par mode et par destination."""
+def ventilation(exclure=None) -> dict:
+    """{client: [catégorie…]} — le détail des règlements, par mode et par destination.
+
+    `exclure` : les Payment Entry à ne pas ventiler ici — les règlements de reprise, qui ont
+    leur propre catégorie. Sans quoi ils apparaîtraient deux fois.
+    """
     groupes = _groupes_de_comptes()
+    exclure = exclure or set()
+    condition, params = "", ()
+    if exclure:
+        condition = " AND name NOT IN (%s)" % ",".join(["%s"] * len(exclure))
+        params = tuple(exclure)
     out = {}
     for r in frappe.db.sql(
             """SELECT party AS cle, mode_of_payment AS mode, paid_to AS compte,
                       SUM(paid_amount) AS total, COUNT(*) AS nb
                FROM `tabPayment Entry`
                WHERE docstatus = 1 AND payment_type = 'Receive' AND party_type = 'Customer'
-                 AND party IS NOT NULL
-               GROUP BY party, mode_of_payment, paid_to""", as_dict=True):
+                 AND party IS NOT NULL""" + condition + """
+               GROUP BY party, mode_of_payment, paid_to""", params, as_dict=True):
         cat = categorie(r.mode, r.compte, groupes.get(r.compte, ""))
         cat.update({"total": flt(r.total, PRECISION), "nb": int(r.nb or 0)})
         out.setdefault(r.cle, []).append(cat)

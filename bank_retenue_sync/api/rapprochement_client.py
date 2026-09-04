@@ -55,7 +55,8 @@ def get_data(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     totaux = {k: flt(sum(l[k] for l in lignes), R.PRECISION)
               for k in ("commandes", "bl", "paiements", "journal", "regle",
                         "delta_paiement", "delta_bl", "avance_non_affectee",
-                        "avance_sur_commande", "encaisse_reel", "non_encaisse")}
+                        "avance_sur_commande", "encaisse_reel", "non_encaisse",
+                        "reprise")}
     limite = frappe.utils.cint(limite) or 300
     return {
         "lignes": lignes[:limite],

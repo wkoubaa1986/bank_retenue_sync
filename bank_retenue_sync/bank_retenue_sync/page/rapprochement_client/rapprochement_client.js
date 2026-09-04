@@ -101,7 +101,10 @@ class RapprochementClient {
       ${this._kpi("Bons de livraison", this._m(t.bl), this._sousBl(d, t))}
       ${this._kpi("Regle par les clients", this._m(t.regle),
                   `dont journal ${this._m(t.journal)}`)}
-      ${this._kpi("Ecart de reglement", this._m(t.delta_paiement), "regle moins commandes",
+      ${this._kpi("Reprise d-historique", this._m(t.reprise),
+                  "soldes d-avant la migration, hors comparaison")}
+      ${this._kpi("Ecart de reglement", this._m(t.delta_paiement),
+                  "regle moins reprise moins commandes",
                   Math.abs(t.delta_paiement) > this.seuils.montant)}
       ${this._kpi("Avances non affectees", this._m(t.avance_non_affectee),
                   "argent recu qui ne pointe sur rien",
@@ -212,10 +215,15 @@ class RapprochementClient {
       <td colspan="10">
         <div class="rc-vents">
           <div class="rc-vent-tete">Reglements par type —
-            <b class="rc-vert">${this._m(l.encaisse_reel)} encaisses</b>
+            total <b>${this._m(l.total_ventile)}</b>
+            ${Math.abs((l.total_ventile || 0) - (l.regle || 0)) > 0.005
+              ? ` <span class="rc-rouge">(la colonne Regle annonce ${this._m(l.regle)})</span>`
+              : ` = colonne Regle`}
+            · <b class="rc-vert">${this._m(l.encaisse_reel)} encaisses</b>
             ${l.non_encaisse
-              ? ` · <b class="rc-jaune-txt">${this._m(l.non_encaisse)} en attente ou sans
-                  mouvement d-argent</b>` : ""}</div>
+              ? ` · <b class="rc-jaune-txt">${this._m(l.non_encaisse)} en attente</b>` : ""}
+            ${l.reprise
+              ? ` · <b>${this._m(l.reprise)} de reprise</b>, hors comparaison` : ""}</div>
           ${lignes}
         </div></td></tr>`;
   }

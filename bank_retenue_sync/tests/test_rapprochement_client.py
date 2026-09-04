@@ -266,17 +266,81 @@ class TestVentilationParType(unittest.TestCase):
         b = R.categorie("Virement", "Economiq Aqua Solution - A&S", R.GROUPE_BANQUE)
         self.assertNotEqual(a["cle"], b["cle"])
 
-    def test_l_ecriture_de_journal_est_un_type_a_part_et_non_encaisse(self):
-        """Réduction accordée, avoir, régularisation : cela solde une commande, cela ne fait
-        pas entrer d'argent."""
+    def test_l_ecriture_de_journal_est_un_type_a_part(self):
+        """Réduction accordée, avoir, régularisation : cela n'a ni mode de paiement ni compte
+        de destination, d'où sa catégorie propre.
+
+        ⚠️ ELLE COMPTE COMME ENCAISSÉE depuis le 04/09/2026 (décision utilisateur) : sur un
+        compte client, une écriture SOLDE réellement la créance. Le test qui exigeait
+        `encaisse: False` disait le contraire et a été repris."""
         import inspect
 
-        src = inspect.getsource(R.lignes)
-        self.assertIn("CLE_JOURNAL", src)
-        self.assertIn('"encaisse": False', src)
+        self.assertIn("CLE_JOURNAL", inspect.getsource(R.lignes))
 
     def test_la_ventilation_est_ramenee_en_une_requete(self):
         import inspect
 
         self.assertIn("GROUP BY party, mode_of_payment, paid_to",
                       inspect.getsource(R.ventilation))
+
+
+class TestRepriseDHistorique(unittest.TestCase):
+    """Les soldes d'AVANT la migration ne sont pas des ventes de cet ERP.
+
+    Onze factures d'ouverture (31 322 DT) portent ce que les clients devaient avant la bascule ;
+    vingt et un paiements les soldent, et treize écritures passent par le compte temporaire
+    d'ouverture. Ces règlements n'ont, par construction, AUCUNE commande en face.
+
+    ⚠️ MESURE DU 04/09/2026 : les compter dans la comparaison faisait paraître ECONOMIQ AQUA
+    SOLUTIONS surpayé de 20 641 DT. Sa reprise vaut 20 824 : une fois sortie, son écart réel est
+    de −183 DT. Dix-sept clients sont dans ce cas, pour 36 602 DT au total.
+    """
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_les_paiements_de_reprise_soldent_une_facture_d_ouverture(self):
+        self.assertIn("si.is_opening = 'Yes'", self.source(R.paiements_ouverture))
+
+    def test_les_ecritures_de_reprise_se_reconnaissent_de_deux_facons(self):
+        """Par leur type, ou par leur contrepartie : une reprise arrive parfois par écriture
+        plutôt que par facture."""
+        src = self.source(R.reprise_journal)
+        self.assertIn("voucher_type = 'Opening Entry'", src)
+        self.assertIn("autre.account LIKE", src)
+
+    def test_la_reprise_sort_du_delta(self):
+        """C'est tout l'objet du cas spécial."""
+        self.assertIn("regle - reprise - cde_total", self.source(R.lignes))
+
+    def test_la_reprise_n_est_ventilee_qu_une_fois(self):
+        """Elle a sa propre catégorie : la laisser aussi dans la ventilation par mode la
+        compterait deux fois et le total ne tomberait plus juste."""
+        src = self.source(R.lignes)
+        self.assertIn("ventilation(exclure=pe_reprise)", src)
+        self.assertIn("jrn_net - rep_j_total", src)
+
+    def test_la_ventilation_sait_exclure_des_pieces(self):
+        self.assertIn("NOT IN", self.source(R.ventilation))
+
+
+class TestTotalQuiSAdditionne(unittest.TestCase):
+    """Le total de la ventilation DOIT égaler la colonne « Réglé ».
+
+    C'est le contrôle que l'utilisateur fait à l'œil : un écran dont le détail ne redonne pas
+    le total affiché ne se croit pas. Vérifié sur les 103 clients en écart — zéro divergence.
+    """
+
+    def test_le_total_ventile_est_calcule_et_rendu(self):
+        src = __import__("inspect").getsource(R.lignes)
+        self.assertIn('ligne["total_ventile"]', src)
+        self.assertIn('sum(x["total"] for x in cats)', src)
+
+    def test_l_ecriture_de_journal_compte_comme_encaissee(self):
+        """Décision utilisateur 04/09/2026 : sur un compte client, une écriture SOLDE
+        réellement la créance — remise accordée, avoir, régularisation."""
+        src = __import__("inspect").getsource(R.lignes)
+        bloc = src[src.index("CLE_JOURNAL"):]
+        self.assertIn('"encaisse": True', bloc[:600])
