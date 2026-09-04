@@ -302,7 +302,7 @@ CLE_REPRISE = "reprise"
 #: Ces règlements n'ont, par construction, AUCUNE commande en face : les compter dans la
 #: comparaison ferait paraître surpayés des clients parfaitement à jour. Ils sortent donc du
 #: delta et s'affichent sur leur propre ligne (décision utilisateur 04/09/2026).
-COMPTES_OUVERTURE = "%vertur%"
+VOUCHER_OUVERTURE = "Opening Entry"
 
 
 def paiements_ouverture() -> set:
@@ -330,10 +330,18 @@ def reprise_paiements() -> dict:
 
 
 def reprise_journal() -> dict:
-    """{client: (net, nb)} — les écritures passées par le compte d'ouverture.
+    """{client: (net, nb)} — les écritures de REPRISE de solde, reconnues par leur type.
 
-    Une reprise de solde arrive parfois par écriture plutôt que par facture : la contrepartie
-    est alors le compte temporaire d'ouverture. Même raison de la mettre à part.
+    ⚠️ LE COMPTE D'OUVERTURE NE PEUT PAS SERVIR DE MARQUEUR. Une première version reconnaissait
+    aussi les écritures dont la CONTREPARTIE est « Compte temporaire - compte d'overture ». Or ce
+    compte sert de compte de passage pour des avoirs et des ajustements tout ordinaires :
+    « Reliquat avoir paiement », « Ajustement Erreur Néjib pour les osmoseurs »… Sur LIMPID'EAU,
+    la règle rangeait ainsi 2 621,303 DT d'avoirs en reprise d'historique, et l'écran annonçait
+    un impayé de 2 621 chez un client dont les comptes tombent juste à 0,200 près — ce que le
+    bandeau « Totaux cohérents » de sa fiche disait pourtant déjà (constaté le 04/09/2026).
+
+    Seul `voucher_type = 'Opening Entry'` désigne une vraie reprise. Le nom d'un compte ne prouve
+    rien de l'intention de l'écriture.
     """
     return {r.cle: (flt(r.total, PRECISION), int(r.nb or 0)) for r in frappe.db.sql(
         """SELECT jea.party AS cle, SUM(jea.credit - jea.debit) AS total,
@@ -341,11 +349,8 @@ def reprise_journal() -> dict:
            FROM `tabJournal Entry Account` jea
            INNER JOIN `tabJournal Entry` je ON je.name = jea.parent
            WHERE je.docstatus = 1 AND jea.party_type = 'Customer' AND jea.party IS NOT NULL
-             AND (je.voucher_type = 'Opening Entry' OR EXISTS (
-                   SELECT 1 FROM `tabJournal Entry Account` autre
-                   WHERE autre.parent = je.name AND autre.name != jea.name
-                     AND autre.account LIKE %s))
-           GROUP BY jea.party""", (COMPTES_OUVERTURE,), as_dict=True)}
+             AND je.voucher_type = %s
+           GROUP BY jea.party""", (VOUCHER_OUVERTURE,), as_dict=True)}
 
 
 def _groupes_de_comptes() -> dict:

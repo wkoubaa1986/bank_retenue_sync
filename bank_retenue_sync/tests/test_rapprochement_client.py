@@ -304,12 +304,23 @@ class TestRepriseDHistorique(unittest.TestCase):
     def test_les_paiements_de_reprise_soldent_une_facture_d_ouverture(self):
         self.assertIn("si.is_opening = 'Yes'", self.source(R.paiements_ouverture))
 
-    def test_les_ecritures_de_reprise_se_reconnaissent_de_deux_facons(self):
-        """Par leur type, ou par leur contrepartie : une reprise arrive parfois par écriture
-        plutôt que par facture."""
+    def test_seul_le_TYPE_de_l_ecriture_designe_une_reprise(self):
+        """⚠️ LE COMPTE D'OUVERTURE NE PEUT PAS SERVIR DE MARQUEUR.
+
+        Une première version reconnaissait aussi les écritures dont la CONTREPARTIE est
+        « Compte temporaire - compte d'overture ». Or ce compte sert de compte de passage pour
+        des avoirs et des ajustements ordinaires : « Reliquat avoir paiement », « Ajustement
+        Erreur Néjib pour les osmoseurs »… Sur LIMPID'EAU, la règle rangeait 2 621,303 DT
+        d'avoirs en reprise, et l'écran annonçait un impayé de 2 621 chez un client dont les
+        comptes tombent juste à 0,200 près — ce que le bandeau « Totaux cohérents » de sa fiche
+        affichait pourtant déjà (04/09/2026).
+
+        Le nom d'un compte ne prouve rien de l'intention de l'écriture.
+        """
         src = self.source(R.reprise_journal)
-        self.assertIn("voucher_type = 'Opening Entry'", src)
-        self.assertIn("autre.account LIKE", src)
+        self.assertIn("je.voucher_type = %s", src)
+        self.assertEqual(R.VOUCHER_OUVERTURE, "Opening Entry")
+        self.assertNotIn("autre.account LIKE", src)
 
     def test_la_reprise_sort_du_delta(self):
         """C'est tout l'objet du cas spécial."""
