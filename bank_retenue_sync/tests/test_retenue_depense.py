@@ -1,0 +1,95 @@
+"""Tests de la retenue à la source ACHAT sur les dépenses de caisse facturées.
+
+Convention : `unittest.TestCase` pur. Le modèle est ACC-JV-2026-00698 (04/09/2026) :
+1 310,000 TTC — 1 101,000 HT + 209,000 TVA — retenue 13,100, banque 1 296,900.
+"""
+from __future__ import annotations
+
+import unittest
+
+from bank_retenue_sync.achat import retenue_depense as D
+from bank_retenue_sync.tej import emis_journal as F
+
+
+class TestLaRegle(unittest.TestCase):
+
+    def test_l_exemple_de_reference_tombe_juste(self):
+        self.assertEqual(D.retenue_due(1310.0), 13.1)
+        self.assertEqual(D.net_a_payer(1310.0, 13.1), 1296.9)
+
+    def test_le_seuil_est_inclusif(self):
+        self.assertEqual(D.retenue_due(999.0), 0.0)
+        self.assertEqual(D.retenue_due(1000.0), 10.0)
+
+    def test_le_MONTANT_SEUL_ne_declenche_pas(self):
+        """⚠️ MESURÉ LE 04/09/2026 : sur les quatre écritures de plus de 1 000 DT passées en
+        caisse depuis le 01/09, TROIS sont des primes de salariés (1 500, 2 200, 3 000 DT),
+        toutes de type « Dépense non facturée ». Y retenir 1 % serait faux — une prime relève de
+        l'IRPP et de la CNSS. Le type tranche autant que le montant."""
+        self.assertEqual(D.retenue_due(3000.0, 0, "Dépense non facturée"), 0.0)
+        self.assertEqual(D.retenue_due(2500.0, 0, "Facture d'achat"), 25.0)
+        self.assertEqual(D.retenue_due(1310.0, 0, "Dépense avec facture"), 13.1)
+
+    def test_l_assiette_exclut_le_timbre(self):
+        """Même règle que sur les factures d'achat, vérifiée au millime sur 17 factures
+        locales de 2026."""
+        self.assertEqual(D.retenue_due(1310.0, 1.0), 13.09)
+
+    def test_le_timbre_peut_faire_passer_sous_le_seuil(self):
+        self.assertEqual(D.retenue_due(1000.5, 1.0), 0.0)
+
+    def test_les_types_assujettis_sont_ceux_qui_ont_un_fournisseur(self):
+        self.assertEqual(D.TYPES_ASSUJETTIS, ("Dépense avec facture", "Facture d'achat"))
+
+    def test_le_seuil_et_le_taux_viennent_des_reglages_des_factures(self):
+        """On n'invente pas une seconde règle : c'est la même que pour les factures d'achat."""
+        import inspect
+
+        src = inspect.getsource(D)
+        self.assertIn("R._seuil()", src)
+        self.assertIn("R._taux()", src)
+
+
+class TestLectureDeLaPiece(unittest.TestCase):
+    """La remarque est la SEULE mémoire de la retenue sur l'écriture — pas de champ dédié, donc
+    pas de champ à migrer et pas de risque que le justificatif et sa trace divergent."""
+
+    def test_elle_relit_ce_qu_elle_a_ecrit(self):
+        lu = F.lire_piece("Achat X\nRetenue à la source achat : 13.1 sur 1310.0\n"
+                          "Fournisseur : MS TECHAUTOMATION sarl\nFacture n° FA9260543")
+        self.assertEqual(lu["retenue"], 13.1)
+        self.assertEqual(lu["ttc"], 1310.0)
+        self.assertEqual(lu["fournisseur"], "MS TECHAUTOMATION sarl")
+        self.assertEqual(lu["numero_facture"], "FA9260543")
+
+    def test_une_remarque_sans_retenue_ne_leve_pas(self):
+        lu = F.lire_piece("Prime 3ème Trimestre · Type : Dépense non facturée")
+        self.assertEqual((lu["retenue"], lu["ttc"]), (0.0, 0.0))
+
+    def test_un_montant_a_espaces_est_lu(self):
+        """Les montants s'écrivent « 1 310,000 » dans les remarques françaises."""
+        self.assertEqual(F.lire_piece("Retenue à la source achat : 13,100 sur 1 310,000")["ttc"],
+                         1310.0)
+
+
+class TestPerimetre(unittest.TestCase):
+    """Ce qui n'a jamais de certificat à émettre."""
+
+    def test_les_flux_automatiques_sont_exclus(self):
+        """Aramex et Total n'entrent pas par la caisse et leurs fournisseurs ne sont pas
+        locaux (décision utilisateur 04/09/2026)."""
+        for libelle in ("Facture Total 08-2026", "Facture Aramex 09-2026",
+                        "Frais bancaire 09-2026"):
+            self.assertTrue(F.exclue(libelle), libelle)
+
+    def test_une_depense_de_caisse_ne_l_est_pas(self):
+        self.assertFalse(F.exclue("Dépense caisse — Fac 9260543 - Achat Compteuse"))
+
+    def test_une_depense_A_PAYER_est_exclue(self):
+        """Elle n'a encore rien réglé : sa retenue naîtra avec son règlement."""
+        self.assertTrue(F.exclue("Dépense à payer — Achat X"))
+
+    def test_rien_avant_le_premier_septembre(self):
+        """Les écritures antérieures n'ont pas été saisies sous cette règle : les rattraper
+        produirait des déclarations que personne n'a préparées."""
+        self.assertEqual(F.DEPUIS, "2026-09-01")
