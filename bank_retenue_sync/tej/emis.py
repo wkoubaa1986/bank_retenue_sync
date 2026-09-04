@@ -364,17 +364,24 @@ def cle_idempotence(ctx: dict, dry_run: bool):
 
 
 def emettre(facture: str, dry_run: bool = True, date_paiement=None,
-            depot_reserve: str = None) -> dict:
+            depot_reserve: str = None, ctx: dict = None) -> dict:
     """Repete (dry_run) ou soumet (dry_run=False) le certificat sur TEJ. -> dict.
 
     `depot_reserve` : le nom de la ligne `BRS Depot TEJ` que la tache de fond a posee pour
     elle-meme avant de lancer l'appel. Elle est ignoree par la barriere anti-doublon — sans quoi
     la soumission se bloquerait sur sa propre reservation — et c'est elle qui sera complétée au
     retour, plutot que d'en creer une seconde.
+
+    `ctx` : un contexte deja construit, quand la piece d'origine N'EST PAS une facture d'achat.
+    Une depense de caisse produit une ecriture de journal, pas une facture ; `tej.emis_journal`
+    en tire les memes cles et les passe ici. ⚠️ TOUT LE RESTE — les quatre barrieres anti-doublon,
+    la cle d'idempotence, le controle du montant calcule par le portail, le PDF attache — reste
+    partage. Une seconde implementation d'emission aurait diverge de celle-ci au premier
+    changement du portail.
     """
     from bank_retenue_sync.bank import movements
 
-    ctx = contexte(facture)
+    ctx = ctx or contexte(facture)
     if ctx["manques"]:
         return {"statut": "impossible", **ctx}
     if ctx["deja_emis"]:

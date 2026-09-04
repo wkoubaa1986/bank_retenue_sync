@@ -154,3 +154,114 @@ def _manques(doc) -> list:
     if flt(doc.retenue) <= 0:
         manques.append(_("aucune retenue sur cette pièce"))
     return manques
+
+
+# ------------------------------------------------------------------ l'emission
+
+
+def contexte(ligne: str) -> dict:
+    """Le contexte d'emission d'une ligne de la file, dans la forme que `tej.emis` attend.
+
+    ⚠️ C'EST UN ADAPTATEUR, PAS UNE SECONDE IMPLEMENTATION. `tej/emis.py` sait deja tout faire —
+    repetition a blanc, controle du montant calcule par le portail, cle d'idempotence, PDF
+    attache. Il ne sait pas lire une ecriture de journal : on lui fournit donc les memes cles
+    depuis une autre source. Dupliquer l'emission aurait fait diverger les deux chemins au
+    premier changement du portail.
+
+    ⚠️ LE HT SE DEDUIT, IL NE SE LIT PAS. Une ecriture de caisse ne porte pas de « net_total » :
+    elle porte le TTC et la ligne de TVA. Le HT est leur difference, et le taux se retrouve a
+    partir des deux — ce que TEJ exige, un taux unique par operation.
+    """
+    from bank_retenue_sync.tej import matricule as M
+
+    doc = frappe.get_doc(DOCTYPE, ligne)
+    je = frappe.get_doc("Journal Entry", doc.journal_entry)
+    ht, taux = _ht_et_taux(je, flt(doc.montant_ttc), flt(doc.retenue))
+    mat = M.normaliser(doc.matricule or "")
+
+    manques = _manques(doc)
+    if doc.statut == "Émis":
+        manques.append(_("un certificat a déjà été émis pour cette pièce"))
+    if not mat:
+        manques.append(_("le matricule fiscal {0} n'est pas exploitable")
+                       .format(doc.matricule or "?"))
+    if taux is None:
+        manques.append(_("le taux de TVA n'est pas déterminable sur cette écriture : TEJ ne "
+                         "prend qu'un taux par opération"))
+
+    return {
+        # `facture` est le nom que `tej.emis` donne a la piece d'origine : ici c'est l'ecriture.
+        "facture": doc.journal_entry,
+        "fournisseur": doc.supplier,
+        "fournisseur_nom": frappe.db.get_value("Supplier", doc.supplier, "supplier_name")
+                           if doc.supplier else "",
+        "matricule": mat,
+        "matricule_saisi": doc.matricule or "",
+        "bill_no": doc.numero_facture or "",
+        "date_paiement": str(doc.date_piece or ""),
+        "montant_ht": ht,
+        "taux_tva": taux,
+        "retenue_facture": flt(doc.retenue, 3),
+        "exercice": getdate(doc.date_piece).year if doc.date_piece else None,
+        "deja_emis": doc.certificat or None,
+        "manques": manques,
+    }
+
+
+#: Les comptes de TVA deductible de la caisse. Le taux se lit dans leur nom, pas dans un champ.
+_TVA = re.compile(r"TVA\s*(\d+)\s*%", re.IGNORECASE)
+
+
+def _ht_et_taux(je, ttc, retenue):
+    """(HT, taux de TVA) d'une ecriture de depense. -> (float, int|None).
+
+    Le TTC est celui de la piece — retenue comprise, puisqu'elle en est deduite et non ajoutee.
+    """
+    tva, taux = 0.0, None
+    for a in je.accounts:
+        m = _TVA.search(a.account or "")
+        if m and flt(a.debit) > 0:
+            tva += flt(a.debit)
+            t = int(m.group(1))
+            # Deux taux differents sur la meme piece : TEJ n'en prend qu'un, on rend None.
+            taux = t if taux in (None, t) else -1
+    if taux == -1:
+        return flt(ttc - tva, 3), None
+    return flt(ttc - tva, 3), taux
+
+
+@frappe.whitelist()
+def emettre(ligne: str, dry_run: bool = True) -> dict:
+    """Repete ou soumet le certificat d'une ligne de la file. -> dict.
+
+    ⚠️ RIEN NE PART SANS `dry_run=False` EXPLICITE, demande a l'ecran — c'est la doctrine de
+    `tej/emis`, et elle vaut ici pour la meme raison : un certificat soumis se lit chez le
+    fournisseur et chez l'administration.
+    """
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    from bank_retenue_sync.tej import emis as E
+
+    doc = frappe.get_doc(DOCTYPE, ligne)
+    ctx = contexte(ligne)
+    if ctx["manques"]:
+        return {"statut": "impossible", **ctx}
+
+    res = E.emettre(doc.journal_entry, dry_run=frappe.utils.cint(dry_run) == 1, ctx=ctx)
+    reference = res.get("reference") or res.get("certificat")
+    if not frappe.utils.cint(dry_run) and reference:
+        # L'etat ne bascule QU'AVEC une reference : sans elle, rien ne prouve qu'une declaration
+        # est partie, et marquer « Émis » ferait perdre la ligne de vue pour toujours.
+        doc.statut = "Émis"
+        doc.certificat = reference
+        doc.emis_le = frappe.utils.now_datetime()
+        doc.flags.ignore_permissions = True
+        doc.save()
+        frappe.db.commit()
+    return res
+
+
+@frappe.whitelist()
+def rafraichir(depuis=None) -> dict:
+    """Bouton « Actualiser la file »."""
+    frappe.only_for(["System Manager", "Accounts Manager"])
+    return synchroniser(depuis)

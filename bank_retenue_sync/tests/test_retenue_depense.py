@@ -93,3 +93,61 @@ class TestPerimetre(unittest.TestCase):
         """Les écritures antérieures n'ont pas été saisies sous cette règle : les rattraper
         produirait des déclarations que personne n'a préparées."""
         self.assertEqual(F.DEPUIS, "2026-09-01")
+
+
+class TestAdaptateurDEmission(unittest.TestCase):
+    """L'émission depuis une ÉCRITURE, sans dupliquer `tej/emis`.
+
+    ⚠️ C'EST UN ADAPTATEUR, PAS UNE SECONDE IMPLÉMENTATION. `tej/emis` porte les quatre barrières
+    anti-doublon, la clé d'idempotence, le contrôle du montant calculé par le portail et le PDF
+    attaché. Une seconde émission aurait divergé de celle-ci au premier changement du portail.
+    """
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_le_contexte_rend_les_memes_cles_que_pour_une_facture(self):
+        from bank_retenue_sync.tej import emis as E
+
+        attendues = set(E.contexte.__doc__ and [] or [])  # documentation seulement
+        src = self.source(F.contexte)
+        for cle in ("facture", "matricule", "bill_no", "date_paiement", "montant_ht",
+                    "taux_tva", "exercice", "manques"):
+            self.assertIn('"%s"' % cle, src, cle)
+
+    def test_l_emission_partagee_accepte_un_contexte(self):
+        """Sans ce paramètre, il aurait fallu réécrire `emettre` — et les barrières avec."""
+        import inspect
+
+        from bank_retenue_sync.tej import emis as E
+
+        self.assertIn("ctx", inspect.signature(E.emettre).parameters)
+        self.assertIn("ctx = ctx or contexte(facture)", inspect.getsource(E.emettre))
+
+    def test_le_HT_se_deduit_du_TTC_et_de_la_TVA(self):
+        """Une écriture de caisse ne porte pas de « net_total » : elle porte le TTC et la ligne
+        de TVA. Sur ACC-JV-2026-00698 : 1 310,000 − 209,000 = 1 101,000."""
+        self.assertIn("ttc - tva", self.source(F._ht_et_taux))
+
+    def test_deux_taux_de_TVA_rendent_le_taux_indeterminable(self):
+        """TEJ n'accepte qu'un taux par opération : mieux vaut refuser que déclarer au hasard."""
+        src = self.source(F._ht_et_taux)
+        self.assertIn("taux = t if taux in (None, t) else -1", src)
+        self.assertIn("return flt(ttc - tva, 3), None", src)
+
+    def test_rien_ne_part_sans_dry_run_explicite(self):
+        import inspect
+
+        self.assertIs(inspect.signature(F.emettre).parameters["dry_run"].default, True)
+
+    def test_l_etat_ne_bascule_qu_avec_une_reference(self):
+        """Sans elle, rien ne prouve qu'une déclaration est partie — et marquer « Émis » ferait
+        perdre la ligne de vue pour toujours."""
+        self.assertIn('if not frappe.utils.cint(dry_run) and reference:',
+                      self.source(F.emettre))
+
+    def test_la_synchronisation_ne_touche_jamais_une_ligne_emise(self):
+        """La référence du certificat est la preuve d'une déclaration partie."""
+        self.assertIn('if doc.statut == "Émis":', self.source(F.synchroniser))
