@@ -248,7 +248,13 @@ app_include_js = [
 
 # Vue liste : l'etat du certificat TEJ de chaque facture. Charge APRES le fichier d'ERPNext, ce
 # qui permet d'etendre `listview_settings` au lieu de l'ecraser (cf. le fichier).
-doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}
+doctype_list_js = {
+    "Purchase Invoice": "public/js/purchase_invoice_list.js",
+    # Pastille « certificat de retenue » sur chaque ecriture de caisse : a emettre, incomplet,
+    # depot en analyse, emis. Sans elle, l'etat ne se voit qu'en ouvrant les ecritures une par une
+    # (demande utilisateur 05/09/2026).
+    "Journal Entry": "public/js/journal_entry_list.js",
+}
 
 doc_events = {
     "Purchase Invoice": {

@@ -536,3 +536,56 @@ class TestReconstitutionDUnDepot(unittest.TestCase):
         self.assertIn("E.suivre_depot(", src)
         self.assertIn("rapatrier_certificats()", src)
         self.assertLess(src.index("E.suivre_depot("), src.index("rapatrier_certificats()"))
+
+
+class TestPastilleEnVueListe(unittest.TestCase):
+    """La pastille de la liste des écritures : l'état se lit sans ouvrir (05/09/2026)."""
+
+    def test_la_ligne_de_file_donne_les_trois_etats_propres(self):
+        lignes = [{"journal_entry": "JE-1", "statut": "À émettre", "certificat": "", "note": ""},
+                  {"journal_entry": "JE-2", "statut": "Incomplet", "certificat": "",
+                   "note": "fournisseur non rattaché"},
+                  {"journal_entry": "JE-3", "statut": "Émis", "certificat": "REF-3", "note": ""},
+                  {"journal_entry": "JE-4", "statut": "Ignoré", "certificat": "", "note": ""}]
+        vues = F._vues(lignes, [], [])
+        self.assertEqual(vues["JE-1"]["statut"], "a_emettre")
+        self.assertEqual(vues["JE-2"]["statut"], "incomplet")
+        self.assertEqual(vues["JE-2"]["message"], "fournisseur non rattaché")
+        self.assertEqual(vues["JE-3"], {"statut": "emis", "reference": "REF-3", "message": ""})
+        self.assertNotIn("JE-4", vues, "une écriture ignorée ne dit rien : c'est un choix")
+
+    def test_le_dernier_depot_l_emporte_sur_la_ligne(self):
+        """Le cas ACC-JV-2026-00698 : la ligne disait « Émis » sur un numéro de dépôt, alors
+        que ce qui comptait était le dépôt en analyse."""
+        lignes = [{"journal_entry": "JE-1", "statut": "À émettre", "certificat": "", "note": ""}]
+        depots = [{"name": "DEP-1", "facture": "JE-1", "statut": "refuse", "numero_depot": "",
+                   "reference": "", "message": "refusé"},
+                  {"name": "DEP-2", "facture": "JE-1", "statut": "en_analyse",
+                   "numero_depot": "IN260054", "reference": "", "message": ""}]
+        vue = F._vues(lignes, depots, [])["JE-1"]
+        self.assertEqual(vue["statut"], "en_analyse")
+        self.assertEqual(vue["numero"], "IN260054")
+
+    def test_le_pdf_attache_prime_sur_tout(self):
+        """Il est la mémoire du certificat : s'il est là, le certificat existe."""
+        depots = [{"name": "DEP-1", "facture": "JE-1", "statut": "incertain",
+                   "numero_depot": "", "reference": "", "message": "?"}]
+        fichiers = [{"attached_to_name": "JE-1", "file_url": "/private/files/x.pdf",
+                     "file_name": "certificat_ras_66112962-a981-4f4c-9a53-233c466fe0d747ffd1.pdf"}]
+        vue = F._vues([], depots, fichiers)["JE-1"]
+        self.assertEqual(vue["statut"], "emis")
+        self.assertEqual(vue["reference"], "66112962-a981-4f4c-9a53-233c466fe0d747ffd1")
+
+    def test_la_liste_lit_localement_et_en_lot(self):
+        src = inspect.getsource(F.etats)
+        self.assertIn('frappe.has_permission("Journal Entry", "read")', src)
+        self.assertIn('"piece_type": "Journal Entry"', src)
+        self.assertNotIn("start_job", src)
+        self.assertNotIn("interroger", src)
+        self.assertNotIn("_reetat", src, "une décoration ne recalcule pas les statuts")
+
+    def test_la_liste_des_ecritures_est_branchee(self):
+        from bank_retenue_sync import hooks
+
+        self.assertEqual(hooks.doctype_list_js.get("Journal Entry"),
+                         "public/js/journal_entry_list.js")

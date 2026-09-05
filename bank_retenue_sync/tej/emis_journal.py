@@ -466,6 +466,75 @@ def rafraichir(depuis=None) -> dict:
     return synchroniser(depuis)
 
 
+#: Vocabulaire de la pastille en vue liste, par-dessus celui de `BRS Depot TEJ` : les trois
+#: etats propres a la file. Une ecriture « Ignoré » ne dit rien — c'est le choix de l'utilisateur.
+A_EMETTRE, INCOMPLET, EMIS = "a_emettre", "incomplet", "emis"
+
+
+def _vues(lignes: list, depots: list, fichiers: list) -> dict:
+    """Compose, sans base, l'etat par ecriture. -> {journal_entry: vue}.
+
+    Priorite, du moins au plus sur :
+    1. la ligne de file (« À émettre », « Incomplet », « Émis ») — ce que l'ecriture attend ;
+    2. le DERNIER depot (en envoi, en analyse, incertain, refuse…) — ce qui est parti ;
+    3. le PDF `certificat_ras_*` attache a l'ecriture — il est la memoire du certificat : s'il
+       est la, le certificat existe, quel qu'ait ete le sort des depots qui l'ont precede.
+    Meme doctrine que `tej.emis.etats` pour les factures.
+    """
+    out = {}
+    for l in lignes:
+        if l["statut"] == "Émis":
+            out[l["journal_entry"]] = {"statut": EMIS, "reference": l.get("certificat") or "",
+                                       "message": ""}
+        elif l["statut"] == "Incomplet":
+            out[l["journal_entry"]] = {"statut": INCOMPLET, "message": l.get("note") or ""}
+        elif l["statut"] == "À émettre":
+            out[l["journal_entry"]] = {"statut": A_EMETTRE, "message": ""}
+    # Du plus ancien au plus recent, et le dernier ecrase : une ecriture refusee puis
+    # resoumise porte deux depots, et seul le dernier dit ou on en est.
+    for d in depots:
+        out[d["facture"]] = M_depot.vue(d)
+    for f in fichiers:
+        ref = (f["file_name"] or "").replace("certificat_ras_", "").rsplit(".pdf", 1)[0]
+        out[f["attached_to_name"]] = {"statut": EMIS, "reference": ref,
+                                      "file_url": f["file_url"], "message": ""}
+    return out
+
+
+@frappe.whitelist()
+def etats(ecritures) -> dict:
+    """L'etat du certificat de plusieurs ecritures d'un coup. -> {journal_entry: vue}. Vue liste.
+
+    ⚠️ TROIS REQUETES, PAS UNE PAR LIGNE, ET RIEN N'EST DEMANDE AU SERVICE TEJ : la liste en
+    affiche vingt et se rafraichit a chaque filtre. Lecture locale seulement — l'ecran doit
+    s'afficher tout de suite, et une decoration ne recalcule pas les statuts (c'est `etat`, a
+    l'ouverture de la fiche, qui remet la ligne d'accord avec la fiche fournisseur).
+
+    Ne dit rien des ecritures hors file (pas de retenue, hors perimetre, flux automatiques,
+    « Ignoré ») : un badge « rien a signaler » sur chaque ligne serait du bruit.
+    """
+    if not frappe.has_permission("Journal Entry", "read"):
+        return {}
+    noms = frappe.parse_json(ecritures) if isinstance(ecritures, str) else ecritures
+    noms = [n for n in (noms or []) if n]
+    if not noms:
+        return {}
+    lignes = frappe.get_all(DOCTYPE, filters={"journal_entry": ["in", noms]},
+                            fields=["journal_entry", "statut", "certificat", "note"])
+    depots = frappe.get_all(M_depot.DOCTYPE,
+                            filters={"facture": ["in", noms], "piece_type": "Journal Entry"},
+                            fields=["name", "facture", "statut", "numero_depot", "reference",
+                                    "soumis_le", "derniere_verification", "verifications",
+                                    "message"],
+                            order_by="creation asc") if frappe.db.exists(
+                                "DocType", M_depot.DOCTYPE) else []
+    fichiers = frappe.get_all("File", filters={"attached_to_doctype": "Journal Entry",
+                                               "attached_to_name": ["in", noms],
+                                               "file_name": ["like", "certificat_ras_%"]},
+                              fields=["attached_to_name", "file_name", "file_url"])
+    return _vues(lignes, depots, fichiers)
+
+
 @frappe.whitelist()
 def etat(journal_entry: str) -> dict:
     """L'etat de la retenue d'une ecriture, pour le bouton pose sur sa fiche. -> dict.
