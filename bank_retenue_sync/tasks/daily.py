@@ -158,9 +158,17 @@ def depots_tej():
     passages par jour, parce qu'un fournisseur attend son certificat et qu'un depot analyse le
     matin n'a aucune raison d'attendre le lendemain.
     """
-    from bank_retenue_sync.tej import emis
+    from bank_retenue_sync.tej import emis, emis_journal
 
-    return _safe("depots_tej", lambda: emis.verifier_depots())
+    def _suivre():
+        res = emis.verifier_depots()
+        # La file des retenues de caisse ne sait rien des depots : sans ce report, une ligne
+        # resterait « À émettre » (ou sur un numero de depot) alors que le certificat existe —
+        # jusqu'a ce que quelqu'un ouvre l'ecran, seul autre endroit qui rapatrie.
+        res["rapatries"] = emis_journal.rapatrier_certificats()
+        return res
+
+    return _safe("depots_tej", _suivre)
 
 
 def export_emis():

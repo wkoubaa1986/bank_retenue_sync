@@ -476,3 +476,63 @@ class TestCertificatPoseSurLaBonnePiece(unittest.TestCase):
 
         self.assertEqual(inspect.signature(E.attacher_pdf).parameters["piece_type"].default,
                          "Purchase Invoice")
+
+    def test_un_certificat_genere_sur_le_champ_ramene_son_pdf_sur_l_ecriture(self):
+        """Le cron ne relit que les dépôts `en_analyse` et `incertain` : un dépôt conclu
+        `genere` à la soumission n'est jamais réexaminé, et le certificat resterait chez TEJ.
+        `tej/emis.executer_soumission` le fait pour les factures ; l'écriture y a droit aussi."""
+        src = inspect.getsource(F.executer_soumission)
+        self.assertIn('E.attacher_pdf(doc.journal_entry, reference, "Journal Entry")', src)
+        self.assertIn('if res.get("statut") == "soumis" and reference:', src)
+
+    def test_un_pdf_manque_ne_remet_pas_la_reference_en_cause(self):
+        """Le certificat EXISTE chez TEJ : échouer sur le PDF ne doit pas laisser croire le
+        contraire. La bascule « Émis » précède l'attachement."""
+        src = inspect.getsource(F.executer_soumission)
+        self.assertLess(src.index('doc.statut = "Émis"'), src.index("E.attacher_pdf("))
+        self.assertIn("frappe.log_error(", src)
+
+
+class TestLeCronRapatrieAussi(unittest.TestCase):
+    """La file ne sait rien des dépôts. Sans report depuis le cron, une ligne restait sur un
+    numéro de dépôt jusqu'à ce que quelqu'un ouvre l'écran — seul autre endroit qui rapatrie."""
+
+    def test_le_cron_des_depots_rapatrie_la_file(self):
+        from bank_retenue_sync.tasks import daily
+
+        src = inspect.getsource(daily.depots_tej)
+        self.assertIn("emis_journal.rapatrier_certificats()", src)
+        self.assertLess(src.index("emis.verifier_depots()"),
+                        src.index("emis_journal.rapatrier_certificats()"))
+
+
+class TestReconstitutionDUnDepot(unittest.TestCase):
+    """Le cas ACC-JV-2026-00698 : dépôt IN260054 chez TEJ, rien en base, certificat jamais revenu."""
+
+    def source(self):
+        return inspect.getsource(F.reconstituer_depot)
+
+    def test_rien_n_est_soumis(self):
+        src = self.source()
+        self.assertNotIn("emettre(", src)
+        self.assertNotIn("enqueue", src)
+
+    def test_le_depot_dit_sa_nature_et_son_numero(self):
+        src = self.source()
+        self.assertIn('depot.piece_type = "Journal Entry"', src)
+        self.assertIn("depot.numero_depot = numero_depot", src)
+        self.assertIn("depot.statut = M_depot.EN_ANALYSE", src)
+
+    def test_le_beneficiaire_est_normalise(self):
+        self.assertIn("M.normaliser(doc.matricule", self.source())
+
+    def test_un_depot_existant_n_est_pas_double(self):
+        src = self.source()
+        self.assertIn("if existants:", src)
+        self.assertLess(src.index("if existants:"), src.index("frappe.new_doc("))
+
+    def test_le_circuit_nominal_conclut(self):
+        src = self.source()
+        self.assertIn("E.suivre_depot(", src)
+        self.assertIn("rapatrier_certificats()", src)
+        self.assertLess(src.index("E.suivre_depot("), src.index("rapatrier_certificats()"))

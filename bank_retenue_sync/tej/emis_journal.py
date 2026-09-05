@@ -360,7 +360,76 @@ def executer_soumission(ligne: str, depot_nom: str = None) -> dict:
         doc.flags.ignore_permissions = True
         doc.save()
         frappe.db.commit()
+    if res.get("statut") == "soumis" and reference:
+        # ⚠️ LE PDF NE VIENT PAS TOUT SEUL QUAND TEJ GENERE SUR-LE-CHAMP. Le cron des depots ne
+        # relit que les lignes `en_analyse` et `incertain` : un depot conclu `genere` a la
+        # soumission n'est jamais reexamine, et le certificat resterait chez TEJ — l'ecriture sans
+        # justificatif. `tej/emis.executer_soumission` le fait pour les factures ; on le fait ici
+        # pour l'ECRITURE, en le disant. Un echec ici ne remet rien en cause : la reference est en
+        # base, le PDF se reprend.
+        try:
+            res["pdf"] = E.attacher_pdf(doc.journal_entry, reference, "Journal Entry")
+        except Exception:
+            res["pdf"] = {"statut": "echec"}
+            frappe.log_error(title="PDF du certificat TEJ %s" % doc.journal_entry,
+                             message=frappe.get_traceback())
+        frappe.db.commit()
     return res
+
+
+def reconstituer_depot(journal_entry: str, numero_depot: str, soumis_le=None,
+                        suivre: bool = True) -> dict:
+    """Pose la ligne `BRS Depot TEJ` qu'une soumission coupee n'a jamais enregistree. -> dict.
+
+    ⚠️ LE CAS REEL : ACC-JV-2026-00698, le 04/09/2026. La soumission synchrone d'alors a ete
+    coupee par le proxy APRES le clic « Valider » sur le portail : le depot IN260054 existait
+    chez TEJ, rien ne le disait ici. Le correctif manuel a note le numero sur la ligne de file —
+    mais le cron ne lit que `BRS Depot TEJ`, et la file ne sait rien des depots : le certificat,
+    pourtant genere, n'est jamais revenu sur l'ecriture.
+
+    Cette fonction fait ce que la reservation aurait fait, depuis ce que la ligne de file sait
+    deja, puis laisse le circuit nominal conclure (suivi en lecture seule, PDF, rapatriement).
+    Elle ne SOUMET rien. Une ligne de depot existante la rend inutile : on la rend telle quelle.
+
+        bench --site <site> execute bank_retenue_sync.tej.emis_journal.reconstituer_depot \\
+            --kwargs '{"journal_entry": "ACC-JV-2026-00698", "numero_depot": "IN260054"}'
+    """
+    from bank_retenue_sync.tej import emis as E
+    from bank_retenue_sync.tej import matricule as M
+
+    doc = frappe.get_doc(DOCTYPE, journal_entry)
+    existants = frappe.get_all(M_depot.DOCTYPE,
+                               filters={"facture": journal_entry, "piece_type": "Journal Entry"},
+                               pluck="name")
+    if existants:
+        nom, cree = existants[0], False
+    else:
+        depot = frappe.new_doc(M_depot.DOCTYPE)
+        depot.piece_type = "Journal Entry"
+        depot.facture = journal_entry
+        depot.fournisseur = doc.supplier
+        depot.beneficiaire = M.normaliser(doc.matricule or "") or ""
+        depot.numero_declarant = doc.numero_facture or ""
+        depot.date_paiement = doc.date_piece or None
+        depot.exercice = getdate(doc.date_piece).year if doc.date_piece else None
+        depot.numero_depot = numero_depot
+        depot.statut = M_depot.EN_ANALYSE
+        depot.soumis_le = soumis_le or frappe.utils.now_datetime()
+        depot.message = ("ligne reconstituée : la soumission avait été coupée avant "
+                         "d'enregistrer le dépôt %s, constaté sur le portail" % numero_depot)
+        depot.flags.ignore_permissions = True
+        depot.insert()
+        frappe.db.commit()
+        nom, cree = depot.name, True
+
+    out = {"depot": nom, "cree": cree}
+    if suivre:
+        out["suivi"] = E.suivre_depot(frappe.get_doc(M_depot.DOCTYPE, nom))
+        frappe.db.commit()
+        out["rapatries"] = rapatrier_certificats()
+        out["ligne"] = frappe.db.get_value(DOCTYPE, journal_entry, ["statut", "certificat"],
+                                           as_dict=True)
+    return out
 
 
 @frappe.whitelist()

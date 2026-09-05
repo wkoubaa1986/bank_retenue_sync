@@ -318,6 +318,15 @@ def corps_de_suivi(depot) -> dict:
         valeur = lire(champ)
         if valeur:
             corps[cle] = str(valeur) if champ != "exercice" else int(valeur)
+    # ⚠️ LE PORTAIL COMPARE LE BENEFICIAIRE A CE QU'IL AFFICHE : « 1827548K », jamais
+    # « 1827548K/P/M/000 ». Avec la forme longue, le service refuse la lecture (« le filtre n'a
+    # pas ete applique ») et le depot reste eternellement en analyse — constate en prod le
+    # 05/09/2026 sur une ligne reconstituee a la main. Une ligne posee par `reserver` porte deja
+    # la forme courte ; on la garantit ici pour toutes les autres.
+    if corps.get("beneficiaire"):
+        from bank_retenue_sync.tej import matricule as M
+
+        corps["beneficiaire"] = M.normaliser(corps["beneficiaire"]) or corps["beneficiaire"]
     return corps
 
 

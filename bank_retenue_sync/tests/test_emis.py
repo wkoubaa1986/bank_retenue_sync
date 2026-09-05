@@ -148,6 +148,19 @@ class TestCorpsDeSuivi(unittest.TestCase):
         self.assertEqual(corps["numero_depot"], "IN260051")
         self.assertEqual(corps["exercice"], 2026)
 
+    def test_le_beneficiaire_part_sous_la_forme_que_le_portail_affiche(self):
+        """Constate en prod le 05/09/2026 : avec « 1827548K/P/M/000 », le service repondait
+        « la ligne rendue porte le beneficiaire '1827548K' : le filtre n'a pas ete applique »,
+        et le depot IN260054 restait eternellement en analyse alors que le certificat existait."""
+        ligne = {"suivi": "", "numero_declarant": "FA9260543",
+                 "beneficiaire": "1827548K/P/M/000", "numero_depot": "IN260054"}
+        self.assertEqual(depot.corps_de_suivi(ligne)["beneficiaire"], "1827548K")
+
+    def test_un_beneficiaire_illisible_part_tel_quel(self):
+        """Ne pas deviner : mieux vaut un refus explicite du service qu'un filtre vide."""
+        ligne = {"suivi": "", "numero_declarant": "FA-1", "beneficiaire": "???"}
+        self.assertEqual(depot.corps_de_suivi(ligne)["beneficiaire"], "???")
+
     def test_un_suivi_illisible_ne_fait_pas_tomber_le_cron(self):
         ligne = {"suivi": "{ceci n est pas du json", "numero_declarant": "FA-4471"}
         self.assertEqual(depot.corps_de_suivi(ligne)["numero_chez_declarant"], "FA-4471")
