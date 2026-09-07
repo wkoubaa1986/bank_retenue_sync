@@ -119,11 +119,23 @@ def get_factures(mois=None) -> dict:
 
 @frappe.whitelist()
 def get_charges(mois=None) -> dict:
-    """Les charges du mois, enrichies des controles DEJA passes — aucun PDF n'est relu ici."""
+    """Les charges du mois, enrichies des controles DEJA passes — aucun PDF n'est relu ici.
+
+    S'y ajoutent les charges RATTRAPEES : celles d'un mois anterieur rattachees a ce dossier.
+    Elles sortent a part, groupees par mois d'origine et avec leur propre sous-total, exactement
+    comme dans le classeur — jamais fondues dans les blocs ni dans le total du mois.
+    """
     _guard()
     from bank_retenue_sync.facturation import controle
 
-    return controle.attacher_aux_lignes(M_charges.liste(mois))
+    mois = periode.normaliser(mois)
+    donnees = controle.attacher_aux_lignes(M_charges.liste(mois))
+    donnees["envoi"] = _etat_envoi(_dossier_doc(mois))
+    donnees["peut_rattacher"] = any(r in frappe.get_roles() for r in ROLES_ECRITURE)
+    donnees["retards"] = [{"mois": g["mois"], "libelle": _libelle_mois(g["mois"]),
+                           "totaux": g["totaux"], "lignes": g["lignes"]}
+                          for g in M_dossier.retardataires_du_dossier(mois)]
+    return donnees
 
 
 @frappe.whitelist()
@@ -411,7 +423,7 @@ def annuler_envoi(mois=None) -> dict:
 
 
 @frappe.whitelist()
-def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> dict:
+def rattacher(mois=None, document_type=None, document_name=None, attacher=1, manuel=0) -> dict:
     """Rattache (ou detache) une charge retardataire au dossier du mois. Persiste, idempotent.
 
     ⚠️ ON NE RATTACHE QU'UNE CHARGE, ET NULLE PART AILLEURS. Le type est borne aux deux familles de
@@ -421,10 +433,16 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
     ⚠️ ET PAS SUR UN MOIS DEJA ENVOYE. Rattacher a un dossier deja parti fait DISPARAITRE la piece
     du vivier — pastille, section, controle des non-envoyees — sans qu'elle ait jamais ete
     transmise : le trou meme que ce ticket vient boucher. Il faut annuler l'envoi d'abord.
+
+    `manuel=1` est le rattrapage CHOISI depuis l'onglet Charges : l'utilisateur designe lui-meme
+    une piece d'un mois anterieur qui n'est jamais partie. La regle de detection automatique
+    (mois d'origine envoye, saisie apres l'envoi) ne s'y applique pas ; tous les autres garde-fous,
+    si. Sans ce drapeau, le comportement est celui d'avant, au detail pres.
     """
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
     attacher = bool(frappe.utils.cint(attacher))
+    manuel = bool(frappe.utils.cint(manuel))
     if document_type not in M_charges.TYPES_CHARGE:
         frappe.throw(_("Type de pièce non éligible au rattrapage : {0}.").format(document_type))
 
@@ -440,7 +458,7 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
         if cle in _rattachees_globales(sauf_mois=mois):
             frappe.throw(_("Cette pièce est déjà rattachée au dossier d'un autre mois."))
         desc = _decrire_voucher(document_type, document_name)
-        _exiger_retardataire(desc, mois)
+        _exiger_retardataire(desc, mois, manuel=manuel)
         doc.append("retardataires", desc)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
@@ -452,22 +470,27 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
     return {"mois": mois, "attache": attacher, "nb_rattaches": len(doc.retardataires)}
 
 
-def _exiger_retardataire(desc: dict, mois: str) -> None:
+def _exiger_retardataire(desc: dict, mois: str, manuel: bool = False) -> None:
     """Refuse tout ce qui n'est pas une VRAIE retardataire d'un mois anterieur deja envoye.
 
     ⚠️ L'ECRAN NE PROPOSE QUE DES CANDIDATES — L'API, ELLE, EST OUVERTE. Rattacher une piece de
     juin au dossier d'aout alors que juin n'est pas envoye la ferait sortir DEUX fois : dans le
     dossier de juin a sa place normale, et dans le sous-bloc « Retards de juin » d'aout. Double
     comptage cote comptable, et la piece quitte le vivier pour toujours via `_rattachees_globales`.
+
+    ⚠️ EN MODE MANUEL, C'EST PRECISEMENT CE CAS QUE L'UTILISATEUR DEMANDE — et il l'assume. Le
+    montant, lui, ne double jamais : le sous-bloc « Retards » reste hors du total du mois porteur,
+    et reconstituer le mois d'origine marquera sa ligne « DÉJÀ REMISE ». On ne lit donc ni envoi
+    ni date de saisie : la regle pure ne les regarde pas, et deux requetes de moins.
     """
     origine = desc.get("mois_origine") or ""
     cle = (desc["document_type"], desc["document_name"])
-    envoi = _envois_map().get(origine)
-    creation = M_charges.creations_des_vouchers([cle]).get(cle)
+    envoi = None if manuel else _envois_map().get(origine)
+    creation = None if manuel else M_charges.creations_des_vouchers([cle]).get(cle)
 
     # La regle elle-meme vit dans le module pur, ou elle est testee : ici on ne fait que lire ce
     # dont elle a besoin, et traduire son verdict.
-    raison = M_retards.raison_de_refus(origine, mois, envoi, creation)
+    raison = M_retards.raison_de_refus(origine, mois, envoi, creation, manuel=manuel)
     if raison:
         frappe.throw(_message_refus(raison, origine))
 
@@ -521,6 +544,87 @@ def _decrire_voucher(document_type: str, document_name: str) -> dict:
         "reference": l.get("reference_export") or l.get("ref"),
         "montant": l.get("ttc"),
         "avec_justificatif": 1 if l.get("justificatifs") else 0,
+    }
+
+
+def _rattachements_des_pieces(vouchers) -> dict:
+    """{ (document_type, nom) -> mois porteur } pour les pieces donnees, en une requete."""
+    noms = [dn for _, dn in vouchers]
+    if not noms:
+        return {}
+    rows = frappe.get_all("BRS Dossier Retardataire",
+                          filters={"document_name": ["in", noms]},
+                          fields=["document_type", "document_name", "parent"],
+                          limit_page_length=0)
+    return {(r.document_type, r.document_name): r.parent for r in rows}
+
+
+@frappe.whitelist()
+def get_charges_anterieures(mois=None, mois_origine=None) -> dict:
+    """Les depenses et achats d'un mois ANTERIEUR, pour un rattrapage choisi a la main.
+
+    ⚠️ CE N'EST PAS LE VIVIER AUTOMATIQUE, ET C'EST TOUT L'INTERET. « À rattraper » ne propose que
+    les charges d'un mois envoye saisies APRES cet envoi — celles dont on peut prouver qu'elles
+    manquent. Restent celles qu'aucune regle ne trouve : un mois jamais marque envoye, une piece
+    saisie avant l'envoi mais absente de l'archive effectivement remise. L'utilisateur, lui, sait
+    lesquelles ; cet ecran lui rend le mois entier et le laisse designer.
+
+    Chaque ligne dit ou elle en est : deja rattachee a ce mois-ci, rattachee au dossier d'un autre
+    mois (donc verrouillee), ou candidate automatique. Rien n'est filtre — c'est un choix, pas une
+    detection —, et rien n'est ecrit : cette methode ne fait que lire.
+    """
+    _guard()
+    mois = periode.normaliser(mois)
+    # ⚠️ `normaliser` RETOMBE SUR LE MOIS PRECEDENT QUAND LA CLE EST ILLISIBLE. Lister en silence
+    # un autre mois que celui demande, sur un ecran qui sert a rattacher des pieces, c'est inviter
+    # au geste de trop : on refuse plutot que de deviner. La cle rendue doit etre celle recue.
+    origine = periode.normaliser(mois_origine)
+    if origine != (mois_origine or "").strip() or origine >= mois:
+        frappe.throw(_("Choisissez un mois strictement antérieur à {0}.")
+                     .format(_libelle_mois(mois)))
+
+    vouchers = M_charges.vouchers_charges_du_mois(origine)
+    lignes = M_charges.lignes_par_vouchers(vouchers)
+    creations = M_charges.creations_des_vouchers(vouchers)
+    porteurs = _rattachements_des_pieces(vouchers)
+    envoi = _envois_map().get(origine)
+
+    out = []
+    for l in lignes:
+        cle = (l.get("document_type"), l.get("document_name"))
+        porteur = porteurs.get(cle)
+        out.append({
+            "document_type": cle[0],
+            "document_name": cle[1],
+            "date": l.get("date"),
+            "tiers": l.get("tiers"),
+            "categorie": l.get("categorie"),
+            "reference": l.get("reference_export") or l.get("ref"),
+            "montant": l.get("ttc"),
+            "justificatifs": l.get("justificatifs") or [],
+            "exemption": l.get("exemption") or "",
+            "avec_justificatif": bool(l.get("justificatifs")),
+            # Rattachee ici, ailleurs, ou nulle part : c'est ce qui decide de l'etat de la case.
+            "rattachee_a": porteur,
+            "libelle_porteur": _libelle_mois(porteur) if porteur else "",
+            "rattachee_ici": porteur == mois,
+            # Le badge « saisie après l'envoi » : cette piece est DEJA une candidate automatique,
+            # la cocher ici ne fait que devancer l'onglet Dossier.
+            "saisie_apres_envoi": M_retards.est_en_retard(creations.get(cle), envoi),
+        })
+
+    doc = _dossier_doc(mois)
+    return {
+        "mois": mois,
+        "libelle": periode.libelle(mois),
+        "mois_origine": origine,
+        "libelle_origine": periode.libelle(origine),
+        "origine_envoyee": bool(envoi),
+        "envoi": _etat_envoi(doc),
+        "peut_rattacher": any(r in frappe.get_roles() for r in ROLES_ECRITURE),
+        "lignes": out,
+        "nb": len(out),
+        "nb_rattachees_ici": sum(1 for l in out if l["rattachee_ici"]),
     }
 
 

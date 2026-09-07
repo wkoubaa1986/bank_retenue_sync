@@ -151,8 +151,12 @@ def _texte_paiements(paiements: list) -> str:
     return "\n".join(out)
 
 
-def _retardataires_du_dossier(mois: str) -> list:
+def retardataires_du_dossier(mois: str) -> list:
     """Les charges retardataires rattachees au dossier du mois, groupees par mois d'origine.
+
+    ⚠️ PUBLIQUE PARCE QUE L'ECRAN LA LIT AUSSI. Le sous-bloc « Retards de … » de l'onglet Charges
+    doit montrer EXACTEMENT ce que le classeur remettra : meme relecture a la source, memes
+    controles poses, memes sous-totaux. Deux chemins de calcul auraient fini par diverger.
 
     ⚠️ RELUES A LA SOURCE, PAS DEPUIS L'INSTANTANE. Le rattachement fige un montant pour l'ecran,
     mais le ZIP est une piece remise : ses chiffres doivent etre ceux d'aujourd'hui, pas ceux du
@@ -518,7 +522,7 @@ def _constituer(mois: str, avec_pdf: bool, avec_releve: bool) -> dict:
     from bank_retenue_sync.facturation import controle
 
     donnees_charges = controle.attacher_aux_lignes(M_charges.liste(mois))
-    retardataires = _retardataires_du_dossier(mois)
+    retardataires = retardataires_du_dossier(mois)
     # Les charges de CE mois deja parties avec un dossier posterieur : elles restent dans le bloc
     # et dans le total, mais leur ligne le dit — sinon la meme piece part deux fois en silence.
     deja_remises = deja_remises_ailleurs(mois)

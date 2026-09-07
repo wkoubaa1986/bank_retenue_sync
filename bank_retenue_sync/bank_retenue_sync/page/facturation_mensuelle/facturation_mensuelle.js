@@ -55,6 +55,7 @@ class FacturationMensuelle {
     }
     this.mois = ctx.mois;
     this.peut_generer = !!ctx.peut_generer;
+    this.mois_offerts = ctx.mois_offerts || [];
     const $sel = this.$root.find('[data-f="mois"]');
     $sel.html((ctx.mois_offerts || [])
       .map((m) => `<option value="${m.cle}">${this._esc(m.libelle)}</option>`).join(""));
@@ -87,6 +88,9 @@ class FacturationMensuelle {
     this.$root.on("change", '[data-f="mois"]', (e) => {
       this.mois = $(e.currentTarget).val();
       this.cache = {};
+      // Le mois d’origine choisi pour le rattrapage vaut pour le mois porteur affiché : en
+      // changer sans l’oublier proposerait un mois postérieur, que le serveur refuserait.
+      this.mois_origine = null;
       this._arreter_suivi();
       this.$root.find("[data-panneau]").html('<div class="fm-chargement">Chargement…</div>');
       this._charger(this.onglet);
@@ -127,6 +131,14 @@ class FacturationMensuelle {
     this.$root.on("change", 'input[data-action="rattacher"]', (e) => this._rattacher(e));
     this.$root.on("click", '[data-action="verifier-non-envoyees"]',
       () => this._verifier_non_envoyees());
+
+    // --- rattrapage manuel, depuis l'onglet Charges ------------------------------
+    this.$root.on("change", '[data-f="mois-origine"]', (e) => {
+      this.mois_origine = $(e.currentTarget).val() || null;
+      this._charger_anterieures();
+    });
+    this.$root.on("change", 'input[data-action="rattacher-manuel"]',
+      (e) => this._rattacher_manuel(e));
   }
 
   /** Ouvre le justificatif sans quitter la page — c'est le geste le plus fréquent. */
@@ -234,6 +246,7 @@ class FacturationMensuelle {
     const cle = `${this.mois}|${nom}`;
     if (this.cache[cle]) {
       $p.html(this[conf.rendu](this.cache[cle]));
+      this._apres_rendu(nom);
       return;
     }
     $p.html('<div class="fm-chargement">Chargement…</div>');
@@ -246,9 +259,17 @@ class FacturationMensuelle {
       this.cache[cle] = d;
       this._periode(d);
       $p.html(this[conf.rendu](d));
+      this._apres_rendu(nom);
     } catch (e) {
       $p.html(this._erreur(e));
     }
+  }
+
+  /** Le panneau vient d’être réécrit : ce qui n’est pas dans sa donnée doit être remis. */
+  _apres_rendu(nom) {
+    if (nom !== "charges" || !this.mois_origine) return;
+    this.$root.find('[data-f="mois-origine"]').val(this.mois_origine);
+    this._charger_anterieures();
   }
 
   // ---------------------------------------------------------------- caisse
@@ -1018,7 +1039,162 @@ class FacturationMensuelle {
            </table></div>`;
     }).join("");
 
-    return kpis + absents + controle + blocs;
+    return kpis + absents + controle + this._encart_rattrapage(d) + blocs
+      + this._blocs_retards(d);
+  }
+
+  // ------------------------------------------------ rattrapage manuel (onglet Charges)
+
+  /** Le sélecteur de mois d’origine : uniquement des mois STRICTEMENT antérieurs à l’affiché. */
+  _encart_rattrapage(d) {
+    if (!d.peut_rattacher) return "";
+    const envoye = (d.envoi || {}).statut === "Envoyé";
+    const mois = (this.mois_offerts || []).filter((m) => m.cle < this.mois);
+    if (!mois.length) {
+      return `<div class="fm-dossier"><div class="tete"><b>Joindre des charges d’un mois
+        antérieur</b></div><div class="muted" style="font-size:12px;">Aucun mois antérieur
+        proposé.</div></div>`;
+    }
+    const options = ['<option value="">— choisir un mois —</option>']
+      .concat(mois.map((m) => `<option value="${this._esc(m.cle)}">${
+        this._esc(m.libelle)}</option>`)).join("");
+
+    const consigne = envoye
+      ? `<div class="fm-note alerte"><b>Mois envoyé, rattachements figés.</b> Annulez l’envoi de
+         ${this._esc(d.libelle)} dans l’onglet Dossier pour joindre des charges antérieures.</div>`
+      : `<div class="muted" style="font-size:12px;">Choisissez un mois : toutes ses dépenses et
+         factures d’achat s’affichent. Cochez celles qui ne sont jamais parties pour les joindre au
+         dossier de <b>${this._esc(d.libelle)}</b>. Elles y paraîtront dans un sous-bloc
+         « Retards de … », à sous-total séparé, sans gonfler le total du mois.</div>`;
+
+    return `<div class="fm-dossier">
+      <div class="tete"><b>Joindre des charges d’un mois antérieur</b>
+        <select data-f="mois-origine">${options}</select></div>
+      ${consigne}
+      <div data-role="anterieures"></div>
+    </div>`;
+  }
+
+  async _charger_anterieures() {
+    const $b = this.$root.find('[data-role="anterieures"]');
+    if (!$b.length) return;
+    if (!this.mois_origine) { $b.empty(); return; }
+    const demande = `${this.mois}|${this.mois_origine}`;
+    $b.html('<div class="fm-chargement">Lecture du mois…</div>');
+    let d;
+    try {
+      d = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.get_charges_anterieures",
+        args: { mois: this.mois, mois_origine: this.mois_origine },
+      })).message || {};
+    } catch (e) {
+      $b.html(this._erreur(e));
+      return;
+    }
+    // Le mois a pu changer pendant la lecture : afficher une réponse périmée ferait cocher des
+    // pièces au nom d’un autre dossier.
+    if (demande !== `${this.mois}|${this.mois_origine}`) return;
+    $b.html(this._rendu_anterieures(d));
+  }
+
+  _rendu_anterieures(d) {
+    if (!d.nb) {
+      return `<div class="fm-vide">Aucune dépense ni facture d’achat en
+        ${this._esc(d.libelle_origine || d.mois_origine)}.</div>`;
+    }
+    const envoye = (d.envoi || {}).statut === "Envoyé";
+    const fige = envoye || !d.peut_rattacher;
+
+    const bandeau = d.origine_envoyee
+      ? ""
+      : `<div class="fm-note alerte"><b>${this._esc(d.libelle_origine)} n’est pas marqué comme
+         envoyé au comptable.</b> Ces pièces partiront normalement avec le dossier de leur propre
+         mois s’il est constitué un jour. En joindre une ici la remettrait alors deux fois — sa
+         ligne porterait la mention « déjà remise », mais le montant, lui, n’est jamais compté
+         deux fois.</div>`;
+
+    const corps = (d.lignes || []).map((l) => {
+      const ailleurs = l.rattachee_a && !l.rattachee_ici;
+      return `<tr class="${ailleurs ? "muted" : ""}">
+        <td><input type="checkbox" data-action="rattacher-manuel"
+          data-dt="${this._esc(l.document_type)}" data-dn="${this._esc(l.document_name)}"
+          ${l.rattachee_ici ? "checked" : ""}${fige || ailleurs ? " disabled" : ""}></td>
+        <td class="muted">${this._esc(l.date || "")}</td>
+        <td><b>${this._esc(l.reference || "")}</b>${l.saisie_apres_envoi
+          ? ' <span class="fm-badge warn">saisie après l’envoi</span>' : ""}${ailleurs
+          ? `<div class="fm-regl-note">déjà rattachée au dossier de ${
+              this._esc(l.libelle_porteur || l.rattachee_a)}</div>` : ""}</td>
+        <td>${this._esc(l.tiers || "")}</td>
+        <td class="muted">${this._esc(l.categorie || "")}</td>
+        <td class="num">${this._m(l.montant)}</td>
+        <td>${this._justificatif(l, false)}</td>
+        <td>${this._lien(l.document_type, l.document_name)}</td>
+      </tr>`;
+    }).join("");
+
+    return bandeau + `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+        <th>Joindre</th><th>Date</th><th>Référence export</th><th>Tiers</th><th>Catégorie</th>
+        <th class="num">TTC</th><th>Justificatif</th><th>Pièce</th>
+        </tr></thead><tbody>${corps}</tbody>
+        <tfoot><tr><td colspan="5">${d.nb} pièce(s) en ${
+          this._esc(d.libelle_origine)} · ${d.nb_rattachees_ici} jointe(s) à ${
+          this._esc(d.libelle)}</td><td colspan="3"></td></tr></tfoot>
+      </table></div>`;
+  }
+
+  async _rattacher_manuel(e) {
+    const $c = $(e.currentTarget);
+    const attacher = $c.is(":checked") ? 1 : 0;
+    $c.prop("disabled", true);
+    try {
+      await frappe.call({
+        method: "bank_retenue_sync.api.cloture.rattacher",
+        args: { mois: this.mois, document_type: $c.attr("data-dt"),
+                document_name: $c.attr("data-dn"), attacher, manuel: 1 },
+      });
+      // Le sous-bloc « Retards » vit dans la donnée de l’onglet : sans purge du cache, la pièce
+      // resterait cochée sans jamais apparaître sous les blocs.
+      delete this.cache[`${this.mois}|charges`];
+      this._charger("charges");
+      this._amorcer_pastille();
+    } catch (err) {
+      frappe.msgprint({ title: __("Rattachement impossible"), message: String(err),
+        indicator: "red" });
+      $c.prop("checked", !attacher).prop("disabled", false);
+    }
+  }
+
+  /** Les charges rattrapées, sous les trois blocs et JAMAIS dans leurs totaux. */
+  _blocs_retards(d) {
+    const groupes = d.retards || [];
+    if (!groupes.length) return "";
+    return groupes.map((g) => {
+      const t = g.totaux || {};
+      const corps = (g.lignes || []).map((l) => `<tr>
+        <td class="muted">${this._esc(l.date || "")}</td>
+        <td><b>${this._esc(l.reference_export || l.ref || "")}</b></td>
+        <td>${this._esc(l.tiers || "")}</td>
+        <td class="muted">${this._esc(l.categorie || "")}</td>
+        <td class="num">${this._m(l.ht)}</td>
+        <td class="num">${this._m(l.tva)}</td>
+        <td class="num"><b>${this._m(l.ttc)}</b></td>
+        <td>${this._justificatif(l, false)}</td>
+        <td>${this._lien(l.document_type, l.document_name)}</td>
+      </tr>`).join("");
+      return this._sous(`Retards de ${this._esc(g.libelle || g.mois)} — ${
+          t.nombre || 0} ligne(s), hors total du mois`)
+        + `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+            <th>Date</th><th>Référence export</th><th>Tiers</th><th>Catégorie</th>
+            <th class="num">HT</th><th class="num">TVA</th><th class="num">TTC</th>
+            <th>Justificatif</th><th>Pièce</th>
+            </tr></thead><tbody>${corps}</tbody>
+            <tfoot><tr><td colspan="4">Sous-total ${this._esc(g.libelle || g.mois)}</td>
+              <td class="num">${this._m(t.ht)}</td>
+              <td class="num">${this._m(t.tva)}</td>
+              <td class="num">${this._m(t.ttc)}</td>
+              <td colspan="2">${t.sans_justificatif || 0} sans pièce exigible</td>
+            </tr></tfoot></table></div>`;
+    }).join("");
   }
 
   /** Le taux de la retenue de vente : 1 % du TTC. Ce qui s'en écarte se voit tout de suite. */
@@ -1032,8 +1208,14 @@ class FacturationMensuelle {
       ecart > 0 ? "+" : ""}${this._m(ecart)}</span> attendu ${this._m(l.retenue_attendue)}</div>`;
   }
 
-  /** La colonne Justificatif : ouvrir la pièce, ou dire pourquoi il n'y en a pas. */
-  _justificatif(l) {
+  /** La colonne Justificatif : ouvrir la pièce, ou dire pourquoi il n'y en a pas.
+   *
+   * ⚠️ `avec_controle` EST FAUX HORS DES BLOCS DU MOIS. `controler_justificatif` cherche la ligne
+   * dans les charges du mois affiché : sur une pièce d’un autre mois — une retardataire, une
+   * candidate au rattrapage — il ne la trouve pas et lève « Ligne introuvable ». Un bouton qui ne
+   * peut qu’échouer ne doit pas être offert.
+   */
+  _justificatif(l, avec_controle = true) {
     const pieces = l.justificatifs || [];
     if (!pieces.length) {
       return l.exemption
@@ -1043,7 +1225,7 @@ class FacturationMensuelle {
     const boutons = pieces.map((j, i) => `<button class="fm-piece" data-action="voir-piece"
       data-url="${this._esc(j.file_url)}" data-nom="${this._esc(j.file_name)}"
       title="${this._esc(j.file_name)}">📎 ${pieces.length > 1 ? i + 1 : "voir"}</button>`).join("");
-    const verifier = this.peut_generer && l.justificatif_requis
+    const verifier = avec_controle && this.peut_generer && l.justificatif_requis
       ? `<button class="fm-piece" data-action="controler"
           data-dt="${this._esc(l.document_type)}" data-dn="${this._esc(l.document_name)}"
           data-url="${this._esc(pieces[0].file_url)}"
