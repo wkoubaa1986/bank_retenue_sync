@@ -61,7 +61,7 @@ class FacturationMensuelle {
     $sel.val(this.mois);
     this._periode(ctx);
     this._charger(this.onglet);
-    this._amorcer_pastille();
+    if (this.onglet !== "dossier") this._amorcer_pastille();
   }
 
   /** La pastille de retards vit sur l'onglet Dossier : on la remplit sans forcer l'ouverture. */
@@ -90,7 +90,9 @@ class FacturationMensuelle {
       this._arreter_suivi();
       this.$root.find("[data-panneau]").html('<div class="fm-chargement">Chargement…</div>');
       this._charger(this.onglet);
-      this._amorcer_pastille();
+      // Sur l’onglet Dossier, `_charger` passe déjà par `_charger_mensuel`, qui met la pastille
+      // à jour : relancer la détection ici la ferait tourner deux fois pour le même résultat.
+      if (this.onglet !== "dossier") this._amorcer_pastille();
     });
 
     this.$root.on("click", ".fm-tab", (e) => {
@@ -764,25 +766,46 @@ class FacturationMensuelle {
         : '<button data-action="marquer-envoye">Marquer comme envoyé</button>')
       : '<span class="muted" style="font-size:12px;">Envoi réservé aux gestionnaires comptables.</span>';
 
+    const quand = e.date_envoi_libelle
+      || (e.date_envoi ? frappe.datetime.str_to_user(e.date_envoi) : "");
     const banniere = envoye
       ? `<div class="fm-note" style="border-color:rgba(40,167,69,.4);background:rgba(40,167,69,.07);">
-           <b>✅ Envoyé au comptable</b> — le ${this._esc(e.date_envoi || "")}${
+           <b>✅ Envoyé au comptable</b> — le ${this._esc(quand)}${
             e.envoye_par ? ` par ${this._esc(e.envoye_par)}` : ""}. Les charges saisies après
            cette date pour ${this._esc(d.libelle)} deviennent des retardataires à rattraper
            ailleurs.</div>`
       : `<div class="fm-note">Ce mois n’est pas encore marqué comme envoyé au comptable.</div>`;
 
-    const lignes = [
-      ...(d.rattaches || []).map((r) => this._ligne_retard(r, true)),
-      ...(d.candidats || []).map((r) => this._ligne_retard(r, false)),
-    ].join("");
-    const total = (d.rattaches || []).length + (d.candidats || []).length;
+    // ⚠️ UN MOIS ENVOYÉ NE SE RATTACHE PLUS. Cocher une case sur un dossier déjà parti ferait
+    // sortir la pièce du vivier — pastille, section, contrôle des non-envoyées — sans qu’elle
+    // ait jamais été transmise : le trou même que cet écran est censé fermer. Le serveur refuse ;
+    // l’écran ne doit donc pas le proposer, et les rattachements déjà faits restent visibles.
+    const lignes = envoye
+      ? (d.rattaches || []).map((r) => this._ligne_retard(r, true, true)).join("")
+      : [
+        ...(d.rattaches || []).map((r) => this._ligne_retard(r, true, false)),
+        ...(d.candidats || []).map((r) => this._ligne_retard(r, false, false)),
+      ].join("");
+    const total = envoye
+      ? (d.rattaches || []).length
+      : (d.rattaches || []).length + (d.candidats || []).length;
     const table = total
       ? `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
            <th>Rattacher</th><th>Mois d’origine</th><th>Tiers</th><th>Référence</th>
            <th class="num">Montant</th><th>Justificatif</th><th>Pièce</th>
            </tr></thead><tbody>${lignes}</tbody></table></div>`
-      : '<div class="fm-vide">Aucune charge retardataire pour le moment.</div>';
+      : `<div class="fm-vide">${envoye
+        ? "Aucune retardataire n’avait été rattachée à ce mois."
+        : "Aucune charge retardataire pour le moment."}</div>`;
+
+    const consigne = envoye
+      ? `<div class="fm-note alerte"><b>Mois envoyé, rattachements figés.</b> Les
+         ${d.nb_candidats || 0} retardataire(s) encore en attente partiront avec un mois suivant.
+         Annulez l’envoi de ${this._esc(d.libelle)} pour modifier ses rattachements.</div>`
+      : `<div class="muted" style="font-size:12px;">Charges d’un mois déjà envoyé, saisies après
+         son envoi. Cochez-les pour les joindre au dossier de <b>${this._esc(d.libelle)}</b> :
+         elles y paraîtront dans un sous-bloc « Retards de … », à sous-total séparé, sans gonfler
+         le total du mois.</div>`;
 
     return `<div class="fm-dossier">
         <div class="tete"><b>Envoi au comptable</b>${bouton}</div>${banniere}
@@ -794,19 +817,16 @@ class FacturationMensuelle {
           <span style="flex:1"></span>
           <button data-action="verifier-non-envoyees">Vérifier les factures non envoyées</button>
         </div>
-        <div class="muted" style="font-size:12px;">Charges d’un mois déjà envoyé, saisies après
-          son envoi. Cochez-les pour les joindre au dossier de <b>${this._esc(d.libelle)}</b> :
-          elles y paraîtront dans un sous-bloc « Retards de … », à sous-total séparé, sans gonfler
-          le total du mois.</div>
+        ${consigne}
         ${table}
       </div>`;
   }
 
-  _ligne_retard(r, coche) {
+  _ligne_retard(r, coche, fige) {
     return `<tr>
       <td><input type="checkbox" data-action="rattacher"
         data-dt="${this._esc(r.document_type)}" data-dn="${this._esc(r.document_name)}"
-        ${coche ? "checked" : ""}></td>
+        ${coche ? "checked" : ""}${fige ? " disabled" : ""}></td>
       <td>${this._esc(r.libelle_origine || r.mois_origine || "")}</td>
       <td>${this._esc(r.tiers || "")}</td>
       <td>${this._esc(r.reference || "")}</td>
