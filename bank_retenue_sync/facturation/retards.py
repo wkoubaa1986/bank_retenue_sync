@@ -20,9 +20,13 @@ from datetime import datetime
 
 PRECISION = 3
 
-# Les deux seules familles concernées : un achat (facture) et une dépense (écriture de journal).
-# Les ventes et les retenues sont hors périmètre — c'est un rattrapage de CHARGES.
-TYPES_CHARGE = ("Purchase Invoice", "Journal Entry")
+# Les motifs de refus d'un rattachement, en clés stables : le module reste pur (pas de `_()`),
+# c'est l'appelant qui les traduit en phrases. Un test qui porte sur une clé ne casse pas parce
+# qu'on a reformulé un message.
+REFUS_ORIGINE_INCONNUE = "origine_inconnue"
+REFUS_PAS_ANTERIEUR = "pas_anterieur"
+REFUS_MOIS_NON_ENVOYE = "mois_non_envoye"
+REFUS_SAISIE_AVANT_ENVOI = "saisie_avant_envoi"
 
 
 def cle_voucher(document_type: str, document_name: str) -> str:
@@ -91,6 +95,32 @@ def detecter_retardataires(candidats: list[dict], envois: dict, rattachees) -> l
             continue
         out.append(c)
     return out
+
+
+def raison_de_refus(origine, mois, envoi, creation) -> str | None:
+    """Pourquoi cette pièce ne peut PAS être rattachée au dossier de `mois` — None si elle peut.
+
+    La règle qui protège du double comptage, en trois conditions lues dans cet ordre :
+
+      · le mois d'origine doit être STRICTEMENT antérieur au mois porteur. Rattacher une charge à
+        son propre mois — ou à un mois plus ancien — la ferait sortir dans les deux dossiers ;
+      · ce mois d'origine doit déjà être envoyé. Sinon il n'y a rien à rattraper : la charge
+        partira normalement avec le dossier de son mois ;
+      · la pièce doit avoir été saisie APRÈS cet envoi. Sinon elle était déjà dans le dossier.
+
+    Fonction pure : elle décide, elle ne lit rien. `envoi` et `creation` sont fournis par
+    l'appelant, qui seul sait où les chercher.
+    """
+    if not origine or not mois:
+        return REFUS_ORIGINE_INCONNUE
+    # Comparaison de clés « YYYY-MM » : l'ordre lexicographique EST l'ordre chronologique.
+    if origine >= mois:
+        return REFUS_PAS_ANTERIEUR
+    if not envoi:
+        return REFUS_MOIS_NON_ENVOYE
+    if not est_en_retard(creation, envoi):
+        return REFUS_SAISIE_AVANT_ENVOI
+    return None
 
 
 def grouper_par_mois_origine(retards: list[dict]) -> list[dict]:

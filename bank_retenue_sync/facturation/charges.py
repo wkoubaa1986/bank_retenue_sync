@@ -276,17 +276,31 @@ def lignes_par_vouchers(vouchers) -> list:
     return _enrichir(lignes, source="Retard")
 
 
-def vouchers_charges_du_mois(mois: str) -> list:
+def comptes_charges() -> list:
+    """Les comptes du dossier cote CHARGES (depenses + achats), resolus une bonne fois.
+
+    ⚠️ RESOUDRE COUTE QUATRE REQUETES, ET LA LISTE NE CHANGE PAS D'UN MOIS A L'AUTRE. Deux
+    `_resoudre` et deux `_descendance` refaits pour chacun des douze mois de la fenetre de
+    detection, c'est une cinquantaine de requetes pour un resultat identique — et cette detection
+    tourne a chaque ouverture de la page. On resout donc une fois, on passe la liste.
+    """
+    racine = _resoudre(RACINE_DEPENSES)
+    achats = _resoudre(COMPTE_ACHATS)
+    return (_descendance(racine) if racine else []) + ([achats] if achats else [])
+
+
+def vouchers_charges_du_mois(mois: str, comptes: list | None = None) -> list:
     """Les pieces d'ACHAT et de DEPENSE comptabilisees dans le mois : [(document_type, name)].
 
     Lecture du grand livre bornee aux comptes du dossier (depenses + achats), sans les ventes ni
     les retenues. C'est le vivier ou l'on cherche les charges saisies apres l'envoi du mois.
+
+    `comptes` evite de re-resoudre le plan comptable quand on balaie plusieurs mois d'affilee.
     """
     mois = periode.normaliser(mois)
     debut, fin = periode.bornes(mois)
-    racine = _resoudre(RACINE_DEPENSES)
-    achats = _resoudre(COMPTE_ACHATS)
-    comptes = (_descendance(racine) if racine else []) + ([achats] if achats else [])
+    if comptes is None:
+        comptes = comptes_charges()
     ecritures = _ecritures(comptes, debut, fin)
     return sorted({(e.voucher_type, e.voucher_no) for e in ecritures
                    if e.voucher_type in TYPES_CHARGE})
