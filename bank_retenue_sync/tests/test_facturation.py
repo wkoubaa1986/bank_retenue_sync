@@ -914,3 +914,88 @@ class TestRetardataires(unittest.TestCase):
         self.assertEqual(t["nombre"], 0)
         self.assertEqual(t["ttc"], 0.0)
         self.assertEqual(t["sans_justificatif"], 0)
+
+
+class TestSousBlocRetards(unittest.TestCase):
+    """Le sous-bloc « Retards » du classeur : visible, chiffre, et JAMAIS dans le total general.
+
+    C-est le critere qui protege du double comptage entre deux mois — une charge de juillet qui
+    part avec le dossier d-aout ne doit pas gonfler le total d-aout, sans quoi le comptable
+    additionne deux fois la meme piece. `_feuille_charges` ne touche ni frappe ni base.
+    """
+
+    # Colonnes du classeur : 5 = HT, 8 = TVA, 9 = TTC, 10 = retenue.
+    HT, TVA, TTC = 5, 8, 9
+
+    def _donnees(self):
+        """Un mois minimal : un bloc, une ligne a 119 TTC."""
+        totaux = {"nombre": 1, "ht": 100.0, "tva": 19.0, "ttc": 119.0, "retenue": 0.0,
+                  "sans_justificatif": 0, "exemptes": 0, "avec_justificatif": 1}
+        ligne = {"reference_export": "Fournisseur A 001", "date": "2026-08-05",
+                 "tiers": "Fournisseur A", "categorie": "Achat", "mode": "",
+                 "ht": 100.0, "tva7": 0.0, "tva19": 19.0, "tva": 19.0, "ttc": 119.0,
+                 "retenue": 0.0, "justificatifs": [{"file_name": "a.pdf"}], "exemption": ""}
+        return {"blocs": [{"cle": "achats", "titre": "Achats", "lignes": [ligne],
+                           "totaux": dict(totaux)}],
+                "totaux": dict(totaux)}
+
+    def _retards(self):
+        """Une retardataire de juillet a 238 TTC, rattachee au dossier d-aout."""
+        ligne = {"reference_export": "Fournisseur B 002", "date": "2026-07-28",
+                 "tiers": "Fournisseur B", "categorie": "Achat", "mode": "",
+                 "ht": 200.0, "tva7": 0.0, "tva19": 38.0, "tva": 38.0, "ttc": 238.0,
+                 "retenue": 0.0, "justificatifs": [], "exemption": ""}
+        return [{"mois": "2026-07", "lignes": [ligne],
+                 "totaux": {"nombre": 1, "ht": 200.0, "tva": 38.0, "ttc": 238.0,
+                            "retenue": 0.0, "sans_justificatif": 1, "avec_justificatif": 0}}]
+
+    def _lignes(self, avec_retards=True):
+        from bank_retenue_sync.facturation.dossier import _feuille_charges
+        return _feuille_charges(self._donnees(), self._retards() if avec_retards else None)
+
+    def _trouver(self, lignes, prefixe):
+        for i, l in enumerate(lignes):
+            if l and str(l[0] or "").startswith(prefixe):
+                return i, l
+        return -1, None
+
+    def test_le_total_general_ignore_les_retards(self):
+        """Le coeur du garde-fou : 119, et surtout PAS 119 + 238."""
+        _, total = self._trouver(self._lignes(), "TOTAL GÉNÉRAL")
+        self.assertIsNotNone(total)
+        self.assertEqual(total[self.TTC], 119.0)
+        self.assertEqual(total[self.HT], 100.0)
+        self.assertEqual(total[self.TVA], 19.0)
+
+    def test_le_sous_total_des_retards_porte_son_montant(self):
+        i, sous = self._trouver(self._lignes(), "SOUS-TOTAL RETARDS")
+        self.assertNotEqual(i, -1, "le sous-total des retards est absent du classeur")
+        self.assertEqual(sous[0], "SOUS-TOTAL RETARDS juillet 2026")
+        self.assertEqual(sous[self.TTC], 238.0)
+        self.assertEqual(sous[self.HT], 200.0)
+
+    def test_le_sous_bloc_vient_apres_le_total_general(self):
+        """Sous le total, jamais dedans : l-ordre de lecture dit deja que ce n-est pas du mois."""
+        lignes = self._lignes()
+        total_i, _ = self._trouver(lignes, "TOTAL GÉNÉRAL")
+        entete_i, _ = self._trouver(lignes, "RETARDS DE JUILLET")
+        sous_i, _ = self._trouver(lignes, "SOUS-TOTAL RETARDS")
+        self.assertLess(total_i, entete_i)
+        self.assertLess(entete_i, sous_i)
+
+    def test_la_ligne_retardataire_figure_au_classeur(self):
+        """Isolee du total, mais bien remise : le comptable doit voir la piece."""
+        refs = [l[0] for l in self._lignes() if l]
+        self.assertIn("Fournisseur B 002", refs)
+
+    def test_le_sous_bloc_est_etiquete_de_son_mois_dorigine(self):
+        _, entete = self._trouver(self._lignes(), "RETARDS DE")
+        self.assertEqual(entete[0], "RETARDS DE JUILLET 2026")
+        self.assertIn("hors total du mois", entete[1])
+
+    def test_sans_rattachement_le_classeur_est_inchange(self):
+        lignes = self._lignes(avec_retards=False)
+        self.assertEqual(self._trouver(lignes, "SOUS-TOTAL RETARDS")[0], -1)
+        self.assertEqual(self._trouver(lignes, "RETARDS DE")[0], -1)
+        _, total = self._trouver(lignes, "TOTAL GÉNÉRAL")
+        self.assertEqual(total[self.TTC], 119.0)
