@@ -18,6 +18,7 @@ from bank_retenue_sync.facturation import charges as M_charges
 from bank_retenue_sync.facturation import dossier as M_dossier
 from bank_retenue_sync.facturation import factures as M_factures
 from bank_retenue_sync.facturation import periode
+from bank_retenue_sync.facturation import retards as M_retards
 
 ROLES_LECTURE = ["System Manager", "Accounts Manager", "Accounts User"]
 ROLES_ECRITURE = ["System Manager", "Accounts Manager"]
@@ -212,3 +213,228 @@ def generer_dossier(mois=None, avec_pdf=1, avec_releve=0) -> dict:
                             avec_releve=bool(frappe.utils.cint(avec_releve)))
     return {"mois": mois, "etat": etat,
             "message": _("Constitution lancée pour {0}.").format(periode.libelle(mois))}
+
+
+# ------------------------------------------------------------------ envoi au comptable & retards
+#
+# ⚠️ CE BLOC EST LE SEUL A ECRIRE EN BASE — ET JAMAIS EN COMPTABILITE. Il touche `BRS Dossier
+# Mensuel` (l'etat d'envoi du mois) et sa table enfant (les retardataires rattachees), rien
+# d'autre. Aucune ecriture, aucun paiement, aucune retenue n'est cree ni modifie ici.
+
+DOCTYPE_MENSUEL = "BRS Dossier Mensuel"
+NB_MOIS_RETARDS = 12
+
+
+def _dossier_doc(mois: str, creer: bool = False):
+    """La fiche mensuelle du mois, ou None. `creer=True` la fabrique (non enregistree) si absente."""
+    if frappe.db.exists(DOCTYPE_MENSUEL, mois):
+        return frappe.get_doc(DOCTYPE_MENSUEL, mois)
+    if not creer:
+        return None
+    return frappe.get_doc({"doctype": DOCTYPE_MENSUEL, "mois": mois,
+                           "libelle": periode.libelle(mois), "statut": "Brouillon"})
+
+
+def _etat_envoi(doc) -> dict:
+    if not doc:
+        return {"statut": "Brouillon", "date_envoi": None, "envoye_par": None}
+    return {"statut": doc.statut or "Brouillon",
+            "date_envoi": str(doc.date_envoi) if doc.date_envoi else None,
+            "envoye_par": doc.envoye_par}
+
+
+def _envois_map(nb_mois: int | None = None) -> dict:
+    """{ mois -> date d'envoi } des mois marques « Envoyé », bornes aux N derniers mois clos."""
+    rows = frappe.get_all(DOCTYPE_MENSUEL, filters={"statut": "Envoyé"},
+                          fields=["mois", "date_envoi"], limit_page_length=0)
+    envois = {r.mois: r.date_envoi for r in rows if r.date_envoi}
+    if nb_mois:
+        fenetre = {m["cle"] for m in periode.derniers(nb_mois)}
+        envois = {m: d for m, d in envois.items() if m in fenetre}
+    return envois
+
+
+def _rattachees_globales(sauf_mois: str | None = None) -> set:
+    """Les cles de toutes les pieces deja rattachees a un dossier — hors celui de `sauf_mois`."""
+    filtres = {}
+    if sauf_mois:
+        filtres["parent"] = ["!=", sauf_mois]
+    rows = frappe.get_all("BRS Dossier Retardataire", filters=filtres,
+                          fields=["document_type", "document_name"], limit_page_length=0)
+    return {M_retards.cle_voucher(r.document_type, r.document_name) for r in rows}
+
+
+def _pool_retardataires(nb_mois: int = NB_MOIS_RETARDS) -> list:
+    """Les charges retardataires du moment : mois envoye, saisie apres l'envoi, non rattachees.
+
+    Le vivier est le meme pour la pastille, la section « À rattraper » et le controle global —
+    une seule source, donc des compteurs qui ne se contredisent pas d'un ecran a l'autre.
+    """
+    envois = _envois_map(nb_mois)
+    if not envois:
+        return []
+    rattachees = _rattachees_globales()
+    candidats = []
+    for mois in envois:
+        vouchers = M_charges.vouchers_charges_du_mois(mois)
+        if not vouchers:
+            continue
+        creations = M_charges.creations_des_vouchers(vouchers)
+        for l in M_charges.lignes_par_vouchers(vouchers):
+            l["mois_origine"] = mois
+            l["creation"] = creations.get((l["document_type"], l["document_name"]))
+            candidats.append(l)
+    return M_retards.detecter_retardataires(candidats, envois, rattachees)
+
+
+def _vue_pool(l: dict) -> dict:
+    """Une ligne du vivier, reduite a ce que l'ecran montre d'une retardataire."""
+    mois = l.get("mois_origine")
+    return {
+        "mois_origine": mois,
+        "libelle_origine": periode.libelle(mois) if mois else "",
+        "document_type": l.get("document_type"),
+        "document_name": l.get("document_name"),
+        "tiers": l.get("tiers"),
+        "reference": l.get("reference_export") or l.get("ref"),
+        "montant": l.get("ttc"),
+        "avec_justificatif": bool(l.get("justificatifs")),
+    }
+
+
+def _vue_child(r) -> dict:
+    """Une retardataire deja rattachee, lue depuis la table enfant (instantane du rattachement)."""
+    return {
+        "mois_origine": r.mois_origine,
+        "libelle_origine": periode.libelle(r.mois_origine) if r.mois_origine else "",
+        "document_type": r.document_type,
+        "document_name": r.document_name,
+        "tiers": r.tiers,
+        "reference": r.reference,
+        "montant": r.montant,
+        "avec_justificatif": bool(r.avec_justificatif),
+    }
+
+
+@frappe.whitelist()
+def get_dossier_mensuel(mois=None, nb_mois=NB_MOIS_RETARDS) -> dict:
+    """L'etat d'envoi du mois, ses retardataires rattachees, et le vivier a rattacher."""
+    _guard()
+    mois = periode.normaliser(mois)
+    doc = _dossier_doc(mois)
+    candidats = [_vue_pool(l) for l in _pool_retardataires(int(nb_mois))]
+    rattaches = [_vue_child(r) for r in (doc.retardataires if doc else [])]
+    return {
+        "mois": mois,
+        "libelle": periode.libelle(mois),
+        "envoi": _etat_envoi(doc),
+        "peut_envoyer": any(r in frappe.get_roles() for r in ROLES_ECRITURE),
+        "candidats": candidats,
+        "rattaches": rattaches,
+        "nb_candidats": len(candidats),
+        "nb_rattaches": len(rattaches),
+    }
+
+
+@frappe.whitelist()
+def marquer_envoye(mois=None) -> dict:
+    """Fige le mois comme envoye au comptable. Idempotent : deja envoye -> aucune modification."""
+    _guard(ecriture=True)
+    mois = periode.normaliser(mois)
+    doc = _dossier_doc(mois, creer=True)
+    if (doc.statut or "Brouillon") != "Envoyé":
+        doc.statut = "Envoyé"
+        doc.date_envoi = frappe.utils.now_datetime()
+        doc.envoye_par = frappe.session.user
+        doc.libelle = periode.libelle(mois)
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+    return {"mois": mois, "envoi": _etat_envoi(doc)}
+
+
+@frappe.whitelist()
+def annuler_envoi(mois=None) -> dict:
+    """Remet le mois en brouillon. Le contraire strict de `marquer_envoye`, tout aussi idempotent."""
+    _guard(ecriture=True)
+    mois = periode.normaliser(mois)
+    doc = _dossier_doc(mois)
+    if doc and doc.statut == "Envoyé":
+        doc.statut = "Brouillon"
+        doc.date_envoi = None
+        doc.envoye_par = None
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+    return {"mois": mois, "envoi": _etat_envoi(doc)}
+
+
+@frappe.whitelist()
+def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> dict:
+    """Rattache (ou detache) une charge retardataire au dossier du mois. Persiste, idempotent.
+
+    ⚠️ ON NE RATTACHE QU'UNE CHARGE, ET NULLE PART AILLEURS. Le type est borne aux deux familles de
+    charge, et une piece deja rattachee a un AUTRE mois est refusee : sans quoi la meme facture
+    partirait dans deux dossiers, et serait comptee deux fois.
+    """
+    _guard(ecriture=True)
+    mois = periode.normaliser(mois)
+    attacher = bool(frappe.utils.cint(attacher))
+    if document_type not in M_charges.TYPES_CHARGE:
+        frappe.throw(_("Type de pièce non éligible au rattrapage : {0}.").format(document_type))
+
+    doc = _dossier_doc(mois, creer=True)
+    existe = next((r for r in doc.retardataires
+                   if r.document_type == document_type and r.document_name == document_name), None)
+
+    if attacher and not existe:
+        cle = M_retards.cle_voucher(document_type, document_name)
+        if cle in _rattachees_globales(sauf_mois=mois):
+            frappe.throw(_("Cette pièce est déjà rattachée au dossier d'un autre mois."))
+        doc.append("retardataires", _decrire_voucher(document_type, document_name))
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+    elif not attacher and existe:
+        doc.remove(existe)
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    return {"mois": mois, "attache": attacher, "nb_rattaches": len(doc.retardataires)}
+
+
+def _decrire_voucher(document_type: str, document_name: str) -> dict:
+    """L'instantane d'une piece a rattacher : mois d'origine, tiers, reference, montant, piece."""
+    lignes = M_charges.lignes_par_vouchers([(document_type, document_name)])
+    if not lignes:
+        frappe.throw(_("Pièce introuvable ou sans charge : {0} {1}.")
+                     .format(document_type, document_name))
+    l = lignes[0]
+    return {
+        "mois_origine": (l.get("date") or "")[:7],
+        "document_type": document_type,
+        "document_name": document_name,
+        "tiers": l.get("tiers"),
+        "reference": l.get("reference_export") or l.get("ref"),
+        "montant": l.get("ttc"),
+        "avec_justificatif": 1 if l.get("justificatifs") else 0,
+    }
+
+
+@frappe.whitelist()
+def verifier_non_envoyees(nb_mois=NB_MOIS_RETARDS) -> dict:
+    """Toutes les charges des mois envoyes saisies apres l'envoi et non encore rattachees.
+
+    Le meme vivier que « À rattraper », mais groupe par mois d'origine et vu sur N mois d'un coup :
+    de quoi ne pas devoir ouvrir mois par mois pour trouver ce qui manque au comptable.
+    """
+    _guard()
+    nb_mois = int(nb_mois)
+    pool = _pool_retardataires(nb_mois)
+    groupes = M_retards.grouper_par_mois_origine(pool)
+    return {
+        "nb": len(pool),
+        "nb_mois": nb_mois,
+        "groupes": [{"mois": g["mois"],
+                     "libelle": periode.libelle(g["mois"]) if g["mois"] else "",
+                     "totaux": g["totaux"],
+                     "lignes": [_vue_pool(l) for l in g["lignes"]]}
+                    for g in groupes],
+    }
