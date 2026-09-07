@@ -9,7 +9,7 @@ import json
 import os
 import re
 import unittest
-from datetime import date
+from datetime import date, datetime
 
 from bank_retenue_sync.facturation import periode, tva
 from bank_retenue_sync.partenaire import echeancier
@@ -792,3 +792,125 @@ class TestEmpreinteDuPlan(unittest.TestCase):
         cible_apres = dict(cible, dette=3000.0, pieces=["ACC-PAY-7"])
         recalcule, _ = planifier(2700.0, [cible_apres])
         self.assertFalse(concorde(recalcule, confirmee))
+
+
+class TestRetardataires(unittest.TestCase):
+    """Le rattrapage des charges en retard : creation vs date d-envoi, en fonctions pures.
+
+    C-est le coeur de la fonctionnalite — la seule regle qui decide qu-une charge manque au
+    comptable — et elle ne touche ni frappe ni base : elle se teste donc directement.
+    """
+
+    def _ligne(self, dt, dn, mois, creation, **extra):
+        base = {"document_type": dt, "document_name": dn, "mois_origine": mois,
+                "creation": creation}
+        base.update(extra)
+        return base
+
+    # ---- est_en_retard ---------------------------------------------------
+
+    def test_saisie_apres_envoi_est_en_retard(self):
+        from bank_retenue_sync.facturation.retards import est_en_retard
+        self.assertTrue(est_en_retard(datetime(2026, 8, 3, 9, 0),
+                                      datetime(2026, 8, 1, 18, 0)))
+
+    def test_saisie_avant_envoi_ne_lest_pas(self):
+        from bank_retenue_sync.facturation.retards import est_en_retard
+        self.assertFalse(est_en_retard(datetime(2026, 7, 20, 9, 0),
+                                       datetime(2026, 8, 1, 18, 0)))
+
+    def test_saisie_pile_a_lenvoi_ne_lest_pas(self):
+        """Egalite stricte : une piece posee a la seconde de l-envoi etait dans le dossier."""
+        from bank_retenue_sync.facturation.retards import est_en_retard
+        instant = datetime(2026, 8, 1, 18, 0, 0)
+        self.assertFalse(est_en_retard(instant, instant))
+
+    def test_dates_illisibles_ne_font_pas_de_retard(self):
+        from bank_retenue_sync.facturation.retards import est_en_retard
+        self.assertFalse(est_en_retard(None, datetime(2026, 8, 1)))
+        self.assertFalse(est_en_retard(datetime(2026, 8, 1), None))
+        self.assertFalse(est_en_retard("pas une date", datetime(2026, 8, 1)))
+
+    def test_est_en_retard_lit_les_chaines_iso(self):
+        """Frappe rend des datetime, mais le cache ou un test peut passer une chaine."""
+        from bank_retenue_sync.facturation.retards import est_en_retard
+        self.assertTrue(est_en_retard("2026-08-03 09:00:00.000000",
+                                      "2026-08-01 18:00:00"))
+        self.assertFalse(est_en_retard("2026-07-31", "2026-08-01 18:00:00"))
+
+    # ---- cle_voucher -----------------------------------------------------
+
+    def test_cle_voucher_identifie_la_piece(self):
+        from bank_retenue_sync.facturation.retards import cle_voucher
+        self.assertEqual(cle_voucher("Purchase Invoice", "ACC-PINV-0001"),
+                         "Purchase Invoice|ACC-PINV-0001")
+        self.assertEqual(cle_voucher(None, None), "|")
+
+    # ---- detecter_retardataires -----------------------------------------
+
+    def _envois(self):
+        return {"2026-07": datetime(2026, 8, 1, 18, 0)}
+
+    def test_detecte_une_vraie_retardataire(self):
+        from bank_retenue_sync.facturation.retards import detecter_retardataires
+        c = [self._ligne("Purchase Invoice", "PI-1", "2026-07", datetime(2026, 8, 3, 9, 0))]
+        out = detecter_retardataires(c, self._envois(), set())
+        self.assertEqual([l["document_name"] for l in out], ["PI-1"])
+
+    def test_mois_non_envoye_jamais_retardataire(self):
+        """Une charge de juin saisie tard, mais juin pas encore envoye : rien a rattraper."""
+        from bank_retenue_sync.facturation.retards import detecter_retardataires
+        c = [self._ligne("Journal Entry", "JV-9", "2026-06", datetime(2026, 8, 3, 9, 0))]
+        out = detecter_retardataires(c, self._envois(), set())
+        self.assertEqual(out, [])
+
+    def test_saisie_avant_envoi_exclue(self):
+        from bank_retenue_sync.facturation.retards import detecter_retardataires
+        c = [self._ligne("Purchase Invoice", "PI-2", "2026-07", datetime(2026, 7, 15, 9, 0))]
+        self.assertEqual(detecter_retardataires(c, self._envois(), set()), [])
+
+    def test_deja_rattachee_ailleurs_exclue(self):
+        from bank_retenue_sync.facturation.retards import cle_voucher, detecter_retardataires
+        c = [self._ligne("Purchase Invoice", "PI-3", "2026-07", datetime(2026, 8, 3, 9, 0))]
+        deja = {cle_voucher("Purchase Invoice", "PI-3")}
+        self.assertEqual(detecter_retardataires(c, self._envois(), deja), [])
+
+    def test_ordre_dentree_conserve(self):
+        from bank_retenue_sync.facturation.retards import detecter_retardataires
+        c = [self._ligne("Purchase Invoice", "PI-B", "2026-07", datetime(2026, 8, 4, 9, 0)),
+             self._ligne("Purchase Invoice", "PI-A", "2026-07", datetime(2026, 8, 3, 9, 0))]
+        out = detecter_retardataires(c, self._envois(), set())
+        self.assertEqual([l["document_name"] for l in out], ["PI-B", "PI-A"])
+
+    # ---- grouper_par_mois_origine & sous_total ---------------------------
+
+    def test_groupe_par_mois_avec_sous_total(self):
+        from bank_retenue_sync.facturation.retards import grouper_par_mois_origine
+        retards = [
+            self._ligne("Purchase Invoice", "PI-1", "2026-07", None,
+                        ht=100.0, tva=19.0, ttc=119.0, retenue=0.0,
+                        justificatif_requis=True, justificatifs=[{"file_name": "f.pdf"}]),
+            self._ligne("Journal Entry", "JV-1", "2026-06", None,
+                        ht=50.0, tva=0.0, ttc=50.0, retenue=0.0,
+                        justificatif_requis=True, justificatifs=[]),
+            self._ligne("Purchase Invoice", "PI-2", "2026-07", None,
+                        ht=200.0, tva=38.0, ttc=238.0, retenue=0.0,
+                        justificatif_requis=True, justificatifs=[]),
+        ]
+        groupes = grouper_par_mois_origine(retards)
+        # Trie du plus ancien au plus recent : juin avant juillet.
+        self.assertEqual([g["mois"] for g in groupes], ["2026-06", "2026-07"])
+        juillet = groupes[1]
+        self.assertEqual(juillet["totaux"]["nombre"], 2)
+        self.assertAlmostEqual(juillet["totaux"]["ht"], 300.0, places=3)
+        self.assertAlmostEqual(juillet["totaux"]["ttc"], 357.0, places=3)
+        # Un seul justificatif present, une seule ligne exigible sans piece.
+        self.assertEqual(juillet["totaux"]["avec_justificatif"], 1)
+        self.assertEqual(juillet["totaux"]["sans_justificatif"], 1)
+
+    def test_sous_total_liste_vide(self):
+        from bank_retenue_sync.facturation.retards import sous_total
+        t = sous_total([])
+        self.assertEqual(t["nombre"], 0)
+        self.assertEqual(t["ttc"], 0.0)
+        self.assertEqual(t["sans_justificatif"], 0)
