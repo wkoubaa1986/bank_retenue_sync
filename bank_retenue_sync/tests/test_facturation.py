@@ -958,6 +958,56 @@ class TestRetardataires(unittest.TestCase):
                          R.REFUS_ORIGINE_INCONNUE)
 
 
+class TestRattachementManuel(unittest.TestCase):
+    """Le rattrapage CHOISI a la main : ce qui tombe, et ce qui tient quand meme.
+
+    La detection automatique repond a « cette charge manque au comptable sans que personne le
+    sache ». Le mode manuel repond a autre chose : « celle-ci n-est jamais partie, je la joins au
+    mois courant ». Les deux conditions de detection — mois d-origine envoye, piece saisie apres
+    l-envoi — n-ont donc plus lieu d-etre. La chronologie, elle, reste : elle seule protege du
+    double comptage, puisque le sous-bloc « Retards » ne compte le montant nulle part ailleurs.
+    """
+
+    def _refus(self, origine, mois, envoi=None, creation=None, manuel=True):
+        from bank_retenue_sync.facturation.retards import raison_de_refus
+        return raison_de_refus(origine, mois, envoi, creation, manuel=manuel)
+
+    def test_mois_dorigine_jamais_envoye_est_accepte(self):
+        """Le cas du ticket : juin n-a jamais ete marque envoye, ses factures dorment."""
+        self.assertIsNone(self._refus("2026-06", "2026-08"))
+
+    def test_piece_saisie_avant_lenvoi_est_acceptee(self):
+        """Saisie a temps mais absente de l-archive remise : l-utilisateur seul peut le savoir."""
+        self.assertIsNone(self._refus("2026-07", "2026-08",
+                                      envoi=datetime(2026, 8, 1, 18, 0),
+                                      creation=datetime(2026, 7, 15, 9, 0)))
+
+    def test_le_meme_mois_reste_refuse(self):
+        from bank_retenue_sync.facturation import retards as R
+        self.assertEqual(self._refus("2026-08", "2026-08"), R.REFUS_PAS_ANTERIEUR)
+
+    def test_un_mois_posterieur_reste_refuse(self):
+        """Rattacher aout au dossier de juillet le ferait sortir dans les deux."""
+        from bank_retenue_sync.facturation import retards as R
+        self.assertEqual(self._refus("2026-09", "2026-08"), R.REFUS_PAS_ANTERIEUR)
+
+    def test_origine_vide_reste_refusee(self):
+        from bank_retenue_sync.facturation import retards as R
+        self.assertEqual(self._refus("", "2026-08"), R.REFUS_ORIGINE_INCONNUE)
+        self.assertEqual(self._refus("2026-07", ""), R.REFUS_ORIGINE_INCONNUE)
+
+    def test_sans_le_drapeau_la_regle_automatique_est_intacte(self):
+        """Le garde-fou de non-regression : `manuel` par defaut ne change rien a rien."""
+        from bank_retenue_sync.facturation import retards as R
+        envoi, tot = datetime(2026, 8, 1, 18, 0), datetime(2026, 7, 15, 9, 0)
+        tard = datetime(2026, 8, 3, 9, 0)
+        self.assertEqual(self._refus("2026-06", "2026-08", manuel=False),
+                         R.REFUS_MOIS_NON_ENVOYE)
+        self.assertEqual(self._refus("2026-07", "2026-08", envoi, tot, manuel=False),
+                         R.REFUS_SAISIE_AVANT_ENVOI)
+        self.assertIsNone(self._refus("2026-07", "2026-08", envoi, tard, manuel=False))
+
+
 class TestDedoublonnageDesAchats(unittest.TestCase):
     """Une facture presente dans « Dépenses » ET dans « Achats » ne reste que dans « Achats ».
 

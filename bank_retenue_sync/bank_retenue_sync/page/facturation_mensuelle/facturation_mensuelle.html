@@ -143,6 +143,17 @@
   .fm-jauge { height: 8px; border-radius: 4px; background: var(--control-bg); overflow: hidden; }
   .fm-jauge span { display: block; height: 100%; background: #2490ef; transition: width .3s; }
   .fm-dossier .archives { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+
+  /* --- rattrapage manuel : joindre des charges d un mois anterieur ------- */
+  .fm-dossier select { height: 28px; font-size: 12.5px; padding: 2px 8px; border-radius: 6px;
+                       border: 1px solid var(--border-color); background: var(--control-bg);
+                       color: var(--text-color); min-width: 180px; }
+  /* Une piece deja partie avec un autre dossier reste lisible mais en retrait : sa case est
+     verrouillee, et rien ne doit laisser croire quon peut encore la prendre ici. */
+  .fm-dossier .fm-tbl tr.muted td { opacity: .62; }
+  .fm-dossier [data-role="anterieures"] .fm-scroll { max-height: 460px; overflow-y: auto; }
+  .fm-dossier [data-role="anterieures"] .fm-tbl th { position: sticky; top: 0; z-index: 1;
+                                                     background: var(--fg-color, #fff); }
 </style>
 
 <div class="fm-wrap">

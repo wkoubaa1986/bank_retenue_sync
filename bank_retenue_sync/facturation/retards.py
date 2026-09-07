@@ -97,7 +97,7 @@ def detecter_retardataires(candidats: list[dict], envois: dict, rattachees) -> l
     return out
 
 
-def raison_de_refus(origine, mois, envoi, creation) -> str | None:
+def raison_de_refus(origine, mois, envoi, creation, manuel: bool = False) -> str | None:
     """Pourquoi cette pièce ne peut PAS être rattachée au dossier de `mois` — None si elle peut.
 
     La règle qui protège du double comptage, en trois conditions lues dans cet ordre :
@@ -108,6 +108,14 @@ def raison_de_refus(origine, mois, envoi, creation) -> str | None:
         partira normalement avec le dossier de son mois ;
       · la pièce doit avoir été saisie APRÈS cet envoi. Sinon elle était déjà dans le dossier.
 
+    ⚠️ `manuel=True` NE GARDE QUE LA PREMIÈRE CONDITION, ET C'EST VOULU. Les deux autres décrivent
+    la DÉTECTION automatique — « cette pièce manque au comptable sans que personne l'ait remarqué ».
+    Un rattrapage choisi à la main répond à un autre besoin : une facture d'un mois jamais marqué
+    envoyé, ou saisie avant l'envoi mais absente de l'archive remise, n'est pas une candidate
+    automatique et reste pourtant à joindre au mois courant. Seule la chronologie n'est pas
+    négociable : elle seule protège du double comptage, puisque le sous-bloc « Retards » du mois
+    porteur ne compte le montant nulle part ailleurs.
+
     Fonction pure : elle décide, elle ne lit rien. `envoi` et `creation` sont fournis par
     l'appelant, qui seul sait où les chercher.
     """
@@ -116,6 +124,8 @@ def raison_de_refus(origine, mois, envoi, creation) -> str | None:
     # Comparaison de clés « YYYY-MM » : l'ordre lexicographique EST l'ordre chronologique.
     if origine >= mois:
         return REFUS_PAS_ANTERIEUR
+    if manuel:
+        return None
     if not envoi:
         return REFUS_MOIS_NON_ENVOYE
     if not est_en_retard(creation, envoi):
