@@ -283,9 +283,12 @@ def _pool_retardataires(nb_mois: int = NB_MOIS_RETARDS) -> list:
     if not envois:
         return []
     rattachees = _rattachees_globales()
+    # Le plan comptable ne change pas d'un mois a l'autre : on le resout une fois pour toute la
+    # fenetre plutot qu'a chaque tour de boucle.
+    comptes = M_charges.comptes_charges()
     candidats = []
     for mois, envoi in envois.items():
-        vouchers = M_charges.vouchers_charges_du_mois(mois)
+        vouchers = M_charges.vouchers_charges_du_mois(mois, comptes=comptes)
         if not vouchers:
             continue
         creations = M_charges.creations_des_vouchers(vouchers)
@@ -342,11 +345,19 @@ def _vue_child(r) -> dict:
 
 @frappe.whitelist()
 def get_dossier_mensuel(mois=None, nb_mois=NB_MOIS_RETARDS) -> dict:
-    """L'etat d'envoi du mois, ses retardataires rattachees, et le vivier a rattacher."""
+    """L'etat d'envoi du mois, ses retardataires rattachees, et le vivier a rattacher.
+
+    ⚠️ LE VIVIER EST GLOBAL, LES CANDIDATES NE LE SONT PAS. Une charge ne se rattrape que sur un
+    mois POSTERIEUR au sien : proposer une piece d'aout dans l'ecran de juillet, c'est offrir une
+    case que `rattacher` refusera — et gonfler la pastille de pieces que ce mois-ci ne peut pas
+    prendre. Le controle global, lui, garde la vue complete.
+    """
     _guard()
     mois = periode.normaliser(mois)
+    nb_mois = frappe.utils.cint(nb_mois) or NB_MOIS_RETARDS
     doc = _dossier_doc(mois)
-    candidats = [_vue_pool(l) for l in _pool_retardataires(int(nb_mois))]
+    candidats = [_vue_pool(l) for l in _pool_retardataires(nb_mois)
+                 if (l.get("mois_origine") or "") < mois]
     rattaches = [_vue_child(r) for r in (doc.retardataires if doc else [])]
     return {
         "mois": mois,
@@ -378,7 +389,14 @@ def marquer_envoye(mois=None) -> dict:
 
 @frappe.whitelist()
 def annuler_envoi(mois=None) -> dict:
-    """Remet le mois en brouillon. Le contraire strict de `marquer_envoye`, tout aussi idempotent."""
+    """Remet le mois en brouillon. Le contraire strict de `marquer_envoye`, tout aussi idempotent.
+
+    ⚠️ ANNULER UN ENVOI NE RAPPELLE PAS CE QUI EST DEJA PARTI. Des charges de ce mois ont pu etre
+    rattrapees par le dossier d'un mois posterieur : elles sont chez le comptable, et le
+    rattachement les tient hors du vivier. Repasser le mois en brouillon ne defait rien de tout
+    cela — on ne refuse donc pas l'annulation, mais on rend le compte de ces pieces pour que
+    l'ecran le dise au lieu de laisser croire que le mois repart d'une page blanche.
+    """
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
     doc = _dossier_doc(mois)
@@ -388,7 +406,8 @@ def annuler_envoi(mois=None) -> dict:
         doc.envoye_par = None
         doc.save(ignore_permissions=True)
         frappe.db.commit()
-    return {"mois": mois, "envoi": _etat_envoi(doc)}
+    return {"mois": mois, "envoi": _etat_envoi(doc),
+            "parties_ailleurs": len(M_dossier.deja_remises_ailleurs(mois))}
 
 
 @frappe.whitelist()
@@ -442,15 +461,49 @@ def _exiger_retardataire(desc: dict, mois: str) -> None:
     comptage cote comptable, et la piece quitte le vivier pour toujours via `_rattachees_globales`.
     """
     origine = desc.get("mois_origine") or ""
-    envoi = _envois_map().get(origine)
-    if not origine or origine >= mois or not envoi:
-        frappe.throw(_("Cette pièce n'est pas une retardataire d'un mois envoyé."))
-
     cle = (desc["document_type"], desc["document_name"])
+    envoi = _envois_map().get(origine)
     creation = M_charges.creations_des_vouchers([cle]).get(cle)
-    if not M_retards.est_en_retard(creation, envoi):
-        frappe.throw(_("Cette pièce a été saisie avant l'envoi de {0} : elle est déjà partie "
-                       "avec le dossier de son mois.").format(periode.libelle(origine)))
+
+    # La regle elle-meme vit dans le module pur, ou elle est testee : ici on ne fait que lire ce
+    # dont elle a besoin, et traduire son verdict.
+    raison = M_retards.raison_de_refus(origine, mois, envoi, creation)
+    if raison:
+        frappe.throw(_message_refus(raison, origine))
+
+    # ⚠️ ET C'EST BIEN UNE CHARGE DU DOSSIER. Une ecriture de journal validee n'est pas forcement
+    # une depense : un virement de caisse a banque en est une, et rien dans son entete ne le dit.
+    # Rattachee par appel direct, elle sortirait dans le ZIP comme une charge, avec son
+    # `total_credit` en guise de TTC. Le grand livre du mois d'origine tranche : si la piece ne
+    # touche aucun compte de charge du dossier, elle n'a rien a y faire.
+    if cle not in set(M_charges.vouchers_charges_du_mois(origine)):
+        frappe.throw(_("Cette pièce n'est pas une charge du dossier de {0} : elle ne touche aucun "
+                       "compte de dépense ni d'achat.").format(_libelle_mois(origine)))
+
+
+def _libelle_mois(mois: str) -> str:
+    """« 2026-07 » -> « juillet 2026 ». Rend la cle telle quelle si elle est illisible."""
+    try:
+        return periode.libelle(mois)
+    except Exception:
+        return mois or "—"
+
+
+def _message_refus(raison: str, origine: str) -> str:
+    """Le motif de refus, en une phrase pour l'utilisateur. Les cles viennent de `retards.py`."""
+    lib = _libelle_mois(origine)
+    return {
+        M_retards.REFUS_ORIGINE_INCONNUE:
+            _("Le mois de comptabilisation de cette pièce est illisible."),
+        M_retards.REFUS_PAS_ANTERIEUR:
+            _("Une charge ne se rattrape que sur un mois postérieur au sien."),
+        M_retards.REFUS_MOIS_NON_ENVOYE:
+            _("{0} n'est pas encore marqué comme envoyé : cette charge partira avec le dossier "
+              "de son propre mois.").format(lib),
+        M_retards.REFUS_SAISIE_AVANT_ENVOI:
+            _("Cette pièce a été saisie avant l'envoi de {0} : elle est déjà partie avec le "
+              "dossier de son mois.").format(lib),
+    }.get(raison) or _("Cette pièce n'est pas une retardataire d'un mois envoyé.")
 
 
 def _decrire_voucher(document_type: str, document_name: str) -> dict:
@@ -479,7 +532,7 @@ def verifier_non_envoyees(nb_mois=NB_MOIS_RETARDS) -> dict:
     de quoi ne pas devoir ouvrir mois par mois pour trouver ce qui manque au comptable.
     """
     _guard()
-    nb_mois = int(nb_mois)
+    nb_mois = frappe.utils.cint(nb_mois) or NB_MOIS_RETARDS
     pool = _pool_retardataires(nb_mois)
     groupes = M_retards.grouper_par_mois_origine(pool)
     return {
