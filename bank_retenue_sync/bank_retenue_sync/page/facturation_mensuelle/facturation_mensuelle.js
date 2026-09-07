@@ -859,9 +859,22 @@ class FacturationMensuelle {
       () => r(true), () => r(false)));
     if (!ok) return;
     try {
-      await frappe.call({ method: "bank_retenue_sync.api.cloture.annuler_envoi",
-        args: { mois: this.mois } });
+      const r = (await frappe.call({ method: "bank_retenue_sync.api.cloture.annuler_envoi",
+        args: { mois: this.mois } })).message || {};
       frappe.show_alert({ message: __("Envoi annulé."), indicator: "orange" });
+      // Annuler l’envoi ne rappelle pas ce qui est déjà chez le comptable : si des charges de ce
+      // mois sont parties avec un dossier postérieur, on le dit plutôt que de laisser croire que
+      // le mois repart d’une page blanche.
+      if (r.parties_ailleurs) {
+        frappe.msgprint({
+          title: __("Des charges de ce mois sont déjà parties"),
+          indicator: "orange",
+          message: __("{0} charge(s) de {1} ont été rattrapées par le dossier d’un mois "
+            + "postérieur et sont déjà chez le comptable. Annuler l’envoi ne les rappelle pas : "
+            + "si vous reconstituez ce mois, leurs lignes porteront la mention « déjà remise ».",
+            [r.parties_ailleurs, this.mois]),
+        });
+      }
       this._charger_mensuel();
     } catch (e) {
       frappe.msgprint({ title: __("Annulation impossible"), message: String(e), indicator: "red" });
