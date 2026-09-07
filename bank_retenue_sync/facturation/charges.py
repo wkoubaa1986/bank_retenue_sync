@@ -346,19 +346,71 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
         "titre": titre,
         "comptes": comptes,
         "lignes": lignes,
-        "totaux": {
-            "nombre": len(lignes),
-            "ht": flt(sum(l["ht"] for l in lignes), PRECISION),
-            "tva": flt(sum(l["tva"] for l in lignes), PRECISION),
-            "ttc": flt(sum(l["ttc"] for l in lignes), PRECISION),
-            "retenue": flt(sum(l["retenue"] for l in lignes), PRECISION),
-            # Ne compte QUE ce qui est exigible : un compteur qui melange les exemptions ne
-            # se regarde plus au bout de deux mois.
-            "sans_justificatif": sum(1 for l in lignes if l["manque"]),
-            "exemptes": sum(1 for l in lignes if l["exemption"]),
-            "avec_justificatif": sum(1 for l in lignes if l["justificatifs"]),
-        },
+        "totaux": totaux_du_bloc(lignes),
     }
+
+
+def totaux_du_bloc(lignes: list) -> dict:
+    """Les totaux d'un paquet de lignes de charge. Fonction pure.
+
+    Extrait de `_bloc` parce que les lignes d'un bloc ne sont plus figees a leur lecture :
+    `sans_doublons_achats` en retire, et un total qui resterait celui d'avant ferait mentir la
+    somme du dossier — l'ecran, le classeur et le comptable additionnent la meme colonne.
+
+    ⚠️ `round` ET NON `flt`, COMME `retards.sous_total`. Hors site, `frappe.utils.flt(x, 3)` rend
+    0.0 : la fonction deviendrait intestable sans base, alors qu'elle ne porte que de l'addition.
+    Le resultat est le meme — chaque montant de ligne est deja arrondi a trois decimales par la
+    lecture, leur somme n'a donc pas de quatrieme decimale a departager.
+    """
+    def somme(champ):
+        return round(sum(float(l.get(champ) or 0) for l in lignes), PRECISION)
+
+    return {
+        "nombre": len(lignes),
+        "ht": somme("ht"),
+        "tva": somme("tva"),
+        "ttc": somme("ttc"),
+        "retenue": somme("retenue"),
+        # Ne compte QUE ce qui est exigible : un compteur qui melange les exemptions ne
+        # se regarde plus au bout de deux mois.
+        "sans_justificatif": sum(1 for l in lignes if l["manque"]),
+        "exemptes": sum(1 for l in lignes if l["exemption"]),
+        "avec_justificatif": sum(1 for l in lignes if l["justificatifs"]),
+    }
+
+
+def sans_doublons_achats(blocs: list) -> list:
+    """Une piece presente dans « Achats » disparait de « Dépenses ». Fonction pure.
+
+    ⚠️ UNE MEME FACTURE SORTAIT DEUX FOIS, AVEC SON MONTANT COMPTE DEUX FOIS. Les deux blocs se
+    lisent au grand livre, chacun sur sa racine de comptes : une facture d'achat dont l'ecriture
+    touche a la fois un compte sous « Charges Indirectes » et « Stock Existant » remonte dans les
+    deux. A l'ecran comme dans le classeur remis, elle apparaissait en Depenses ET en Achats, et
+    le TOTAL GENERAL l'additionnait deux fois.
+
+    ⚠️ ON LA GARDE EN ACHATS, PAS EN DEPENSES. C'est la nature de la piece qui tranche, pas
+    l'ordre des blocs : une facture d'achat est un achat. Le bloc Depenses est celui des ecritures
+    de journal ; y laisser une facture d'achat, c'est la ranger la ou personne ne la cherche.
+
+    Les blocs sont rendus neufs (totaux recalcules) ; ceux qui ne perdent rien sont rendus tels
+    quels. `blocs` n'est jamais modifie en place.
+    """
+    achats = {(l.get("document_type"), l.get("document_name"))
+              for b in blocs if b.get("cle") == "achats" for l in b.get("lignes") or []}
+    if not achats:
+        return list(blocs)
+    out = []
+    for bloc in blocs:
+        if bloc.get("cle") == "achats":
+            out.append(bloc)
+            continue
+        gardees = [l for l in bloc.get("lignes") or []
+                   if (l.get("document_type"), l.get("document_name")) not in achats]
+        if len(gardees) == len(bloc.get("lignes") or []):
+            out.append(bloc)
+            continue
+        out.append(dict(bloc, lignes=gardees, totaux=totaux_du_bloc(gardees)))
+    return out
 
 
 def _lignes_journal(noms: list, fichiers: dict) -> list:
@@ -506,11 +558,11 @@ def liste(mois: str) -> dict:
     absents = [n for n, r in ((RACINE_DEPENSES, racine), (COMPTE_ACHATS, achats),
                               (COMPTE_RETENUES, retenues)) if not r]
 
-    blocs = [
+    blocs = sans_doublons_achats([
         _bloc("depenses", "Dépenses", _descendance(racine) if racine else [], debut, fin),
         _bloc("achats", "Achats", [achats] if achats else [], debut, fin),
         _bloc("retenues", "Retenues / Ventes", [retenues] if retenues else [], debut, fin),
-    ]
+    ])
 
     return {
         "mois": mois,

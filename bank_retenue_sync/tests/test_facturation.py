@@ -958,6 +958,120 @@ class TestRetardataires(unittest.TestCase):
                          R.REFUS_ORIGINE_INCONNUE)
 
 
+class TestDedoublonnageDesAchats(unittest.TestCase):
+    """Une facture presente dans « Dépenses » ET dans « Achats » ne reste que dans « Achats ».
+
+    Les deux blocs se lisent au grand livre, chacun sur sa racine de comptes : une facture d-achat
+    dont l-ecriture touche a la fois « Charges Indirectes » et « Stock Existant » remontait dans
+    les deux, et le TOTAL GENERAL l-additionnait deux fois. Fonctions pures : ni frappe, ni base.
+    """
+
+    def _l(self, dt, dn, ht, tva, ttc, justificatifs=(), exemption=""):
+        return {"document_type": dt, "document_name": dn, "ht": ht, "tva": tva, "ttc": ttc,
+                "retenue": 0.0, "justificatifs": list(justificatifs), "exemption": exemption,
+                "manque": not exemption and not justificatifs}
+
+    def _bloc(self, cle, titre, lignes):
+        from bank_retenue_sync.facturation.charges import totaux_du_bloc
+        return {"cle": cle, "titre": titre, "lignes": list(lignes),
+                "totaux": totaux_du_bloc(lignes)}
+
+    def _blocs(self):
+        """La facture PI-1 est dans les deux blocs ; JV-1 et PI-2 n-y sont qu-une fois."""
+        doublon = self._l("Purchase Invoice", "PI-1", 100.0, 19.0, 119.0,
+                          justificatifs=[{"file_name": "a.pdf"}])
+        return [
+            self._bloc("depenses", "Dépenses", [
+                self._l("Journal Entry", "JV-1", 50.0, 0.0, 50.0),
+                dict(doublon),
+            ]),
+            self._bloc("achats", "Achats", [
+                dict(doublon),
+                self._l("Purchase Invoice", "PI-2", 200.0, 38.0, 238.0,
+                        justificatifs=[{"file_name": "b.pdf"}]),
+            ]),
+            self._bloc("retenues", "Retenues / Ventes", []),
+        ]
+
+    def _sans_doublons(self, blocs):
+        from bank_retenue_sync.facturation.charges import sans_doublons_achats
+        return sans_doublons_achats(blocs)
+
+    def test_la_piece_ne_reste_que_dans_achats(self):
+        blocs = self._sans_doublons(self._blocs())
+        depenses, achats = blocs[0], blocs[1]
+        self.assertEqual([l["document_name"] for l in depenses["lignes"]], ["JV-1"])
+        self.assertEqual([l["document_name"] for l in achats["lignes"]], ["PI-1", "PI-2"])
+
+    def test_les_totaux_du_bloc_depenses_sont_recalcules(self):
+        """C-est tout l-enjeu : le total doit suivre la ligne retiree, sinon il ment."""
+        depenses = self._sans_doublons(self._blocs())[0]
+        t = depenses["totaux"]
+        self.assertEqual(t["nombre"], 1)
+        self.assertAlmostEqual(t["ht"], 50.0, places=3)
+        self.assertAlmostEqual(t["tva"], 0.0, places=3)
+        self.assertAlmostEqual(t["ttc"], 50.0, places=3)
+        # Le justificatif de la piece retiree ne compte plus non plus.
+        self.assertEqual(t["avec_justificatif"], 0)
+        self.assertEqual(t["sans_justificatif"], 1)
+
+    def test_le_bloc_achats_nest_pas_touche(self):
+        achats = self._sans_doublons(self._blocs())[1]
+        self.assertEqual(achats["totaux"]["nombre"], 2)
+        self.assertAlmostEqual(achats["totaux"]["ttc"], 357.0, places=3)
+
+    def test_le_total_general_ne_compte_plus_deux_fois(self):
+        blocs = self._sans_doublons(self._blocs())
+        self.assertAlmostEqual(sum(b["totaux"]["ttc"] for b in blocs), 407.0, places=3)
+        # Avant dedoublonnage, la meme somme valait 119 de trop.
+        self.assertAlmostEqual(sum(b["totaux"]["ttc"] for b in self._blocs()), 526.0, places=3)
+
+    def test_sans_doublon_rien_ne_bouge(self):
+        blocs = [self._bloc("depenses", "Dépenses",
+                            [self._l("Journal Entry", "JV-1", 50.0, 0.0, 50.0)]),
+                 self._bloc("achats", "Achats",
+                            [self._l("Purchase Invoice", "PI-2", 200.0, 38.0, 238.0)])]
+        self.assertEqual(self._sans_doublons(blocs), blocs)
+
+    def test_sans_bloc_achats_rien_nest_retire(self):
+        """Compte « Stock Existant » introuvable : le bloc est vide, les depenses restent entieres."""
+        blocs = [self._bloc("depenses", "Dépenses",
+                            [self._l("Purchase Invoice", "PI-1", 100.0, 19.0, 119.0)]),
+                 self._bloc("achats", "Achats", [])]
+        self.assertEqual(self._sans_doublons(blocs), blocs)
+
+    def test_lentree_nest_pas_modifiee_en_place(self):
+        """`liste` sert l-ecran ET le classeur : une mutation en place se paierait ailleurs."""
+        depart = self._blocs()
+        self._sans_doublons(depart)
+        self.assertEqual(len(depart[0]["lignes"]), 2)
+        self.assertAlmostEqual(depart[0]["totaux"]["ttc"], 169.0, places=3)
+
+    def test_totaux_du_bloc_sur_une_liste_vide(self):
+        from bank_retenue_sync.facturation.charges import totaux_du_bloc
+        t = totaux_du_bloc([])
+        self.assertEqual(t["nombre"], 0)
+        self.assertEqual(t["ttc"], 0.0)
+        self.assertEqual(t["exemptes"], 0)
+
+    def test_totaux_du_bloc_compte_les_exemptions(self):
+        from bank_retenue_sync.facturation.charges import totaux_du_bloc
+        t = totaux_du_bloc([
+            self._l("Journal Entry", "JV-1", 50.0, 0.0, 50.0,
+                    exemption="frais bancaires : la preuve est le relevé"),
+            self._l("Purchase Invoice", "PI-2", 200.0, 38.0, 238.0,
+                    justificatifs=[{"file_name": "b.pdf"}]),
+            self._l("Journal Entry", "JV-2", 10.0, 0.0, 10.0),
+        ])
+        self.assertEqual(t["nombre"], 3)
+        self.assertEqual(t["exemptes"], 1)
+        self.assertEqual(t["avec_justificatif"], 1)
+        self.assertEqual(t["sans_justificatif"], 1)
+        self.assertAlmostEqual(t["ht"], 260.0, places=3)
+        self.assertAlmostEqual(t["tva"], 38.0, places=3)
+        self.assertAlmostEqual(t["ttc"], 298.0, places=3)
+
+
 class TestSousBlocRetards(unittest.TestCase):
     """Le sous-bloc « Retards » du classeur : visible, chiffre, et JAMAIS dans le total general.
 
