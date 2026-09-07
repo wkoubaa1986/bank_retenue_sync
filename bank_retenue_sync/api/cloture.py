@@ -236,10 +236,19 @@ def _dossier_doc(mois: str, creer: bool = False):
 
 
 def _etat_envoi(doc) -> dict:
+    """L'etat d'envoi tel que l'ecran le montre.
+
+    `date_envoi` reste brute — c'est elle qui sert aux comparaisons — mais la banniere affiche
+    `date_envoi_libelle`, au format de l'utilisateur : « 07-09-2026 10:32:15 » plutot que
+    « 2026-09-07 10:32:15.482913 », dont les microsecondes n'apprennent rien a personne.
+    """
     if not doc:
-        return {"statut": "Brouillon", "date_envoi": None, "envoye_par": None}
+        return {"statut": "Brouillon", "date_envoi": None, "date_envoi_libelle": None,
+                "envoye_par": None}
     return {"statut": doc.statut or "Brouillon",
             "date_envoi": str(doc.date_envoi) if doc.date_envoi else None,
+            "date_envoi_libelle": frappe.utils.format_datetime(doc.date_envoi)
+            if doc.date_envoi else None,
             "envoye_par": doc.envoye_par}
 
 
@@ -275,15 +284,30 @@ def _pool_retardataires(nb_mois: int = NB_MOIS_RETARDS) -> list:
         return []
     rattachees = _rattachees_globales()
     candidats = []
-    for mois in envois:
+    for mois, envoi in envois.items():
         vouchers = M_charges.vouchers_charges_du_mois(mois)
         if not vouchers:
             continue
         creations = M_charges.creations_des_vouchers(vouchers)
-        for l in M_charges.lignes_par_vouchers(vouchers):
+
+        # ⚠️ ON TRIE AVANT DE LIRE, PAS APRES. La date de saisie suffit a ecarter la quasi-totalite
+        # des pieces d'un mois, et elle est deja la : lire les lignes completes de TOUT le mois —
+        # justificatifs, comptes de journal, contrats de leasing — pour n'en garder ensuite qu'une
+        # poignee coutait douze mois de lecture inutile a chaque ouverture de la page.
+        tardifs = [v for v in vouchers
+                   if M_retards.est_en_retard(creations.get(v), envoi)
+                   and M_retards.cle_voucher(*v) not in rattachees]
+        if not tardifs:
+            continue
+        for l in M_charges.lignes_par_vouchers(tardifs):
             l["mois_origine"] = mois
             l["creation"] = creations.get((l["document_type"], l["document_name"]))
             candidats.append(l)
+
+    # La regle reste portee par la fonction pure — ce filtre amont n'est qu'une optimisation, et
+    # `detecter_retardataires` doit rester le seul endroit ou « qu'est-ce qu'une retardataire »
+    # se decide. Sur les lignes deja triees, c'est un passe-plat ; s'il cessait de l'etre, c'est
+    # le filtre amont qui aurait tort.
     return M_retards.detecter_retardataires(candidats, envois, rattachees)
 
 
@@ -374,6 +398,10 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
     ⚠️ ON NE RATTACHE QU'UNE CHARGE, ET NULLE PART AILLEURS. Le type est borne aux deux familles de
     charge, et une piece deja rattachee a un AUTRE mois est refusee : sans quoi la meme facture
     partirait dans deux dossiers, et serait comptee deux fois.
+
+    ⚠️ ET PAS SUR UN MOIS DEJA ENVOYE. Rattacher a un dossier deja parti fait DISPARAITRE la piece
+    du vivier — pastille, section, controle des non-envoyees — sans qu'elle ait jamais ete
+    transmise : le trou meme que ce ticket vient boucher. Il faut annuler l'envoi d'abord.
     """
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
@@ -382,6 +410,9 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
         frappe.throw(_("Type de pièce non éligible au rattrapage : {0}.").format(document_type))
 
     doc = _dossier_doc(mois, creer=True)
+    if (doc.statut or "Brouillon") == "Envoyé":
+        frappe.throw(_("Ce mois est déjà envoyé : annulez l'envoi avant de modifier "
+                       "ses rattachements."))
     existe = next((r for r in doc.retardataires
                    if r.document_type == document_type and r.document_name == document_name), None)
 
@@ -389,7 +420,9 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
         cle = M_retards.cle_voucher(document_type, document_name)
         if cle in _rattachees_globales(sauf_mois=mois):
             frappe.throw(_("Cette pièce est déjà rattachée au dossier d'un autre mois."))
-        doc.append("retardataires", _decrire_voucher(document_type, document_name))
+        desc = _decrire_voucher(document_type, document_name)
+        _exiger_retardataire(desc, mois)
+        doc.append("retardataires", desc)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
     elif not attacher and existe:
@@ -398,6 +431,26 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1) -> 
         frappe.db.commit()
 
     return {"mois": mois, "attache": attacher, "nb_rattaches": len(doc.retardataires)}
+
+
+def _exiger_retardataire(desc: dict, mois: str) -> None:
+    """Refuse tout ce qui n'est pas une VRAIE retardataire d'un mois anterieur deja envoye.
+
+    ⚠️ L'ECRAN NE PROPOSE QUE DES CANDIDATES — L'API, ELLE, EST OUVERTE. Rattacher une piece de
+    juin au dossier d'aout alors que juin n'est pas envoye la ferait sortir DEUX fois : dans le
+    dossier de juin a sa place normale, et dans le sous-bloc « Retards de juin » d'aout. Double
+    comptage cote comptable, et la piece quitte le vivier pour toujours via `_rattachees_globales`.
+    """
+    origine = desc.get("mois_origine") or ""
+    envoi = _envois_map().get(origine)
+    if not origine or origine >= mois or not envoi:
+        frappe.throw(_("Cette pièce n'est pas une retardataire d'un mois envoyé."))
+
+    cle = (desc["document_type"], desc["document_name"])
+    creation = M_charges.creations_des_vouchers([cle]).get(cle)
+    if not M_retards.est_en_retard(creation, envoi):
+        frappe.throw(_("Cette pièce a été saisie avant l'envoi de {0} : elle est déjà partie "
+                       "avec le dossier de son mois.").format(periode.libelle(origine)))
 
 
 def _decrire_voucher(document_type: str, document_name: str) -> dict:
