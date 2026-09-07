@@ -226,6 +226,104 @@ def _tva_du_journal(lignes: list) -> dict:
     return out
 
 
+def _enrichir(lignes: list, source: str = "") -> list:
+    """Les colonnes derivees communes a tout paquet de lignes : contrat, exemption, ref export.
+
+    Extrait de `_bloc` pour que la lecture par voucher (`lignes_par_vouchers`) applique EXACTEMENT
+    les memes regles qu'un bloc du mois : une retardataire doit s'afficher et s'exporter comme
+    n'importe quelle charge, sans quoi son justificatif exigible ou sa reference divergeraient.
+    """
+    contrats = contrats_par_reference()
+    for l in lignes:
+        l["source"] = source
+        l["contrat"] = nom_du_contrat(l.get("ref"), contrats)
+        l["exemption"] = exemption(l)
+        l["justificatif_requis"] = not l["exemption"]
+        l["manque"] = l["justificatif_requis"] and not l["justificatifs"]
+        l["reference_export"] = reference_export(l)
+    return lignes
+
+
+# ------------------------------------------------------------------ lecture par voucher
+#
+# ⚠️ CE QUI SUIT LIT DES PIECES HORS DE LEUR MOIS. Le rattrapage des charges en retard a besoin de
+# relire une facture de juillet en aout : la periode ne borne plus rien, seule la LISTE des pieces
+# compte. On ne touche qu'aux ACHATS et aux DEPENSES — un rattrapage porte sur des charges, jamais
+# sur une vente ni sur une retenue.
+
+TYPES_CHARGE = ("Purchase Invoice", "Journal Entry")
+
+
+def lignes_par_vouchers(vouchers) -> list:
+    """Les lignes de charge de pieces donnees, quelle que soit leur date. -> [] si aucune eligible.
+
+    `vouchers` : iterable de couples (document_type, document_name). Seuls Purchase Invoice et
+    Journal Entry sont lus ; le reste est ignore en silence. Le resultat porte les memes colonnes
+    qu'un bloc de `liste`, justificatifs compris, donc directement affichable et exportable.
+    """
+    par_type = defaultdict(list)
+    for dt, dn in vouchers:
+        if dt in TYPES_CHARGE:
+            par_type[dt].append(dn)
+    if not par_type:
+        return []
+    pieces = [(dt, dn) for dt, noms in par_type.items() for dn in noms]
+    fichiers = _justificatifs(pieces)
+    lignes = []
+    lignes += _lignes_journal(par_type.get("Journal Entry", []), fichiers)
+    lignes += _lignes_achat(par_type.get("Purchase Invoice", []), fichiers)
+    lignes.sort(key=lambda r: (r["date"], r["ref"]))
+    return _enrichir(lignes, source="Retard")
+
+
+def comptes_charges() -> list:
+    """Les comptes du dossier cote CHARGES (depenses + achats), resolus une bonne fois.
+
+    ⚠️ RESOUDRE COUTE QUATRE REQUETES, ET LA LISTE NE CHANGE PAS D'UN MOIS A L'AUTRE. Deux
+    `_resoudre` et deux `_descendance` refaits pour chacun des douze mois de la fenetre de
+    detection, c'est une cinquantaine de requetes pour un resultat identique — et cette detection
+    tourne a chaque ouverture de la page. On resout donc une fois, on passe la liste.
+    """
+    racine = _resoudre(RACINE_DEPENSES)
+    achats = _resoudre(COMPTE_ACHATS)
+    return (_descendance(racine) if racine else []) + ([achats] if achats else [])
+
+
+def vouchers_charges_du_mois(mois: str, comptes: list | None = None) -> list:
+    """Les pieces d'ACHAT et de DEPENSE comptabilisees dans le mois : [(document_type, name)].
+
+    Lecture du grand livre bornee aux comptes du dossier (depenses + achats), sans les ventes ni
+    les retenues. C'est le vivier ou l'on cherche les charges saisies apres l'envoi du mois.
+
+    `comptes` evite de re-resoudre le plan comptable quand on balaie plusieurs mois d'affilee.
+    """
+    mois = periode.normaliser(mois)
+    debut, fin = periode.bornes(mois)
+    if comptes is None:
+        comptes = comptes_charges()
+    ecritures = _ecritures(comptes, debut, fin)
+    return sorted({(e.voucher_type, e.voucher_no) for e in ecritures
+                   if e.voucher_type in TYPES_CHARGE})
+
+
+def creations_des_vouchers(vouchers) -> dict:
+    """{ (document_type, name) -> creation } — la date de SAISIE de chaque piece, en un lot par type.
+
+    C'est cette date, comparee a la date d'envoi du mois, qui trahit une charge entree en retard.
+    """
+    par_type = defaultdict(list)
+    for dt, dn in vouchers:
+        par_type[dt].append(dn)
+    out = {}
+    for dt, noms in par_type.items():
+        if not noms:
+            continue
+        for r in frappe.get_all(dt, filters={"name": ["in", noms]},
+                                fields=["name", "creation"], limit_page_length=0):
+            out[(dt, r.name)] = r.creation
+    return out
+
+
 def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
     ecritures = _ecritures(comptes, debut, fin)
     pieces = sorted({(e.voucher_type, e.voucher_no) for e in ecritures})
@@ -241,14 +339,7 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
     lignes += _lignes_retenue(par_type.get("Payment Entry", []), fichiers)
     lignes.sort(key=lambda r: (r["date"], r["ref"]))
 
-    contrats = contrats_par_reference()
-    for l in lignes:
-        l["source"] = titre
-        l["contrat"] = nom_du_contrat(l.get("ref"), contrats)
-        l["exemption"] = exemption(l)
-        l["justificatif_requis"] = not l["exemption"]
-        l["manque"] = l["justificatif_requis"] and not l["justificatifs"]
-        l["reference_export"] = reference_export(l)
+    _enrichir(lignes, source=titre)
 
     return {
         "cle": cle,

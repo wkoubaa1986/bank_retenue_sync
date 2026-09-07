@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "autoname": "field:mois",
+ "creation": "2026-09-07 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "mois",
+  "libelle",
+  "column_break_tete",
+  "statut",
+  "date_envoi",
+  "envoye_par",
+  "section_retards",
+  "retardataires"
+ ],
+ "fields": [
+  {
+   "description": "Mois du dossier, au format YYYY-MM. Une seule fiche par mois.",
+   "fieldname": "mois",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Mois",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "libelle",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Libellé",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_tete",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Brouillon",
+   "fieldname": "statut",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Statut",
+   "options": "Brouillon\nEnvoyé"
+  },
+  {
+   "description": "Horodatage du passage au statut « Envoyé ». C-est cette date qui sépare une charge déjà livrée d-une retardataire.",
+   "fieldname": "date_envoi",
+   "fieldtype": "Datetime",
+   "label": "Date d-envoi",
+   "read_only": 1
+  },
+  {
+   "fieldname": "envoye_par",
+   "fieldtype": "Link",
+   "label": "Envoyé par",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_retards",
+   "fieldtype": "Section Break",
+   "label": "Charges retardataires rattachées"
+  },
+  {
+   "description": "Charges d-un mois antérieur déjà envoyé, rattrapées avec le dossier de ce mois.",
+   "fieldname": "retardataires",
+   "fieldtype": "Table",
+   "label": "Retardataires",
+   "options": "BRS Dossier Retardataire"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-07 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Dossier Mensuel",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

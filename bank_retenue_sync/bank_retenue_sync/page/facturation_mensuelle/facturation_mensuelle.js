@@ -61,6 +61,26 @@ class FacturationMensuelle {
     $sel.val(this.mois);
     this._periode(ctx);
     this._charger(this.onglet);
+    if (this.onglet !== "dossier") this._amorcer_pastille();
+  }
+
+  /** La pastille de retards vit sur l'onglet Dossier : on la remplit sans forcer l'ouverture. */
+  async _amorcer_pastille() {
+    try {
+      const d = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.get_dossier_mensuel",
+        args: { mois: this.mois },
+      })).message || {};
+      if (this.mois === d.mois) this._maj_pastille(d.nb_candidats);
+    } catch (e) {
+      // La pastille est un rappel, pas une donnée : son échec ne doit rien casser.
+    }
+  }
+
+  _maj_pastille(n) {
+    const $tab = this.$root.find('.fm-tab[data-onglet="dossier"]');
+    $tab.find(".pastille").remove();
+    if (n > 0) $tab.append(`<span class="pastille alerte">${n}</span>`);
   }
 
   _bind() {
@@ -70,6 +90,9 @@ class FacturationMensuelle {
       this._arreter_suivi();
       this.$root.find("[data-panneau]").html('<div class="fm-chargement">Chargement…</div>');
       this._charger(this.onglet);
+      // Sur l’onglet Dossier, `_charger` passe déjà par `_charger_mensuel`, qui met la pastille
+      // à jour : relancer la détection ici la ferait tourner deux fois pour le même résultat.
+      if (this.onglet !== "dossier") this._amorcer_pastille();
     });
 
     this.$root.on("click", ".fm-tab", (e) => {
@@ -97,6 +120,13 @@ class FacturationMensuelle {
       this._controler($b.attr("data-dt"), $b.attr("data-dn"), $b.attr("data-url"), $b);
     });
     this.$root.on("click", '[data-action="controler-mois"]', () => this._controler_le_mois());
+
+    // --- envoi au comptable & rattrapage des retards -----------------------------
+    this.$root.on("click", '[data-action="marquer-envoye"]', () => this._marquer_envoye());
+    this.$root.on("click", '[data-action="annuler-envoi"]', () => this._annuler_envoi());
+    this.$root.on("change", 'input[data-action="rattacher"]', (e) => this._rattacher(e));
+    this.$root.on("click", '[data-action="verifier-non-envoyees"]',
+      () => this._verifier_non_envoyees());
   }
 
   /** Ouvre le justificatif sans quitter la page — c'est le geste le plus fréquent. */
@@ -194,8 +224,11 @@ class FacturationMensuelle {
     const $p = this.$root.find(`[data-panneau="${nom}"]`);
     if (!conf.methode) {
       $p.html('<div class="fm-dossier" data-role="dossier">'
-        + '<div class="fm-chargement" style="padding:8px;">Lecture de l\u2019état…</div></div>');
+        + '<div class="fm-chargement" style="padding:8px;">Lecture de l\u2019état…</div></div>'
+        + '<div data-role="mensuel">'
+        + '<div class="fm-chargement" style="padding:8px;">Lecture des retards…</div></div>');
       this._suivre_dossier();
+      this._charger_mensuel();
       return;
     }
     const cle = `${this.mois}|${nom}`;
@@ -701,6 +734,215 @@ class FacturationMensuelle {
     } catch (e) {
       frappe.msgprint({ title: "Erreur", message: String(e), indicator: "red" });
     }
+  }
+
+  // ------------------------------------------------ envoi au comptable & retards
+
+  async _charger_mensuel() {
+    const $b = this.$root.find('[data-role="mensuel"]');
+    if (!$b.length) return;
+    let d;
+    try {
+      d = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.get_dossier_mensuel",
+        args: { mois: this.mois },
+      })).message || {};
+    } catch (e) {
+      $b.html(this._erreur(e));
+      return;
+    }
+    if (this.mois !== d.mois) return;
+    this._mensuel = d;
+    $b.html(this._rendu_mensuel(d));
+    this._maj_pastille(d.nb_candidats);
+  }
+
+  _rendu_mensuel(d) {
+    const e = d.envoi || {};
+    const envoye = e.statut === "Envoyé";
+    const bouton = d.peut_envoyer
+      ? (envoye
+        ? '<button data-action="annuler-envoi">Annuler l’envoi</button>'
+        : '<button data-action="marquer-envoye">Marquer comme envoyé</button>')
+      : '<span class="muted" style="font-size:12px;">Envoi réservé aux gestionnaires comptables.</span>';
+
+    const quand = e.date_envoi_libelle
+      || (e.date_envoi ? frappe.datetime.str_to_user(e.date_envoi) : "");
+    const banniere = envoye
+      ? `<div class="fm-note" style="border-color:rgba(40,167,69,.4);background:rgba(40,167,69,.07);">
+           <b>✅ Envoyé au comptable</b> — le ${this._esc(quand)}${
+            e.envoye_par ? ` par ${this._esc(e.envoye_par)}` : ""}. Les charges saisies après
+           cette date pour ${this._esc(d.libelle)} deviennent des retardataires à rattraper
+           ailleurs.</div>`
+      : `<div class="fm-note">Ce mois n’est pas encore marqué comme envoyé au comptable.</div>`;
+
+    // ⚠️ UN MOIS ENVOYÉ NE SE RATTACHE PLUS. Cocher une case sur un dossier déjà parti ferait
+    // sortir la pièce du vivier — pastille, section, contrôle des non-envoyées — sans qu’elle
+    // ait jamais été transmise : le trou même que cet écran est censé fermer. Le serveur refuse ;
+    // l’écran ne doit donc pas le proposer, et les rattachements déjà faits restent visibles.
+    const lignes = envoye
+      ? (d.rattaches || []).map((r) => this._ligne_retard(r, true, true)).join("")
+      : [
+        ...(d.rattaches || []).map((r) => this._ligne_retard(r, true, false)),
+        ...(d.candidats || []).map((r) => this._ligne_retard(r, false, false)),
+      ].join("");
+    const total = envoye
+      ? (d.rattaches || []).length
+      : (d.rattaches || []).length + (d.candidats || []).length;
+    const table = total
+      ? `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+           <th>Rattacher</th><th>Mois d’origine</th><th>Tiers</th><th>Référence</th>
+           <th class="num">Montant</th><th>Justificatif</th><th>Pièce</th>
+           </tr></thead><tbody>${lignes}</tbody></table></div>`
+      : `<div class="fm-vide">${envoye
+        ? "Aucune retardataire n’avait été rattachée à ce mois."
+        : "Aucune charge retardataire pour le moment."}</div>`;
+
+    const consigne = envoye
+      ? `<div class="fm-note alerte"><b>Mois envoyé, rattachements figés.</b> Les
+         ${d.nb_candidats || 0} retardataire(s) encore en attente partiront avec un mois suivant.
+         Annulez l’envoi de ${this._esc(d.libelle)} pour modifier ses rattachements.</div>`
+      : `<div class="muted" style="font-size:12px;">Charges d’un mois déjà envoyé, saisies après
+         son envoi. Cochez-les pour les joindre au dossier de <b>${this._esc(d.libelle)}</b> :
+         elles y paraîtront dans un sous-bloc « Retards de … », à sous-total séparé, sans gonfler
+         le total du mois.</div>`;
+
+    return `<div class="fm-dossier">
+        <div class="tete"><b>Envoi au comptable</b>${bouton}</div>${banniere}
+      </div>
+      <div class="fm-dossier">
+        <div class="tete"><b>À rattraper</b>
+          <span class="fm-badge ${d.nb_candidats ? "bad" : "ok"}">${
+            d.nb_candidats || 0} candidate(s)</span>
+          <span style="flex:1"></span>
+          <button data-action="verifier-non-envoyees">Vérifier les factures non envoyées</button>
+        </div>
+        ${consigne}
+        ${table}
+      </div>`;
+  }
+
+  _ligne_retard(r, coche, fige) {
+    return `<tr>
+      <td><input type="checkbox" data-action="rattacher"
+        data-dt="${this._esc(r.document_type)}" data-dn="${this._esc(r.document_name)}"
+        ${coche ? "checked" : ""}${fige ? " disabled" : ""}></td>
+      <td>${this._esc(r.libelle_origine || r.mois_origine || "")}</td>
+      <td>${this._esc(r.tiers || "")}</td>
+      <td>${this._esc(r.reference || "")}</td>
+      <td class="num">${this._m(r.montant)}</td>
+      <td>${r.avec_justificatif
+        ? '<span class="fm-badge ok">présent</span>'
+        : '<span class="fm-badge bad">manquant</span>'}</td>
+      <td>${this._lien(r.document_type, r.document_name)}</td>
+    </tr>`;
+  }
+
+  async _marquer_envoye() {
+    const ok = await new Promise((r) => frappe.confirm(
+      `Marquer ${this._esc(this.mois)} comme envoyé au comptable ?`,
+      () => r(true), () => r(false)));
+    if (!ok) return;
+    try {
+      await frappe.call({ method: "bank_retenue_sync.api.cloture.marquer_envoye",
+        args: { mois: this.mois } });
+      frappe.show_alert({ message: __("Mois marqué comme envoyé."), indicator: "green" });
+      this._charger_mensuel();
+    } catch (e) {
+      frappe.msgprint({ title: __("Envoi impossible"), message: String(e), indicator: "red" });
+    }
+  }
+
+  async _annuler_envoi() {
+    const ok = await new Promise((r) => frappe.confirm(
+      `Annuler l’envoi de ${this._esc(this.mois)} ? Le mois redeviendra un brouillon.`,
+      () => r(true), () => r(false)));
+    if (!ok) return;
+    try {
+      const r = (await frappe.call({ method: "bank_retenue_sync.api.cloture.annuler_envoi",
+        args: { mois: this.mois } })).message || {};
+      frappe.show_alert({ message: __("Envoi annulé."), indicator: "orange" });
+      // Annuler l’envoi ne rappelle pas ce qui est déjà chez le comptable : si des charges de ce
+      // mois sont parties avec un dossier postérieur, on le dit plutôt que de laisser croire que
+      // le mois repart d’une page blanche.
+      if (r.parties_ailleurs) {
+        frappe.msgprint({
+          title: __("Des charges de ce mois sont déjà parties"),
+          indicator: "orange",
+          message: __("{0} charge(s) de {1} ont été rattrapées par le dossier d’un mois "
+            + "postérieur et sont déjà chez le comptable. Annuler l’envoi ne les rappelle pas : "
+            + "si vous reconstituez ce mois, leurs lignes porteront la mention « déjà remise ».",
+            [r.parties_ailleurs, this.mois]),
+        });
+      }
+      this._charger_mensuel();
+    } catch (e) {
+      frappe.msgprint({ title: __("Annulation impossible"), message: String(e), indicator: "red" });
+    }
+  }
+
+  async _rattacher(e) {
+    const $c = $(e.currentTarget);
+    const attacher = $c.is(":checked") ? 1 : 0;
+    $c.prop("disabled", true);
+    try {
+      await frappe.call({ method: "bank_retenue_sync.api.cloture.rattacher",
+        args: { mois: this.mois, document_type: $c.attr("data-dt"),
+                document_name: $c.attr("data-dn"), attacher } });
+      // On recharge : le compteur, la pastille et la répartition coché/candidat suivent le geste.
+      this._charger_mensuel();
+    } catch (err) {
+      frappe.msgprint({ title: __("Rattachement impossible"), message: String(err),
+        indicator: "red" });
+      $c.prop("checked", !attacher).prop("disabled", false);
+    }
+  }
+
+  async _verifier_non_envoyees() {
+    let res;
+    try {
+      res = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.verifier_non_envoyees",
+        args: { nb_mois: 12 },
+        freeze: true,
+        freeze_message: __("Recherche des charges non envoyées…"),
+      })).message || {};
+    } catch (e) {
+      frappe.msgprint({ title: __("Vérification impossible"), message: String(e),
+        indicator: "red" });
+      return;
+    }
+    const d = new frappe.ui.Dialog({ title: __("Factures non envoyées"), size: "extra-large" });
+    d.$body.html(this._rendu_non_envoyees(res));
+    d.show();
+    d.$wrapper.find(".modal-dialog").css("max-width", "88vw");
+  }
+
+  _rendu_non_envoyees(res) {
+    if (!(res.groupes || []).length) {
+      return `<div class="fm-vide">Aucune charge non envoyée sur les ${
+        res.nb_mois || 0} derniers mois : tout ce qui a été saisi après un envoi est déjà
+        rattaché.</div>`;
+    }
+    const blocs = (res.groupes || []).map((g) => {
+      const rows = g.lignes.map((r) => `<tr>
+        <td>${this._esc(r.tiers || "")}</td>
+        <td>${this._esc(r.reference || "")}</td>
+        <td class="num">${this._m(r.montant)}</td>
+        <td>${r.avec_justificatif
+          ? '<span class="fm-badge ok">présent</span>'
+          : '<span class="fm-badge bad">manquant</span>'}</td>
+        <td>${this._lien(r.document_type, r.document_name)}</td>
+      </tr>`).join("");
+      return this._sous(`Retards de ${this._esc(g.libelle || g.mois)} — ${
+        g.totaux.nombre} ligne(s) · TTC ${this._m(g.totaux.ttc)}`)
+        + `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+             <th>Tiers</th><th>Référence</th><th class="num">Montant</th>
+             <th>Justificatif</th><th>Pièce</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }).join("");
+    return `<div class="fm-note">${res.nb} charge(s) saisie(s) après l’envoi de leur mois et non
+      encore rattachée(s), sur les ${res.nb_mois} derniers mois. Ouvrez le mois porteur voulu et
+      cochez-les dans « À rattraper ».</div>${blocs}`;
   }
 
   // ---------------------------------------------------------------- charges
