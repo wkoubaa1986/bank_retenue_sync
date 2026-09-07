@@ -33,11 +33,11 @@
   },
   {
    "columns": 2,
+   "description": "Nom de la pièce. Volontairement un Data et non un Dynamic Link : le rattachement est un pointeur de dossier, pas un lien d-intégrité. Un lien ferait échouer TOUTE sauvegarde du dossier dès qu-une pièce rattachée est annulée (CancelledLinkError) — cas courant d-une facture d-achat annulée puis amendée.",
    "fieldname": "document_name",
-   "fieldtype": "Dynamic Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Pièce",
-   "options": "document_type",
    "reqd": 1,
    "search_index": 1
   },
