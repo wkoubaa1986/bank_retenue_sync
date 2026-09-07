@@ -189,7 +189,36 @@ def _retardataires_du_dossier(mois: str) -> list:
     return R.grouper_par_mois_origine(lignes)
 
 
-def _feuille_charges(donnees: dict, retardataires: list | None = None) -> list:
+def deja_remises_ailleurs(mois: str) -> dict:
+    """{ (document_type, nom) -> mois porteur } des charges de CE mois deja parties avec un autre.
+
+    ⚠️ UN GEL NE SE RELIT PAS DEUX FOIS SANS LE DIRE. Une charge de juillet saisie apres l'envoi
+    de juillet a pu etre rattrapee par le dossier d'aout : le comptable l'a DEJA recue. Si l'on
+    reconstitue juillet aujourd'hui, elle ressort dans son bloc normal — a sa place, puisque c'est
+    bien une charge de juillet — et part une seconde fois, sans que rien ne le signale.
+
+    ⚠️ ON NE LA RETIRE NI DU BLOC NI DU TOTAL. Elle appartient a juillet, et le sous-bloc
+    « Retards » d'aout ne l'a jamais comptee dans le total d'aout : le montant, lui, n'est compte
+    qu'une fois. Ce qui se dedouble, c'est la PIECE REMISE, pas la somme. C'est donc la colonne
+    des justificatifs qui porte la mention — retirer la ligne fausserait le total du mois.
+    """
+    rows = frappe.get_all("BRS Dossier Retardataire",
+                          filters={"mois_origine": mois, "parent": ["!=", mois]},
+                          fields=["document_type", "document_name", "parent"],
+                          limit_page_length=0)
+    return {(r.document_type, r.document_name): r.parent for r in rows}
+
+
+def _libelle_mois(mois: str) -> str:
+    """« 2026-07 » -> « juillet 2026 ». Rend la cle telle quelle si elle est illisible."""
+    try:
+        return periode.libelle(mois)
+    except Exception:
+        return mois or "?"
+
+
+def _feuille_charges(donnees: dict, retardataires: list | None = None,
+                     deja_remises: dict | None = None) -> list:
     """Les trois blocs de charges sur UNE feuille, separes par leur intitule.
 
     ⚠️ UNE FEUILLE PAR BLOC, C EST TROIS FILTRES A REFAIRE. Depenses, achats et retenues se
@@ -210,12 +239,18 @@ def _feuille_charges(donnees: dict, retardataires: list | None = None) -> list:
         lignes.append([])
         lignes.append([bloc["titre"].upper(), "%d ligne(s)" % t["nombre"]])
         for l in bloc["lignes"]:
+            pieces = " · ".join(j["file_name"] for j in l["justificatifs"]) \
+                or (l.get("exemption") or "AUCUN")
+            # Cette charge est-elle deja partie avec le dossier d'un mois posterieur ? Si oui,
+            # elle reste ici — c'est son mois — mais le comptable doit savoir qu'il l'a deja.
+            porteur = (deja_remises or {}).get((l.get("document_type"), l.get("document_name")))
+            if porteur:
+                pieces += " — DÉJÀ REMISE avec le dossier de %s" % _libelle_mois(porteur)
             lignes.append([
                 l.get("reference_export") or "",
                 l["date"], l["tiers"], l["categorie"], l["mode"],
                 l["ht"], l["tva7"], l["tva19"], l["tva"], l["ttc"], l["retenue"],
-                " · ".join(j["file_name"] for j in l["justificatifs"])
-                or (l.get("exemption") or "AUCUN"),
+                pieces,
             ])
         lignes.append(["TOTAL %s" % bloc["titre"], "", "", "", "",
                        t["ht"], "", "", t["tva"], t["ttc"], t["retenue"],
@@ -233,7 +268,7 @@ def _feuille_charges(donnees: dict, retardataires: list | None = None) -> list:
     # le total d'aout la compterait deux fois entre les deux mois. Chaque mois d'origine forme donc
     # son propre sous-bloc etiquete, avec son propre sous-total — visible, mais a part.
     for groupe in retardataires or []:
-        lib = periode.libelle(groupe["mois"]) if groupe["mois"] else (groupe["mois"] or "?")
+        lib = _libelle_mois(groupe["mois"])
         t = groupe["totaux"]
         lignes.append([])
         lignes.append(["RETARDS DE %s" % lib.upper(),
@@ -484,6 +519,9 @@ def _constituer(mois: str, avec_pdf: bool, avec_releve: bool) -> dict:
 
     donnees_charges = controle.attacher_aux_lignes(M_charges.liste(mois))
     retardataires = _retardataires_du_dossier(mois)
+    # Les charges de CE mois deja parties avec un dossier posterieur : elles restent dans le bloc
+    # et dans le total, mais leur ligne le dit — sinon la meme piece part deux fois en silence.
+    deja_remises = deja_remises_ailleurs(mois)
     _poser_etat(mois, etape="lecture du registre bancaire", avancement=25)
     feuilles_banque = _feuilles_banque(mois)
 
@@ -495,7 +533,8 @@ def _constituer(mois: str, avec_pdf: bool, avec_releve: bool) -> dict:
                          _classeur([("Facturation", _feuille_factures(donnees_factures))]))
         archive.writestr("%s/Liste des Charges %s.xlsx" % (racine, mois),
                          _classeur([("Charges",
-                                     _feuille_charges(donnees_charges, retardataires))]))
+                                     _feuille_charges(donnees_charges, retardataires,
+                                                      deja_remises))]))
         archive.writestr("%s/Identification Bancaire %s.xlsx" % (racine, mois),
                          _classeur(feuilles_banque))
         archive.writestr("%s/Caisse espèces %s.xlsx" % (racine, mois),
@@ -550,6 +589,7 @@ def _constituer(mois: str, avec_pdf: bool, avec_releve: bool) -> dict:
         resume={"factures": donnees_factures["totaux"]["nombre"],
                 "charges": donnees_charges["totaux"]["nombre"],
                 "retards": sum(g["totaux"]["nombre"] for g in retardataires),
+                "deja_remises": len(deja_remises),
                 "sans_justificatif": donnees_charges["totaux"]["sans_justificatif"],
                 "pieces": len(archive_noms), "taille": len(flux.getvalue()),
                 "secondes": int((now_datetime() - debut).total_seconds())})
