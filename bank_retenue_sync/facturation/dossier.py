@@ -159,9 +159,15 @@ def _retardataires_du_dossier(mois: str) -> list:
     jour du clic. On ne garde de la table enfant que la LISTE des pieces et leur mois d'origine ;
     lignes et justificatifs sont relus par `charges.lignes_par_vouchers`.
 
+    ⚠️ ET ENRICHIES DU CONTROLE, COMME LES BLOCS DU MOIS. La reference d'export d'une ecriture de
+    journal integre le n° de facture LU dans le justificatif : sans cette etape, la meme piece
+    sortirait sous deux noms differents selon qu'elle part dans son mois ou dans un sous-bloc
+    « Retards ». Aucun PDF n'est relu — on ne pose que les controles deja en cache.
+
     -> [] si le dossier n'existe pas ou ne porte aucune retardataire.
     """
     from bank_retenue_sync.facturation import charges as M
+    from bank_retenue_sync.facturation import controle
     from bank_retenue_sync.facturation import retards as R
 
     if not frappe.db.exists("BRS Dossier Mensuel", mois):
@@ -174,6 +180,9 @@ def _retardataires_du_dossier(mois: str) -> list:
     vouchers = [(r.document_type, r.document_name) for r in rows]
     origine = {(r.document_type, r.document_name): r.mois_origine for r in rows}
     lignes = M.lignes_par_vouchers(vouchers)
+    # `attacher_aux_lignes` travaille sur une structure de blocs et pose le controle EN PLACE ;
+    # les totaux qu'elle remplit ne servent pas ici, les sous-totaux sont recalcules au groupage.
+    controle.attacher_aux_lignes({"blocs": [{"lignes": lignes, "totaux": {}}], "totaux": {}})
     for l in lignes:
         l["mois_origine"] = origine.get((l["document_type"], l["document_name"])) \
             or (l.get("date") or "")[:7]
