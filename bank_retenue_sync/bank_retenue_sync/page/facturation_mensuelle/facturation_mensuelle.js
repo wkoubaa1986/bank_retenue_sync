@@ -828,7 +828,7 @@ class FacturationMensuelle {
       <td class="muted">${this._esc(l.date || "")}</td>
       <td><b>${this._esc(l.reference || "")}</b></td>
       <td>${this._esc(l.tiers || "")}</td>
-      <td class="muted">${this._esc(l.bloc_titre || l.categorie || "")}</td>
+      <td class="muted">${this._esc(l.categorie || l.bloc_titre || "")}</td>
       <td class="num"><b>${this._m(l.ttc)}</b></td>
       <td>${this._justificatif(l, false)}</td>
       <td>${l.deja_remise
@@ -858,7 +858,7 @@ class FacturationMensuelle {
       <td class="muted">${this._esc(l.date || "")}</td>
       <td>${this._esc(l.reference || "")}</td>
       <td>${this._esc(l.tiers || "")}</td>
-      <td class="muted">${this._esc(l.bloc_titre || l.categorie || "")}</td>
+      <td class="muted">${this._esc(l.categorie || l.bloc_titre || "")}</td>
       <td class="num">${this._m(l.ttc)}${this._indice_piece(l)}</td>
       <td>${this._lien(l.document_type, l.document_name)}</td>
     </tr>`).join("");
