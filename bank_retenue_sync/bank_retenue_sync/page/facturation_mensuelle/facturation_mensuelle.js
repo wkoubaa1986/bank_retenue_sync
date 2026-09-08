@@ -91,6 +91,10 @@ class FacturationMensuelle {
       // Le mois d’origine choisi pour le rattrapage vaut pour le mois porteur affiché : en
       // changer sans l’oublier proposerait un mois postérieur, que le serveur refuserait.
       this.mois_origine = null;
+      // Une comparaison d’archive ne vaut que pour SON mois : la garder à l’écran ferait lire
+      // les manquantes de juillet sous le titre d’août.
+      this._comparaison = null;
+      this._archive_comparee = null;
       this._arreter_suivi();
       this.$root.find("[data-panneau]").html('<div class="fm-chargement">Chargement…</div>');
       this._charger(this.onglet);
@@ -124,6 +128,14 @@ class FacturationMensuelle {
       this._controler($b.attr("data-dt"), $b.attr("data-dn"), $b.attr("data-url"), $b);
     });
     this.$root.on("click", '[data-action="controler-mois"]', () => this._controler_le_mois());
+
+    // --- archives : comparaison au mois, et suppression --------------------------
+    this.$root.on("change", '[data-f="archive-comparer"]',
+      (e) => this._comparer_archive($(e.currentTarget).val()));
+    this.$root.on("click", '[data-action="supprimer-archive"]', (e) => {
+      const $b = $(e.currentTarget);
+      this._supprimer_archive($b.attr("data-fichier"), $b.attr("data-nom"));
+    });
 
     // --- envoi au comptable & rattrapage des retards -----------------------------
     this.$root.on("click", '[data-action="marquer-envoye"]', () => this._marquer_envoye());
@@ -632,6 +644,10 @@ class FacturationMensuelle {
     if (this.mois !== d.mois) return;
     const statut = (d.etat || {}).statut;
     $b.html(this._rendu_dossier(d));
+    // Le bloc vient d’être réécrit — toutes les 4 s tant qu’un job tourne. La comparaison
+    // affichée vit en mémoire, pas dans la réponse : sans ce rappel, elle disparaîtrait au
+    // premier rafraîchissement.
+    this._rendre_comparaison();
 
     // ⚠️ LA FIN DOIT SE DIRE. Sans ce signal, la seule façon de savoir que la constitution
     // avait abouti était de remarquer qu'une ligne de plus était apparue dans la liste des
@@ -703,19 +719,171 @@ class FacturationMensuelle {
       // le worker, donc appartenant à Administrator, et Frappe la refusait à tout le monde
       // d'autre — « 403 Forbidden » sur un dossier qu'on venait de demander.
       ? `<div class="archives"><b>Archives de ce mois</b>${(d.archives || []).map((a) =>
-          `<div><a href="/api/method/bank_retenue_sync.api.cloture.telecharger_dossier?${
+          `<div class="arch"><a href="/api/method/bank_retenue_sync.api.cloture.telecharger_dossier?${
             new URLSearchParams({ mois: this.mois, fichier: a.name }).toString()
           }">${this._esc(a.file_name)}</a>
            <span class="muted"> — ${frappe.datetime.str_to_user(a.creation)} · ${
-            (a.file_size / 1048576).toFixed(1)} Mo</span></div>`).join("")}
-         </div>`
+            (a.file_size / 1048576).toFixed(1)} Mo</span>
+           <span class="spacer"></span>${this.peut_generer
+            ? `<button class="fm-piece" data-action="supprimer-archive"
+                 data-fichier="${this._esc(a.name)}" data-nom="${this._esc(a.file_name)}"
+                 ${encours ? "disabled" : ""}
+                 title="Supprimer définitivement cette archive">Supprimer</button>` : ""}
+          </div>`).join("")}
+         </div>${this._comparateur(d)}`
       : '<div class="muted" style="font-size:12px;">Aucune archive pour ce mois.</div>';
 
     return `<div class="tete"><b>Dossier du mois</b>${bouton}</div>${corps}${archives}
       <div class="muted" style="font-size:11.5px;">Caisse espèces, récapitulatif des ventes,
       liste des charges, identification bancaire, un PDF par facture, les justificatifs des
-      charges — et le relevé de la banque si tu le demandes. Chaque constitution crée une
+      charges, un manifeste des pièces embarquées — et le relevé de la banque si tu le
+      demandes. Chaque constitution crée une
       archive datée : elle n\u2019écrase pas la précédente.</div>`;
+  }
+
+  /** Le sélecteur de comparaison : quelles charges du mois cette archive-là n’a PAS. */
+  _comparateur(d) {
+    const options = ['<option value="">— choisir une archive —</option>']
+      .concat((d.archives || []).map((a) =>
+        `<option value="${this._esc(a.name)}">${this._esc(a.file_name)}</option>`)).join("");
+    return `<div class="fm-comparer">
+        <label>Comparer les charges du mois avec :</label>
+        <select data-f="archive-comparer">${options}</select>
+      </div>
+      <div data-role="comparaison"></div>`;
+  }
+
+  /** La comparaison vit en mémoire : le bloc Dossier se réécrit, elle doit y revenir. */
+  _rendre_comparaison() {
+    const $c = this.$root.find('[data-role="comparaison"]');
+    if (!$c.length) return;
+    const d = this._comparaison;
+    if (!d || d.mois !== this.mois) { $c.empty(); return; }
+    this.$root.find('[data-f="archive-comparer"]').val(d.fichier);
+    $c.html(this._rendu_comparaison(d));
+  }
+
+  async _comparer_archive(fichier) {
+    this._archive_comparee = fichier || null;
+    if (!fichier) {
+      this._comparaison = null;
+      this._rendre_comparaison();
+      return;
+    }
+    const $c = this.$root.find('[data-role="comparaison"]');
+    $c.html('<div class="fm-chargement">Lecture de l’archive…</div>');
+    const demande = `${this.mois}|${fichier}`;
+    let d;
+    try {
+      d = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.comparer_archive",
+        args: { mois: this.mois, fichier },
+      })).message || {};
+    } catch (e) {
+      this._comparaison = null;
+      $c.html(this._erreur(e));
+      return;
+    }
+    // Le mois ou l’archive ont pu changer pendant la lecture d’un ZIP de trente mégaoctets :
+    // afficher une réponse périmée ferait chercher des pièces dans le mauvais dossier.
+    if (demande !== `${this.mois}|${this._archive_comparee}`) return;
+    this._comparaison = d;
+    this._rendre_comparaison();
+  }
+
+  _rendu_comparaison(d) {
+    const manque = d.manquantes || [];
+    const parties = d.disparues || [];
+    const tm = d.totaux_manquantes || {};
+    const td = d.totaux_disparues || {};
+
+    // ⚠️ LA MÉTHODE SE DIT, TOUJOURS. Un rapprochement par (date, tiers, montant) signale comme
+    // manquante une pièce corrigée après l’envoi : le chiffre ne se lit pas de la même façon
+    // selon qu’il vient d’un manifeste ou d’une empreinte.
+    const methode = d.methode === "manifeste"
+      ? "comparaison pièce par pièce (manifeste de l’archive)"
+      : "comparaison par date, tiers et montant (archive sans manifeste)";
+
+    const entete = `<div class="fm-note"><b>${manque.length} charge(s) absente(s) de
+      ${this._esc(d.nom_fichier || "")}</b> — TTC ${this._m(tm.ttc)}.
+      ${d.nb_mois || 0} ligne(s) au mois, ${d.nb_archive || 0} dans l’archive ·
+      <span class="muted">${methode}.</span></div>`;
+
+    const corps = manque.map((l) => `<tr>
+      <td class="muted">${this._esc(l.date || "")}</td>
+      <td><b>${this._esc(l.reference || "")}</b></td>
+      <td>${this._esc(l.tiers || "")}</td>
+      <td class="muted">${this._esc(l.bloc_titre || l.categorie || "")}</td>
+      <td class="num"><b>${this._m(l.ttc)}</b></td>
+      <td>${this._justificatif(l, false)}</td>
+      <td>${l.deja_remise
+        ? `<span class="fm-badge neutre">déjà rattachée au dossier de ${
+            this._esc(l.libelle_porteur || l.rattachee_a)}</span>`
+        : '<span class="fm-badge bad">à rattraper</span>'}</td>
+      <td>${this._lien(l.document_type, l.document_name)}</td>
+    </tr>`).join("");
+
+    const table = manque.length
+      ? `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+           <th>Date</th><th>Référence export</th><th>Tiers</th><th>Catégorie</th>
+           <th class="num">TTC</th><th>Justificatif</th><th>Statut</th><th>Pièce</th>
+           </tr></thead><tbody>${corps}</tbody>
+           <tfoot><tr><td colspan="4">${manque.length} charge(s) absente(s)</td>
+             <td class="num">${this._m(tm.ttc)}</td><td colspan="3"></td></tr></tfoot>
+         </table></div>
+         <div class="muted" style="font-size:12px;">Une charge « à rattraper » se joint depuis le
+         mois suivant, onglet <b>Charges</b>, encart « Joindre des charges d’un mois antérieur » :
+         elle y paraîtra dans un sous-bloc « Retards de … », sans gonfler le total du mois
+         porteur.</div>`
+      : '<div class="fm-vide">Toutes les charges du mois sont dans cette archive.</div>';
+
+    // Ce que l’archive porte et que le mois n’a plus : une pièce annulée, corrigée, ou recomptée
+    // depuis. Ça ne manque à personne, mais ça explique un écart de total.
+    const rows_parties = parties.map((l) => `<tr>
+      <td class="muted">${this._esc(l.date || "")}</td>
+      <td>${this._esc(l.reference || "")}</td>
+      <td>${this._esc(l.tiers || "")}</td>
+      <td class="muted">${this._esc(l.bloc_titre || l.categorie || "")}</td>
+      <td class="num">${this._m(l.ttc)}</td>
+      <td>${this._lien(l.document_type, l.document_name)}</td>
+    </tr>`).join("");
+    const bloc_parties = parties.length
+      ? this._sous(`Dans l’archive, plus dans le mois — ${parties.length} ligne(s) · TTC ${
+          this._m(td.ttc)}`)
+        + `<div class="fm-scroll"><table class="fm-tbl"><thead><tr>
+             <th>Date</th><th>Référence export</th><th>Tiers</th><th>Catégorie</th>
+             <th class="num">TTC</th><th>Pièce</th></tr></thead>
+             <tbody>${rows_parties}</tbody></table></div>`
+      : "";
+
+    return entete + table + bloc_parties;
+  }
+
+  /** ⚠️ IRRÉVERSIBLE : `File.on_trash` efface le ZIP du disque, pas seulement sa fiche. */
+  async _supprimer_archive(fichier, nom) {
+    const ok = await new Promise((r) => frappe.confirm(
+      `Supprimer définitivement l’archive <b>${this._esc(nom)}</b> ?
+       Le fichier ZIP sera effacé du serveur : c’est irréversible, et cette archive a pu être
+       remise au comptable.`,
+      () => r(true), () => r(false)));
+    if (!ok) return;
+    try {
+      const r = (await frappe.call({
+        method: "bank_retenue_sync.api.cloture.supprimer_dossier",
+        args: { mois: this.mois, fichier },
+      })).message || {};
+      frappe.show_alert({ message: r.message || __("Archive supprimée."), indicator: "orange" });
+      // La comparaison affichée portait peut-être sur elle : la garder ferait lire les
+      // manquantes d’un ZIP qui n’existe plus.
+      if (this._archive_comparee === fichier) {
+        this._comparaison = null;
+        this._archive_comparee = null;
+      }
+      this._suivre_dossier();
+    } catch (e) {
+      frappe.msgprint({ title: __("Suppression impossible"), message: String(e),
+        indicator: "red" });
+    }
   }
 
   async _generer() {

@@ -3,10 +3,11 @@
 Un onglet, une methode. Le JS ne calcule aucun montant : il affiche ce que ces methodes rendent,
 comme le fait deja `api/mouvements.py` pour l'identification bancaire.
 
-⚠️ AUCUNE METHODE DE CE MODULE N'ECRIT EN COMPTABILITE. La seule qui ecrive quoi que ce soit,
-`generer_dossier`, produit un fichier. Les gestes qui touchent aux pieces — l'ecriture de journal
-du bilan partenaire, la logique de dette — ne sont pas ici, et c'est delibere : ils sont
-irreversibles et meritent leur propre ecran de confirmation.
+⚠️ AUCUNE METHODE DE CE MODULE N'ECRIT EN COMPTABILITE. Les seules qui touchent a quoi que ce
+soit touchent des FICHIERS — `generer_dossier` en produit un, `supprimer_dossier` en efface un —
+ou l'etat d'envoi du mois. Les gestes qui touchent aux pieces — l'ecriture de journal du bilan
+partenaire, la logique de dette — ne sont pas ici, et c'est delibere : ils sont irreversibles et
+meritent leur propre ecran de confirmation.
 """
 from __future__ import annotations
 
@@ -184,6 +185,22 @@ def get_dossier(mois=None) -> dict:
     return {"mois": mois, "etat": etat, "archives": M_dossier.archives(mois)}
 
 
+def _archive_du_mois(mois: str, fichier: str):
+    """Le fichier d'une archive de CE mois, ou une erreur claire. Jamais autre chose.
+
+    ⚠️ ON NE TOUCHE QUE DES DOSSIERS. Le nom du fichier est verifie contre celui qu'une
+    constitution produit : sans ce controle, les methodes qui s'appuient dessus deviendraient une
+    porte ouverte sur n'importe quel fichier prive du site — servi, ou supprime.
+    """
+    doc = frappe.db.get_value("File", fichier,
+                              ["name", "file_name", "is_private", "creation"], as_dict=True) \
+        if fichier else None
+    attendu = "Dossier facturation %s " % mois
+    if not doc or not (doc.file_name or "").startswith(attendu):
+        frappe.throw(_("Archive introuvable pour {0}.").format(mois))
+    return doc
+
+
 @frappe.whitelist()
 def telecharger_dossier(mois=None, fichier=None):
     """Sert l'archive du mois, avec les droits de la PAGE et non ceux du fichier.
@@ -193,22 +210,124 @@ def telecharger_dossier(mois=None, fichier=None):
     alors a tout autre utilisateur, y compris le gestionnaire comptable qui vient de la demander.
     Le lien direct rendait « 403 Forbidden ». On la sert donc ici, sous la meme regle que le
     reste de l'ecran.
-
-    ⚠️ ET ON NE SERT QUE DES DOSSIERS. Le nom du fichier est verifie contre celui qu'une
-    constitution produit : sans ce controle, la methode deviendrait une porte ouverte sur
-    n'importe quel fichier prive du site.
     """
     _guard()
     mois = periode.normaliser(mois)
-    doc = frappe.db.get_value("File", fichier, ["name", "file_name", "is_private"], as_dict=True) \
-        if fichier else None
-    attendu = "Dossier facturation %s " % mois
-    if not doc or not (doc.file_name or "").startswith(attendu):
-        frappe.throw(_("Archive introuvable pour {0}.").format(mois))
+    doc = _archive_du_mois(mois, fichier)
 
     frappe.response["filecontent"] = frappe.get_doc("File", doc.name).get_content()
     frappe.response["filename"] = doc.file_name
     frappe.response["type"] = "binary"
+
+
+@frappe.whitelist()
+def supprimer_dossier(mois=None, fichier=None) -> dict:
+    """Supprime UNE archive du mois. Irreversible : le fichier physique part avec le document.
+
+    ⚠️ C'EST LA SEULE METHODE DESTRUCTRICE DE CET ECRAN. `File.on_trash` efface le fichier de
+    `private/files` : une archive supprimee n'est pas recuperable, et c'est une piece qui a pu
+    etre remise au comptable. D'ou les droits d'ecriture, la confirmation cote ecran, et le meme
+    controle de nom que le telechargement — on ne supprime jamais qu'un dossier de CE mois, un a
+    la fois.
+
+    L'etat en cache n'est pas touche : `get_dossier` efface deja de lui-meme un etat « terminé »
+    dont le fichier a disparu, et deux endroits qui oublient la meme chose finissent par diverger.
+    """
+    _guard(ecriture=True)
+    mois = periode.normaliser(mois)
+    doc = _archive_du_mois(mois, fichier)
+    nom = doc.file_name
+    frappe.delete_doc("File", doc.name, ignore_permissions=True)
+    frappe.db.commit()
+    return {"mois": mois, "fichier": doc.name, "nom_fichier": nom,
+            "message": _("Archive {0} supprimée.").format(nom)}
+
+
+@frappe.whitelist()
+def comparer_archive(mois=None, fichier=None) -> dict:
+    """Ce que cette archive N'A PAS des charges du mois — et ce qu'elle a en trop.
+
+    ⚠️ LA QUESTION QU'UN GEL EMPECHE DE POSER. Le ZIP remis au comptable fige un etat ; les
+    charges, elles, continuent d'arriver. Six semaines plus tard, personne ne peut plus dire ce
+    qui manquait a l'envoi : reconstituer le mois rend une AUTRE liste, forcement plus longue.
+    On confronte donc le contenu reel de l'archive choisie aux charges d'aujourd'hui.
+
+    ⚠️ « MANQUANTE » N'EST PAS « A RATTRAPER ». Une charge de ce mois rattachee au dossier d'un
+    mois POSTERIEUR est bien absente de cette archive-ci, et pourtant deja chez le comptable :
+    chaque ligne porte donc son mois porteur, s'il y en a un. Aucun rattachement n'est fait ici —
+    cette methode ne fait que lire.
+    """
+    _guard()
+    from bank_retenue_sync.facturation import archive as M_archive
+
+    mois = periode.normaliser(mois)
+    doc = _archive_du_mois(mois, fichier)
+    try:
+        octets = frappe.get_doc("File", doc.name).get_content()
+    except Exception as e:
+        frappe.throw(_("Archive illisible : {0}").format(str(e)[:200]))
+
+    try:
+        manifeste = M_archive.lire_manifeste(octets)
+        if manifeste:
+            methode = M_archive.METHODE_MANIFESTE
+            entrees = M_archive.entrees_du_manifeste(manifeste)
+        else:
+            # Repli pour les archives constituees avant le manifeste : le classeur des charges,
+            # que tous les dossiers portent depuis toujours.
+            entrees = M_archive.lire_classeur_charges(octets)
+            methode = M_archive.METHODE_EMPREINTE
+    except Exception as e:
+        frappe.throw(_("Archive illisible : {0}").format(str(e)[:200]))
+
+    if entrees is None:
+        frappe.throw(_("Cette archive ne porte ni manifeste ni liste des charges : "
+                       "elle ne peut pas être comparée."))
+
+    # Les charges d'AUJOURD'HUI, sans les controles IA : ce qui se compare ici, c'est la
+    # presence d'une piece dans l'archive, pas la lecture de son PDF.
+    donnees = M_charges.liste(mois)
+    lignes_mois = M_archive.entrees_des_blocs(donnees)
+    resultat = M_archive.comparer(lignes_mois, entrees, methode)
+
+    # Ou sont parties les manquantes, si elles sont parties quelque part : une piece rattachee au
+    # dossier d'un autre mois est deja chez le comptable, elle n'est pas a rattraper.
+    manquantes = resultat["manquantes"]
+    porteurs = _rattachements_des_pieces([(e["document_type"], e["document_name"])
+                                          for e in manquantes if e.get("document_name")])
+    detail = {(l.get("document_type"), l.get("document_name")): l
+              for bloc in donnees["blocs"] for l in bloc["lignes"]}
+
+    return {
+        "mois": mois,
+        "libelle": periode.libelle(mois),
+        "fichier": doc.name,
+        "nom_fichier": doc.file_name,
+        "creation": str(doc.creation) if doc.creation else None,
+        "methode": resultat["methode"],
+        "manquantes": [_vue_manquante(e, detail, porteurs, mois) for e in manquantes],
+        "disparues": resultat["disparues"],
+        "totaux_manquantes": resultat["totaux_manquantes"],
+        "totaux_disparues": resultat["totaux_disparues"],
+        "nb_mois": resultat["nb_mois"],
+        "nb_archive": resultat["nb_archive"],
+    }
+
+
+def _vue_manquante(e: dict, detail: dict, porteurs: dict, mois: str) -> dict:
+    """Une charge absente de l'archive, avec de quoi la juger : sa piece, et ou elle est partie."""
+    cle = (e.get("document_type"), e.get("document_name"))
+    ligne = detail.get(cle) or {}
+    porteur = porteurs.get(cle)
+    return dict(e,
+                justificatifs=ligne.get("justificatifs") or [],
+                exemption=ligne.get("exemption") or "",
+                avec_justificatif=bool(ligne.get("justificatifs")),
+                rattachee_a=porteur,
+                libelle_porteur=_libelle_mois(porteur) if porteur else "",
+                # Rattachee au dossier d'un AUTRE mois : deja remise, rien a faire. Sinon, elle
+                # se rattrape depuis le mois suivant, onglet Charges.
+                deja_remise=bool(porteur and porteur != mois))
 
 
 @frappe.whitelist()

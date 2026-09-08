@@ -143,6 +143,19 @@
   .fm-jauge { height: 8px; border-radius: 4px; background: var(--control-bg); overflow: hidden; }
   .fm-jauge span { display: block; height: 100%; background: #2490ef; transition: width .3s; }
   .fm-dossier .archives { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+  /* Une ligne d archive porte son lien, sa date, sa taille — et son bouton de suppression,
+     pousse tout a droite pour quon ne le rencontre jamais en visant le lien. */
+  .fm-dossier .archives .arch { display: flex; align-items: baseline; gap: 6px;
+                                flex-wrap: wrap; }
+  .fm-dossier .archives .arch .spacer { flex: 1; }
+
+  /* --- comparer une archive aux charges du mois ------------------------- */
+  .fm-comparer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                 font-size: 12px; }
+  .fm-comparer label { margin: 0; color: var(--text-muted); }
+  .fm-dossier [data-role="comparaison"] .fm-scroll { max-height: 460px; overflow-y: auto; }
+  .fm-dossier [data-role="comparaison"] .fm-tbl th { position: sticky; top: 0; z-index: 1;
+                                                     background: var(--fg-color, #fff); }
 
   /* --- rattrapage manuel : joindre des charges d un mois anterieur ------- */
   .fm-dossier select { height: 28px; font-size: 12.5px; padding: 2px 8px; border-radius: 6px;
