@@ -14,26 +14,25 @@ devient alors une difference d'ensembles, exacte et sans ambiguite.
 de les comparer, c'est refuser de repondre precisement pour les mois ou la question se pose. On
 relit alors le classeur « Liste des Charges <mois>.xlsx » qu'ils portent tous.
 
-⚠️ CE REPLI SE FONDE SUR CE QUE LE DOSSIER CONTIENT, PAS SUR UNE DATE ET UN MONTANT. Une premiere
-version ne rapprochait que par (date, tiers, valeur TTC) : elle a signale « non envoyees » des
-charges qui etaient bel et bien dans le ZIP de juillet 2026. Normal — cette empreinte est faite de
-trois valeurs qui BOUGENT. Le tiers d'une depense est le compte credite, qui se renomme ; le TTC
-se corrige ; la date de comptabilisation se rectifie. Et le classeur lui-meme a change de colonnes
-d'une version a l'autre : les lire par position rendait un mois entier illisible.
+Le rapprochement s'y fait par (date, tiers, valeur TTC), en MULTI-ENSEMBLE — deux depenses du meme
+jour, du meme tiers et du meme montant sont deux lignes, pas une. C'est moins sur qu'une cle : une
+piece corrigee apres l'envoi n'a plus la meme empreinte et ressortira « manquante ». L'ecran doit
+donc TOUJOURS dire laquelle des deux methodes a servi.
 
-Le rapprochement se fait donc en trois passes, de la preuve la plus forte a la plus faible :
+⚠️ LES COLONNES DU CLASSEUR SE RETROUVENT PAR LEUR INTITULE, JAMAIS PAR LEUR RANG. Le fichier a
+change de colonnes d'une version a l'autre — « Référence » et « Type » en sont sortis — et la
+neuvieme colonne d'un dossier ancien porte la TVA 19 %, pas le TTC. Lues par position, ses lignes
+arrivaient avec une date qui est une reference et un montant qui est une TVA : aucune ne se
+rapprochait, et le mois entier ressortait « non envoye ». Les positions actuelles ne servent plus
+que de repli, et un classeur dont rien n'est reconnu se declare illisible plutot que vide.
 
-  1. LE JUSTIFICATIF NOMME DANS LE CLASSEUR. La colonne « Justificatifs » porte le nom des fichiers
-     joints — les memes fichiers qui sont physiquement dans le ZIP, sous « Dépenses/ ». Deux lignes
-     qui partagent un nom de piece sont la meme charge, quoi qu'il soit arrive a son montant.
-  2. L'EMPREINTE (date, tiers, TTC), en MULTI-ENSEMBLE : deux depenses du meme jour, du meme tiers
-     et du meme montant sont deux lignes, pas une. Pour les charges sans piece jointe.
-  3. LA PIECE PHYSIQUEMENT PRESENTE DANS L'ARCHIVE. Meme si le classeur est illisible ou sa ligne
-     introuvable, un justificatif present dans le ZIP prouve que sa charge est partie avec.
-
-Les colonnes du classeur sont retrouvees PAR LEUR INTITULE, avec les positions actuelles pour seul
-repli : c'est ce qui permet de relire un dossier constitue par une version anterieure du code.
-L'ecran doit toujours dire laquelle des deux methodes a servi.
+⚠️ ET LE JUSTIFICATIF EST UN INDICE, PAS UN VERDICT. Le nom des fichiers joints est connu des deux
+cotes — la colonne « Justificatifs » du classeur, les membres du ZIP sous « Dépenses/ » — et il ne
+bouge pas quand un montant se corrige. La tentation est d'en faire une identite : elle n'en est
+pas une. « scan.pdf » est le nom que donne un telephone, et deux ecritures distinctes en portent
+chacune un ; s'y fier ferait declarer « envoyee » une charge jamais partie, et disparaitre celle
+qui l'etait. Chaque ligne rendue porte donc `indices_piece` — les justificatifs qu'on retrouve de
+l'autre cote — comme une piste a verifier a la main. Rien n'est retire de la liste sur cette foi.
 
 ⚠️ TOUT ICI EST PUR : NI FRAPPE, NI BASE. Le module recoit des octets et des listes de lignes deja
 lues, il rend des listes. C'est ce qui le rend testable sans site — comme `retards.py`.
@@ -296,13 +295,13 @@ def lire_manifeste(octets: bytes) -> dict | None:
 def pieces_de_l_archive(octets: bytes) -> set:
     """Les noms des justificatifs PHYSIQUEMENT presents dans le ZIP, sous « Dépenses/ ».
 
-    ⚠️ LA PREUVE LA PLUS DIRECTE QU'UNE CHARGE EST PARTIE. Le classeur peut avoir change de
-    colonnes, le montant avoir ete corrige, le compte credite renomme : le fichier joint, lui, est
-    dans l'archive, sous son nom. Si le justificatif d'une charge est la, la charge est partie
-    avec — il n'y a rien a rattraper.
+    Ce que le dossier remis contient vraiment, au-dela de ce que son classeur raconte. Sert a
+    poser les INDICES : une charge manquante dont le justificatif est dans l'archive merite une
+    verification a la main. Jamais a conclure — un nom de fichier n'est pas une identite, et deux
+    ecritures peuvent porter chacune leur « scan.pdf ».
 
     ⚠️ SAUF LES SOUS-DOSSIERS « Retards … ». Ils portent les pieces d'un mois ANTERIEUR rattachees
-    a ce dossier : les compter ferait passer pour envoyees des charges d'un autre mois.
+    a ce dossier : les prendre pour des pieces du mois designerait des indices trompeurs.
 
     Seule la liste des membres est lue — rien n'est decompresse.
     """
@@ -499,67 +498,28 @@ def _par_empreinte(lignes_mois: list, entrees_archive: list) -> tuple:
     return difference(lignes_mois, entrees_archive), difference(entrees_archive, lignes_mois)
 
 
-def _apparier_par_piece(lignes_mois: list, entrees_archive: list) -> tuple:
-    """Apparie ce qui PARTAGE UN JUSTIFICATIF, puis rend ce qui reste des deux cotes.
+def _noms_des_pieces(entrees) -> set:
+    """Tous les noms de justificatifs portes par un paquet d'entrees."""
+    return {nom for e in entrees for nom in e.get("pieces") or ()}
 
-    ⚠️ LA PASSE QUI EVITE LES FAUX « NON ENVOYES ». Une charge et sa ligne de classeur peuvent
-    avoir diverge sur les trois valeurs de l'empreinte — le compte credite s'est renomme, le TTC
-    a ete corrige, la date rectifiee — et rester la MEME charge. Le nom du fichier joint, lui, ne
-    bouge pas, et c'est ce fichier qui est dans le ZIP.
 
-    Un appariement consomme la ligne d'archive : deux charges distinctes ne se rapprochent pas de
-    la meme ligne, et celle qui reste sera cherchee par empreinte. Fonction pure.
+def _avec_indices(entrees: list, ailleurs: set) -> list:
+    """Annote chaque entree des justificatifs qu'on retrouve DE L'AUTRE COTE. Fonction pure.
 
-    -> (lignes du mois non appariees, lignes d'archive non appariees, noms de pieces consommes).
+    ⚠️ UN INDICE, PAS UN VERDICT. Un nom de fichier commun ne prouve pas que deux lignes sont la
+    meme charge : « scan.pdf » est le nom que donne un telephone, et deux ecritures distinctes
+    peuvent en porter chacune un. Croire le contraire ferait declarer « envoyee » une charge qui
+    n'est jamais partie — et disparaitre du meme coup celle qui l'etait vraiment. Le rapprochement
+    reste donc celui de l'empreinte (date, tiers, TTC) ; le justificatif ne fait que designer une
+    ligne A VERIFIER a la main, et rien n'est retire de la liste sur cette seule foi.
+
+    Les entrees sont rendues neuves : `entrees` n'est jamais modifie en place.
     """
-    par_piece: dict[str, list] = {}
-    for i, e in enumerate(entrees_archive):
-        for nom in e.get("pieces") or ():
-            par_piece.setdefault(nom, []).append(i)
-
-    pris, consommes, restants = set(), set(), []
-    for ligne in lignes_mois:
-        trouve, retenu = None, None
-        for nom in ligne.get("pieces") or ():
-            trouve = next((i for i in par_piece.get(nom, ()) if i not in pris), None)
-            if trouve is not None:
-                retenu = nom
-                break
-        if trouve is None:
-            restants.append(ligne)
-        else:
-            pris.add(trouve)
-            consommes.add(retenu)
-    return restants, [e for i, e in enumerate(entrees_archive) if i not in pris], consommes
-
-
-def _par_contenu(lignes_mois: list, entrees_archive: list, pieces_archive=None) -> tuple:
-    """Le repli complet, de la preuve la plus forte a la plus faible. Fonction pure.
-
-    1. le justificatif nomme dans le classeur ; 2. l'empreinte (date, tiers, TTC) sur ce qui
-    reste ; 3. le justificatif physiquement present dans le ZIP, qui sauve une charge dont la
-    ligne de classeur est introuvable ou illisible.
-
-    ⚠️ UN FICHIER NE VOUCHE QUE POUR UNE CHARGE. Deux pieces jointes peuvent porter le meme nom —
-    « scan.pdf » sur deux ecritures — et l'archive n'en contient alors qu'une. Sans consommation,
-    ce seul fichier declarerait « envoyees » les deux charges, dont une qui n'est jamais partie :
-    exactement le trou que cet ecran doit fermer. Chaque nom present dans le ZIP n'absout donc
-    qu'une charge, et les noms deja consommes a la passe 1 ne sont plus disponibles.
-    """
-    restants_mois, restants_archive, consommes = _apparier_par_piece(lignes_mois, entrees_archive)
-    manquantes, disparues = _par_empreinte(restants_mois, restants_archive)
-
-    libres = set(pieces_archive or ()) - consommes
-    if libres:
-        gardees = []
-        for e in manquantes:
-            nom = next((n for n in e.get("pieces") or () if n in libres), None)
-            if nom is None:
-                gardees.append(e)
-            else:
-                libres.discard(nom)
-        manquantes = gardees
-    return manquantes, disparues
+    out = []
+    for e in entrees:
+        communs = sorted(nom for nom in e.get("pieces") or () if nom in ailleurs)
+        out.append(dict(e, indices_piece=communs))
+    return out
 
 
 def comparer(lignes_mois: list, entrees_archive: list, methode: str,
@@ -568,25 +528,30 @@ def comparer(lignes_mois: list, entrees_archive: list, methode: str,
 
     · `lignes_mois` : les charges du mois d'AUJOURD'HUI, en entrees (`entrees_des_blocs`) ;
     · `entrees_archive` : ce que le ZIP porte, du manifeste ou du classeur ;
-    · `methode` : `METHODE_MANIFESTE` (rapprochement par piece) ou `METHODE_EMPREINTE`
-      (le repli en trois passes, pour les archives d'avant le manifeste) ;
+    · `methode` : `METHODE_MANIFESTE` (rapprochement par document, exact) ou `METHODE_EMPREINTE`
+      (par date, tiers et montant, pour les archives d'avant le manifeste) ;
     · `pieces_archive` : les justificatifs physiquement presents dans le ZIP, s'ils ont ete lus.
+      Ils n'entrent pas dans le verdict : ils enrichissent les INDICES.
 
     -> {methode, manquantes, disparues, totaux…}. « Manquante » ne veut pas dire « a rattraper » :
     une charge du mois partie avec le dossier d'un mois POSTERIEUR est absente d'ici et deja chez
     le comptable. C'est a l'appelant de le dire, il est le seul a lire les rattachements.
 
-    `retrouvees_par_piece` compte ce que le contenu du dossier a sauve : les charges que la seule
-    empreinte aurait declarees manquantes, et dont le justificatif prouve qu'elles sont parties.
-    C'est le chiffre qui dit si l'empreinte seule aurait menti — et de combien.
+    Chaque ligne rendue porte `indices_piece` : les justificatifs qu'on retrouve de l'autre cote —
+    dans l'archive pour une manquante, dans le mois pour une disparue. C'est une piste de
+    verification, jamais une conclusion : le verdict reste celui de l'empreinte.
     """
     if methode == METHODE_MANIFESTE:
         manquantes, disparues = _par_cle(lignes_mois, entrees_archive)
-        retrouvees = 0
     else:
-        manquantes, disparues = _par_contenu(lignes_mois, entrees_archive, pieces_archive)
-        empreinte_seule, _ = _par_empreinte(lignes_mois, entrees_archive)
-        retrouvees = max(len(empreinte_seule) - len(manquantes), 0)
+        manquantes, disparues = _par_empreinte(lignes_mois, entrees_archive)
+
+    # Ce qu'on retrouve de l'autre cote : les pieces nommees dans le classeur ou le manifeste, et
+    # celles physiquement dans le ZIP — l'archive porte les deux, l'indice vaut pour les deux.
+    cote_archive = _noms_des_pieces(entrees_archive) | set(pieces_archive or ())
+    manquantes = _avec_indices(manquantes, cote_archive)
+    disparues = _avec_indices(disparues, _noms_des_pieces(lignes_mois))
+
     return {
         "methode": methode,
         "manquantes": manquantes,
@@ -595,5 +560,7 @@ def comparer(lignes_mois: list, entrees_archive: list, methode: str,
         "totaux_disparues": _totaux(disparues),
         "nb_mois": len(lignes_mois),
         "nb_archive": len(entrees_archive),
-        "retrouvees_par_piece": retrouvees,
+        # Combien de manquantes portent un justificatif qu'on retrouve dans l'archive : autant de
+        # lignes a verifier a la main avant de conclure qu'elles n'ont pas ete envoyees.
+        "avec_indice_piece": sum(1 for e in manquantes if e["indices_piece"]),
     }

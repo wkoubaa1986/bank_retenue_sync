@@ -377,97 +377,113 @@ class TestPiecesPresentesDansLArchive(unittest.TestCase):
         self.assertEqual(A.pieces_de_l_archive(_zip({"2026-07/manifeste.json": b"{}"})), set())
 
 
-class TestRepliParLeContenuDuDossier(unittest.TestCase):
-    """Ce que le ticket corrige : une charge presente dans le ZIP ne doit plus etre « manquante ».
+class TestLeJustificatifEstUnIndicePasUnVerdict(unittest.TestCase):
+    """Un nom de fichier commun ne fait pas deux fois la meme charge.
 
-    L empreinte (date, tiers, TTC) est faite de trois valeurs qui BOUGENT — le compte credite se
-    renomme, le montant se corrige, la date se rectifie. Le nom du justificatif, lui, ne bouge pas.
+    ⚠️ LA TENTATION ETAIT D EN FAIRE UNE IDENTITE. Le nom du justificatif ne bouge pas quand un
+    montant se corrige : rapprocher dessus semblait plus sur que l empreinte. Mais « scan.pdf » est
+    le nom que donne un telephone. Une charge A d avant, disparue depuis, et une charge B saisie
+    hier peuvent en porter chacune un : croire l identite ferait declarer B « envoyee » — elle ne
+    l est pas — et effacerait A des disparues. Le verdict reste donc l empreinte ; le justificatif
+    ne fait que designer une ligne A VERIFIER.
     """
 
     def _comparer(self, mois, archive, pieces=None):
         return A.comparer([A.entree(l) for l in mois], [A.entree(l) for l in archive],
                           A.METHODE_EMPREINTE, pieces_archive=pieces)
 
-    def test_un_montant_corrige_depuis_l_envoi_ne_fait_plus_une_manquante(self):
+    def test_deux_documents_distincts_homonymes_ne_se_confondent_pas(self):
+        # A est dans l archive et n existe plus au mois ; B est nouvelle et n a jamais ete envoyee.
+        # Tout differe sauf le nom du fichier.
+        mois = [_ligne("JV-B", date="2026-07-28", tiers="Sté BÊTA", ttc=980.0,
+                       pieces=["scan.pdf"])]
+        archive = [{"date": "2026-07-03", "tiers": "Sté ALPHA", "ttc": 120.0,
+                    "pieces": ["scan.pdf"]}]
+        r = self._comparer(mois, archive, pieces={"scan.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-B"])
+        self.assertEqual(len(r["disparues"]), 1, "la charge A doit rester dans les disparues")
+
+    def test_l_homonyme_est_signale_des_deux_cotes_comme_indice(self):
+        mois = [_ligne("JV-B", date="2026-07-28", tiers="Sté BÊTA", ttc=980.0,
+                       pieces=["scan.pdf"])]
+        archive = [{"date": "2026-07-03", "tiers": "Sté ALPHA", "ttc": 120.0,
+                    "pieces": ["scan.pdf"]}]
+        r = self._comparer(mois, archive)
+        self.assertEqual(r["manquantes"][0]["indices_piece"], ["scan.pdf"])
+        self.assertEqual(r["disparues"][0]["indices_piece"], ["scan.pdf"])
+        self.assertEqual(r["avec_indice_piece"], 1)
+
+    def test_un_montant_corrige_reste_manquant_mais_porte_son_indice(self):
+        # Le cas favorable au rapprochement par piece : meme ainsi, on ne conclut pas a sa place.
         mois = [_ligne("JV-1", ttc=486.2, pieces=["aramex.pdf"])]
         archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 402.0,
                     "pieces": ["aramex.pdf"]}]
         r = self._comparer(mois, archive)
-        self.assertEqual(r["manquantes"], [])
-        self.assertEqual(r["disparues"], [])
-        self.assertEqual(r["retrouvees_par_piece"], 1)
-
-    def test_un_tiers_renomme_depuis_l_envoi_ne_fait_plus_une_manquante(self):
-        mois = [_ligne("JV-1", tiers="Fournisseurs divers - A&S", pieces=["aramex.pdf"])]
-        archive = [{"date": "2026-07-05", "tiers": "Fournisseurs - A&S", "ttc": 120.0,
-                    "pieces": ["aramex.pdf"]}]
-        self.assertEqual(self._comparer(mois, archive)["manquantes"], [])
-
-    def test_une_date_rectifiee_depuis_l_envoi_ne_fait_plus_une_manquante(self):
-        mois = [_ligne("JV-1", date="2026-07-31", pieces=["aramex.pdf"])]
-        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0,
-                    "pieces": ["aramex.pdf"]}]
-        self.assertEqual(self._comparer(mois, archive)["manquantes"], [])
-
-    def test_la_piece_physiquement_dans_le_zip_sauve_une_ligne_introuvable(self):
-        # Le classeur ne dit rien de cette charge — mais son justificatif est dans l archive.
-        mois = [_ligne("JV-1", pieces=["aramex.pdf"])]
-        r = self._comparer(mois, [], pieces={"aramex.pdf"})
-        self.assertEqual(r["manquantes"], [])
-        self.assertEqual(r["retrouvees_par_piece"], 1)
-
-    def test_une_piece_absente_du_zip_laisse_la_charge_manquante(self):
-        mois = [_ligne("JV-1", pieces=["jamais_envoye.pdf"])]
-        r = self._comparer(mois, [], pieces={"autre.pdf"})
         self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-1"])
-        self.assertEqual(r["retrouvees_par_piece"], 0)
-
-    def test_une_charge_sans_justificatif_reste_jugee_a_l_empreinte(self):
-        mois = [_ligne("JV-1", ttc=999.0)]
-        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0}]
-        r = self._comparer(mois, archive, pieces={"aramex.pdf"})
-        self.assertEqual(len(r["manquantes"]), 1)
+        self.assertEqual(r["manquantes"][0]["indices_piece"], ["aramex.pdf"])
         self.assertEqual(len(r["disparues"]), 1)
 
-    def test_deux_charges_sans_piece_ne_s_apparient_pas_sur_le_vide(self):
-        # Une liste de justificatifs vide ne doit rapprocher personne de personne.
-        mois = [_ligne("JV-1", ttc=10.0), _ligne("JV-2", ttc=20.0)]
-        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 30.0}]
-        r = self._comparer(mois, archive)
-        self.assertEqual(len(r["manquantes"]), 2)
+    def test_la_piece_physiquement_dans_le_zip_est_un_indice_pas_une_absolution(self):
+        mois = [_ligne("JV-1", pieces=["aramex.pdf"])]
+        r = self._comparer(mois, [], pieces={"aramex.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-1"])
+        self.assertEqual(r["manquantes"][0]["indices_piece"], ["aramex.pdf"])
+        self.assertEqual(r["avec_indice_piece"], 1)
 
-    def test_un_justificatif_n_apparie_qu_une_seule_ligne_d_archive(self):
-        mois = [_ligne("JV-1", ttc=10.0, pieces=["commun.pdf"]),
-                _ligne("JV-2", ttc=20.0, pieces=["commun.pdf"])]
-        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 10.0,
-                    "pieces": ["commun.pdf"]}]
-        r = self._comparer(mois, archive)
-        # La seconde ne trouve plus de ligne libre : elle repasse a l empreinte, qui echoue.
-        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+    def test_sans_justificatif_commun_aucun_indice_n_est_pose(self):
+        mois = [_ligne("JV-1", ttc=999.0, pieces=["jamais_envoye.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0,
+                    "pieces": ["autre.pdf"]}]
+        r = self._comparer(mois, archive, pieces={"autre.pdf"})
+        self.assertEqual(r["manquantes"][0]["indices_piece"], [])
+        self.assertEqual(r["avec_indice_piece"], 0)
 
-    def test_un_fichier_du_zip_n_absout_qu_une_seule_charge(self):
-        # Deux ecritures dont la piece jointe porte le meme nom, et un seul fichier dans le ZIP :
-        # une seule est partie, l autre reste a rattraper.
-        mois = [_ligne("JV-1", ttc=10.0, pieces=["scan.pdf"]),
-                _ligne("JV-2", ttc=20.0, pieces=["scan.pdf"])]
-        r = self._comparer(mois, [], pieces={"scan.pdf"})
-        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+    def test_une_ligne_d_archive_multi_justificatifs_ne_dedouane_pas_une_autre_charge(self):
+        # A est rapprochee par son empreinte ; sa ligne d archive porte aussi b.pdf. B, absente,
+        # porte b.pdf : elle ne doit pas passer pour envoyee dans son sillage.
+        mois = [_ligne("JV-A", date="2026-07-05", tiers="Sté ALPHA", ttc=120.0,
+                       pieces=["a.pdf", "b.pdf"]),
+                _ligne("JV-B", date="2026-07-20", tiers="Sté BÊTA", ttc=77.0,
+                       pieces=["b.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0,
+                    "pieces": ["a.pdf", "b.pdf"]}]
+        r = self._comparer(mois, archive, pieces={"a.pdf", "b.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-B"])
+        self.assertEqual(r["disparues"], [])
 
-    def test_un_nom_deja_consomme_par_le_classeur_ne_sauve_pas_une_seconde_charge(self):
-        mois = [_ligne("JV-1", ttc=10.0, pieces=["scan.pdf"]),
-                _ligne("JV-2", ttc=20.0, pieces=["scan.pdf"])]
-        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 10.0,
+    def test_un_rapprochement_par_empreinte_ne_couvre_pas_un_homonyme_ulterieur(self):
+        # JV-A concorde exactement et sort de la liste ; JV-B, qui ne concorde pas, partage son
+        # justificatif. Elle reste manquante — avec l indice, pour aller verifier.
+        mois = [_ligne("JV-A", date="2026-07-05", tiers="Sté ALPHA", ttc=120.0,
+                       pieces=["scan.pdf"]),
+                _ligne("JV-B", date="2026-07-19", tiers="Sté GAMMA", ttc=45.0,
+                       pieces=["scan.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0,
                     "pieces": ["scan.pdf"]}]
         r = self._comparer(mois, archive, pieces={"scan.pdf"})
-        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-B"])
+        self.assertEqual(r["manquantes"][0]["indices_piece"], ["scan.pdf"])
 
-    def test_le_manifeste_ignore_les_pieces_et_reste_exact(self):
-        # Avec une cle de document, aucun repli n est necessaire ni souhaitable.
+    def test_deux_charges_jumelles_restent_jugees_en_multi_ensemble(self):
+        mois = [_ligne("JV-1", ttc=10.0), _ligne("JV-2", ttc=10.0)]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 10.0}]
+        r = self._comparer(mois, archive)
+        self.assertEqual(len(r["manquantes"]), 1)
+        self.assertEqual(r["disparues"], [])
+
+    def test_le_manifeste_ne_pose_pas_d_indice_sur_une_liste_exacte(self):
         mois = [A.entree(_ligne("PI-1", pieces=["a.pdf"]))]
         archive = [A.entree(_ligne("PI-2", pieces=["a.pdf"]))]
         r = A.comparer(mois, archive, A.METHODE_MANIFESTE, pieces_archive={"a.pdf"})
+        # La cle de document tranche : PI-1 manque, PI-2 a disparu. L indice reste affiche —
+        # il ne coute rien et dit pourquoi les deux se ressemblent.
         self.assertEqual([e["document_name"] for e in r["manquantes"]], ["PI-1"])
-        self.assertEqual(r["retrouvees_par_piece"], 0)
+        self.assertEqual([e["document_name"] for e in r["disparues"]], ["PI-2"])
+
+    def test_les_entrees_d_entree_ne_sont_pas_modifiees_en_place(self):
+        lignes = [A.entree(_ligne("JV-1", pieces=["scan.pdf"]))]
+        self._comparer([_ligne("JV-1", pieces=["scan.pdf"])], [], pieces={"scan.pdf"})
+        self.assertNotIn("indices_piece", lignes[0])
 
 
 class TestJustificatifsDuClasseur(unittest.TestCase):
