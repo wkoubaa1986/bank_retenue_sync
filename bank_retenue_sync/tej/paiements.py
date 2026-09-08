@@ -358,6 +358,12 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
         copie.insert(ignore_permissions=True)
         if valider:
             copie.submit()
+    # L'echeancier de la commande suit la dette, sinon le prochain encaissement l'ignorerait en
+    # silence (cf. tej/echeancier.py). Ne leve jamais : les ecritures sont deja justes.
+    from bank_retenue_sync.tej import echeancier
+    echeancier_suivi = echeancier.suivre(copie or original, flt(original.paid_amount, 3), nouveau,
+                                         part, mode_dette(), R.mode_ras(),
+                                         motif="dette %s reprise" % nom)
     # Meme regle que pour le reglement : on n'efface l'original qu'une fois son remplacant valide,
     # et une dette soldee n'a pas de remplacant a attendre.
     suppression = ({"supprime": False, "raison": None} if not supprimer or (copie and not valider)
@@ -365,7 +371,7 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
     return {"dette": nom, "avant": flt(original.paid_amount, 3), "apres": nouveau,
             "part": part, "piece": affectation["name"], "dette_reprise": copie.name if copie else None,
             "soldee": copie is None, "supprimee": suppression["supprime"],
-            "suppression_raison": suppression["raison"]}
+            "suppression_raison": suppression["raison"], "echeancier": echeancier_suivi}
 
 
 def _decrire(l: dict) -> dict:
@@ -577,6 +583,17 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         copie.submit()
         retenue.submit()
 
+    # 2 bis. Quand le reglement repris EST la dette (client qui a paye net, dette enregistree au
+    #        brut), l'echeancier de la commande doit suivre : 331,00 de dette -> 327,29 + 3,71 de
+    #        retenue, sinon le prochain encaissement ne trouverait plus l'echeance (cf.
+    #        tej/echeancier.py). Ne leve jamais.
+    echeancier_suivi = []
+    if not reel:
+        from bank_retenue_sync.tej import echeancier
+        echeancier_suivi = echeancier.suivre(copie, plan["reglement_avant"], nouveau_montant,
+                                             montant, mode_dette(), R.mode_ras(),
+                                             motif="certificat TEJ %s" % reference)
+
     # 3. L'original annule n'a plus de role : la copie porte le meme encaissement, corrige. On ne
     #    l'efface qu'APRES la validation des deux ecritures (cf. `suppression_permise`).
     suppression = _supprimer_reglement(original.name) if supprimer else {"supprime": False,
@@ -603,6 +620,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     pdf = _demander_pdf(reference)
     return {**plan, "statut": "ajuste", "reglement_repris": copie.name,
             "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
+            "echeancier": echeancier_suivi,
             "reglement_supprime": suppression["supprime"],
             "suppression_raison": suppression["raison"], "pdf": pdf.get("statut")}
 
