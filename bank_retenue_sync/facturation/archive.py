@@ -66,11 +66,14 @@ DEFAUT_PIECES = "pieces"
 METHODE_MANIFESTE = "manifeste"
 METHODE_EMPREINTE = "empreinte"
 
-# Les intitules du classeur qui ne sont PAS des lignes de charge. « RETARDS DE … » ouvre un
-# sous-bloc de pieces d'un AUTRE mois : elles voyagent avec ce dossier mais n'appartiennent pas
-# au mois compare — les compter ferait ressortir tout un mois anterieur en « disparues ».
+# « RETARDS DE … » ouvre un sous-bloc de pieces d'un AUTRE mois : elles voyagent avec ce dossier
+# mais n'appartiennent pas au mois compare — les compter ferait ressortir tout un mois anterieur
+# en « disparues ». C'est le seul intitule reconnu au libelle, et il n'a pas d'homonyme possible
+# en tete de reference d'export ; les totaux, eux, se reconnaissent a leur absence de date.
 PREFIXE_RETARDS = "RETARDS DE "
-PREFIXES_TOTAUX = ("TOTAL", "SOUS-TOTAL")
+
+# Une date de comptabilisation, telle que le classeur l'ecrit : « 2026-07-05 ».
+_RX_JOUR = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 # La position des colonnes dans « Liste des Charges <mois>.xlsx », telle que `dossier`
 # `_feuille_charges` les ecrit AUJOURD'HUI. Ce n'est qu'un repli : les colonnes sont d'abord
@@ -381,6 +384,31 @@ def positions_des_colonnes(cellules: list) -> dict | None:
     return trouve
 
 
+def est_une_ligne_de_charge(valeur_date, valeur_ttc) -> bool:
+    """Une charge, ou une ligne de synthese ? On tranche sur la STRUCTURE. Fonction pure.
+
+    ⚠️ JAMAIS SUR LE PREFIXE « TOTAL ». La reference d'export d'un achat commence par le nom du
+    fournisseur : « TotalEnergies FA-123 » est une facture de carburant, pas un sous-total. Ecarter
+    sur le libelle la faisait disparaitre de la lecture du classeur — donc annoncer comme jamais
+    envoyee une charge qui est dans le ZIP. Et il y a un « Total Assurance » derriere chaque
+    « TotalEnergies ».
+
+    Ce qui distingue vraiment une ligne de synthese, c'est qu'elle n'a PAS DE DATE : « TOTAL
+    Dépenses » laisse la colonne vide, « TOTAL GÉNÉRAL » y ecrit « 12 ligne(s) », un intitule de
+    bloc aussi. Une charge, elle, porte toujours sa date de comptabilisation.
+
+    ⚠️ ET ON N'EXIGE PAS DE TIERS. Une ecriture de journal dont aucun compte n'est credite sort
+    avec un tiers vide : l'exiger ecarterait une vraie charge, exactement le defaut qu'on corrige.
+    La date et un TTC numerique suffisent, et ce sont les deux seules valeurs dont la comparaison
+    a besoin.
+    """
+    if isinstance(valeur_ttc, bool) or not isinstance(valeur_ttc, (int, float)):
+        return False
+    if isinstance(valeur_date, (datetime, date)):
+        return True
+    return bool(_RX_JOUR.match(_texte(valeur_date)))
+
+
 def _pieces_du_classeur(valeur) -> list:
     """« facture.pdf · avoir.pdf — DÉJÀ REMISE avec … » -> ['facture.pdf', 'avoir.pdf'].
 
@@ -420,8 +448,6 @@ def _lignes_de_la_feuille(rangs) -> list[dict] | None:
         if tete.startswith(PREFIXE_RETARDS):
             dans_les_retards = True
             continue
-        if tete.startswith(PREFIXES_TOTAUX):
-            continue
 
         trouvees = positions_des_colonnes(cellules)
         if trouvees:
@@ -429,9 +455,9 @@ def _lignes_de_la_feuille(rangs) -> list[dict] | None:
             continue
 
         ttc = cellule("ttc")
-        if not isinstance(ttc, (int, float)) or isinstance(ttc, bool):
-            # Un intitule de bloc (« DÉPENSES », « 12 ligne(s) ») : pas une charge, et il referme
-            # le sous-bloc des retards.
+        if not est_une_ligne_de_charge(cellule("date"), ttc):
+            # Un intitule de bloc (« DÉPENSES », « 12 ligne(s) ») ou une ligne de synthese : pas
+            # une charge, et cela referme le sous-bloc des retards.
             if tete:
                 dans_les_retards = False
             continue

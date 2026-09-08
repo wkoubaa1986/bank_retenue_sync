@@ -12,6 +12,7 @@ import io
 import json
 import unittest
 import zipfile
+from datetime import datetime
 
 from bank_retenue_sync.facturation import archive as A
 
@@ -265,6 +266,65 @@ class TestLectureDuClasseur(unittest.TestCase):
         self.assertEqual(lignes[0]["date"], "2026-07-03")
         self.assertEqual(lignes[0]["tiers"], "Sté ALPHA")
         self.assertEqual(lignes[0]["categorie"], "Fournitures")
+
+    def test_un_fournisseur_nomme_total_reste_une_charge(self):
+        """« TotalEnergies FA-123 » est une facture de carburant, pas un sous-total.
+
+        La reference d export d un achat commence par le nom du FOURNISSEUR. Ecarter les lignes
+        sur le prefixe « TOTAL » faisait disparaitre du classeur toutes les factures Total — donc
+        les annoncer non envoyees alors qu elles sont dans le ZIP.
+        """
+        lignes = A.lire_classeur_charges(self._octets([
+            ["Référence export", "Date", "Tiers", "Catégorie", "Mode", "Valeur HT", "TVA 7%",
+             "TVA 19%", "TVA", "Valeur TTC", "Retenue", "Justificatifs"],
+            [],
+            ["ACHATS", "3 ligne(s)"],
+            _rang("TotalEnergies FA-123", "2026-07-09", "TotalEnergies Marketing Tunisie",
+                  "Carburant", 340.0),
+            _rang("Total Assurance 4471", "2026-07-15", "Total Assurance", "Assurance", 1200.0),
+            _rang("SOUS-TRAITANCE 900", "2026-07-16", "Sté DELTA", "Sous-traitance", 90.0),
+            ["TOTAL Achats", "", "", "", "", 1358.0, "", "", 272.0, 1630.0, 0.0, "0 sans"],
+        ]))
+        self.assertEqual([e["reference"] for e in lignes],
+                         ["TotalEnergies FA-123", "Total Assurance 4471", "SOUS-TRAITANCE 900"])
+        self.assertNotIn(1630.0, [e["ttc"] for e in lignes], "le TOTAL Achats reste ecarte")
+
+    def test_la_facture_totalenergies_ne_ressort_pas_manquante(self):
+        lignes = A.lire_classeur_charges(self._octets([
+            ["Référence export", "Date", "Tiers", "Catégorie", "Mode", "Valeur HT", "TVA 7%",
+             "TVA 19%", "TVA", "Valeur TTC", "Retenue", "Justificatifs"],
+            ["ACHATS", "1 ligne(s)"],
+            _rang("TotalEnergies FA-123", "2026-07-09", "TotalEnergies Marketing Tunisie",
+                  "Carburant", 340.0),
+            ["TOTAL Achats", "", "", "", "", 283.3, "", "", 56.7, 340.0, 0.0, "0 sans"],
+        ]))
+        mois = [A.entree(_ligne("PI-TOTAL", date="2026-07-09",
+                                tiers="TotalEnergies Marketing Tunisie", ttc=340.0,
+                                ref="TotalEnergies FA-123", categorie="Carburant"))]
+        r = A.comparer(mois, lignes, A.METHODE_EMPREINTE)
+        self.assertEqual(r["manquantes"], [])
+        self.assertEqual(r["disparues"], [])
+
+    def test_les_lignes_de_synthese_se_reconnaissent_a_l_absence_de_date(self):
+        # « TOTAL GÉNÉRAL » ecrit « 2 ligne(s) » dans la colonne Date : ce n est pas une date.
+        self.assertFalse(A.est_une_ligne_de_charge("", 120.0))
+        self.assertFalse(A.est_une_ligne_de_charge("2 ligne(s)", 1119.5))
+        self.assertFalse(A.est_une_ligne_de_charge(None, 120.0))
+        self.assertFalse(A.est_une_ligne_de_charge("2026-07-05", "120"))
+        self.assertFalse(A.est_une_ligne_de_charge("2026-07-05", True))
+        self.assertTrue(A.est_une_ligne_de_charge("2026-07-05", 120.0))
+        self.assertTrue(A.est_une_ligne_de_charge(datetime(2026, 7, 5), 120.0))
+        self.assertTrue(A.est_une_ligne_de_charge("2026-07-05 00:00:00", 120))
+
+    def test_une_charge_sans_tiers_reste_une_charge(self):
+        # Une ecriture de journal dont aucun compte n est credite sort avec un tiers vide :
+        # exiger un tiers ecarterait une vraie charge.
+        lignes = A.lire_classeur_charges(self._octets([
+            ["Référence export", "Date", "Tiers", "Catégorie", "Mode", "Valeur HT", "TVA 7%",
+             "TVA 19%", "TVA", "Valeur TTC", "Retenue", "Justificatifs"],
+            _rang("CHQ-77", "2026-07-04", "", "Frais bancaires", 12.5),
+        ]))
+        self.assertEqual([e["reference"] for e in lignes], ["CHQ-77"])
 
     def test_un_zip_sans_classeur_de_charges_rend_none(self):
         octets = _zip({"2026-07/Caisse espèces 2026-07.xlsx": _classeur([["Indicateur"]])})
