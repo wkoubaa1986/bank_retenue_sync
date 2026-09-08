@@ -807,20 +807,22 @@ class FacturationMensuelle {
     // selon qu’il vient d’un manifeste ou d’une empreinte.
     const methode = d.methode === "manifeste"
       ? "comparaison pièce par pièce (manifeste de l’archive)"
-      : `comparaison par les justificatifs du dossier, puis par date, tiers et montant (${
+      : `comparaison par date, tiers et montant (${
         d.manifeste_message || "archive sans manifeste"})`;
 
-    // Ce que le contenu réel du ZIP a rattrapé : sans lui, ces charges seraient annoncées « non
-    // envoyées » alors que leur justificatif est dans le dossier remis.
-    const sauvees = d.retrouvees_par_piece
-      ? ` ${d.retrouvees_par_piece} charge(s) dont la date, le tiers ou le montant ont changé
-          depuis l’envoi ont été reconnues à leur justificatif présent dans l’archive.`
+    // ⚠️ UN JUSTIFICATIF RETROUVÉ N’EST PAS UNE PREUVE D’ENVOI. Deux écritures peuvent porter
+    // chacune leur « scan.pdf » : la ligne reste annoncée manquante, et c’est à l’œil de
+    // trancher. On le dit, plutôt que de retirer la ligne sur cette seule foi.
+    const indices = d.avec_indice_piece
+      ? ` <b>${d.avec_indice_piece}</b> d’entre elles portent un justificatif que l’archive
+          contient aussi : leur date, leur tiers ou leur montant ont pu changer depuis l’envoi.
+          À vérifier une par une avant de conclure qu’elles n’ont pas été envoyées.`
       : "";
 
     const entete = `<div class="fm-note"><b>${manque.length} charge(s) absente(s) de
       ${this._esc(d.nom_fichier || "")}</b> — TTC ${this._m(tm.ttc)}.
       ${d.nb_mois || 0} ligne(s) au mois, ${d.nb_archive || 0} dans l’archive ·
-      <span class="muted">${this._esc(methode)}.</span>${sauvees}</div>`;
+      <span class="muted">${this._esc(methode)}.</span>${indices}</div>`;
 
     const corps = manque.map((l) => `<tr>
       <td class="muted">${this._esc(l.date || "")}</td>
@@ -832,7 +834,7 @@ class FacturationMensuelle {
       <td>${l.deja_remise
         ? `<span class="fm-badge neutre">déjà rattachée au dossier de ${
             this._esc(l.libelle_porteur || l.rattachee_a)}</span>`
-        : '<span class="fm-badge bad">à rattraper</span>'}</td>
+        : '<span class="fm-badge bad">à rattraper</span>'}${this._indice_piece(l)}</td>
       <td>${this._lien(l.document_type, l.document_name)}</td>
     </tr>`).join("");
 
@@ -857,7 +859,7 @@ class FacturationMensuelle {
       <td>${this._esc(l.reference || "")}</td>
       <td>${this._esc(l.tiers || "")}</td>
       <td class="muted">${this._esc(l.bloc_titre || l.categorie || "")}</td>
-      <td class="num">${this._m(l.ttc)}</td>
+      <td class="num">${this._m(l.ttc)}${this._indice_piece(l)}</td>
       <td>${this._lien(l.document_type, l.document_name)}</td>
     </tr>`).join("");
     const bloc_parties = parties.length
@@ -870,6 +872,21 @@ class FacturationMensuelle {
       : "";
 
     return entete + table + bloc_parties;
+  }
+
+  /** Le justificatif retrouvé de l’autre côté : une piste à vérifier, pas un verdict.
+   *
+   * ⚠️ CE N’EST PAS « ELLE A ÉTÉ ENVOYÉE ». Deux écritures peuvent porter chacune leur
+   * « scan.pdf » : un nom de fichier commun ne fait pas deux fois la même charge. La ligne reste
+   * donc dans sa liste, avec de quoi aller vérifier — le rapprochement, lui, ne tient qu’à la
+   * date, au tiers et au montant.
+   */
+  _indice_piece(l) {
+    const noms = l.indices_piece || [];
+    if (!noms.length) return "";
+    return `<div class="fm-regl-note" title="${this._esc(noms.join(" · "))}">justificatif
+      ${this._esc(noms[0])}${noms.length > 1 ? ` +${noms.length - 1}` : ""} présent des deux
+      côtés — à vérifier</div>`;
   }
 
   /** ⚠️ IRRÉVERSIBLE : `File.on_trash` efface le ZIP du disque, pas seulement sa fiche. */

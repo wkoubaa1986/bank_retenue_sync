@@ -277,10 +277,10 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         frappe.throw(_("Archive illisible : {0}").format(str(e)[:200]))
 
     try:
-        # ⚠️ CE QUE LE DOSSIER CONTIENT VRAIMENT. Les justificatifs sont physiquement dans le ZIP,
-        # sous « Dépenses/ » : leur seule presence prouve qu'une charge est partie, meme si son
-        # montant ou son tiers ont bouge depuis. C'est ce qui a manque a la premiere version, qui
-        # a signale « non envoyees » des charges bel et bien remises.
+        # ⚠️ CE QUE LE DOSSIER CONTIENT VRAIMENT — POUR DESIGNER, PAS POUR CONCLURE. Les
+        # justificatifs sont physiquement dans le ZIP, sous « Dépenses/ ». Retrouver le fichier
+        # d'une charge manquante ne prouve pas qu'elle a ete envoyee (deux ecritures peuvent
+        # porter chacune leur « scan.pdf »), mais designe une ligne a verifier a la main.
         pieces = M_archive.pieces_de_l_archive(octets)
         manifeste = M_archive.lire_manifeste(octets)
         # ⚠️ ON NE SE FIE PAS A UN MANIFESTE QU'ON N'A PAS VERIFIE. Un JSON valide mais incomplet
@@ -333,9 +333,9 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         "manifeste_message": _message_manifeste(defaut) if defaut else "",
         "manquantes": [_vue_manquante(e, detail, porteurs, mois) for e in manquantes],
         "disparues": resultat["disparues"],
-        # Combien de charges la seule empreinte aurait declarees manquantes, et que leur
-        # justificatif a sauvees : le compte des faux « non envoyés » evites.
-        "retrouvees_par_piece": resultat["retrouvees_par_piece"],
+        # Combien de manquantes portent un justificatif qu'on retrouve dans l'archive : autant de
+        # lignes a verifier a la main. Ce n'est pas un verdict — voir `archive.comparer`.
+        "avec_indice_piece": resultat["avec_indice_piece"],
         "totaux_manquantes": resultat["totaux_manquantes"],
         "totaux_disparues": resultat["totaux_disparues"],
         "nb_mois": resultat["nb_mois"],
