@@ -807,13 +807,20 @@ class FacturationMensuelle {
     // selon qu’il vient d’un manifeste ou d’une empreinte.
     const methode = d.methode === "manifeste"
       ? "comparaison pièce par pièce (manifeste de l’archive)"
-      : `comparaison par date, tiers et montant (${
+      : `comparaison par les justificatifs du dossier, puis par date, tiers et montant (${
         d.manifeste_message || "archive sans manifeste"})`;
+
+    // Ce que le contenu réel du ZIP a rattrapé : sans lui, ces charges seraient annoncées « non
+    // envoyées » alors que leur justificatif est dans le dossier remis.
+    const sauvees = d.retrouvees_par_piece
+      ? ` ${d.retrouvees_par_piece} charge(s) dont la date, le tiers ou le montant ont changé
+          depuis l’envoi ont été reconnues à leur justificatif présent dans l’archive.`
+      : "";
 
     const entete = `<div class="fm-note"><b>${manque.length} charge(s) absente(s) de
       ${this._esc(d.nom_fichier || "")}</b> — TTC ${this._m(tm.ttc)}.
       ${d.nb_mois || 0} ligne(s) au mois, ${d.nb_archive || 0} dans l’archive ·
-      <span class="muted">${this._esc(methode)}.</span></div>`;
+      <span class="muted">${this._esc(methode)}.</span>${sauvees}</div>`;
 
     const corps = manque.map((l) => `<tr>
       <td class="muted">${this._esc(l.date || "")}</td>

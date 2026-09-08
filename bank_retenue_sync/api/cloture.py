@@ -267,6 +267,7 @@ def comparer_archive(mois=None, fichier=None) -> dict:
     """
     _guard()
     from bank_retenue_sync.facturation import archive as M_archive
+    from bank_retenue_sync.facturation import controle
 
     mois = periode.normaliser(mois)
     doc = _archive_du_mois(mois, fichier)
@@ -276,6 +277,11 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         frappe.throw(_("Archive illisible : {0}").format(str(e)[:200]))
 
     try:
+        # ⚠️ CE QUE LE DOSSIER CONTIENT VRAIMENT. Les justificatifs sont physiquement dans le ZIP,
+        # sous « Dépenses/ » : leur seule presence prouve qu'une charge est partie, meme si son
+        # montant ou son tiers ont bouge depuis. C'est ce qui a manque a la premiere version, qui
+        # a signale « non envoyees » des charges bel et bien remises.
+        pieces = M_archive.pieces_de_l_archive(octets)
         manifeste = M_archive.lire_manifeste(octets)
         # ⚠️ ON NE SE FIE PAS A UN MANIFESTE QU'ON N'A PAS VERIFIE. Un JSON valide mais incomplet
         # — un `{"version": 1}` — se lirait comme « archive sans aucune charge », et TOUTES les
@@ -297,11 +303,14 @@ def comparer_archive(mois=None, fichier=None) -> dict:
     if entrees is None:
         frappe.throw(_message_archive_incomparable(defaut))
 
-    # Les charges d'AUJOURD'HUI, sans les controles IA : ce qui se compare ici, c'est la
-    # presence d'une piece dans l'archive, pas la lecture de son PDF.
-    donnees = M_charges.liste(mois)
+    # Les charges d'AUJOURD'HUI, enrichies des controles DEJA passes — comme la constitution le
+    # fait. Aucun PDF n'est relu, aucun appel payant n'est declenche : c'est du cache. Sans cette
+    # etape, la reference d'export d'une ecriture de journal s'affiche sans le n° de facture lu
+    # dans le justificatif, et ne ressemble plus a ce que le classeur du ZIP porte — on ne peut
+    # alors plus comparer les deux a l'oeil.
+    donnees = controle.attacher_aux_lignes(M_charges.liste(mois))
     lignes_mois = M_archive.entrees_des_blocs(donnees)
-    resultat = M_archive.comparer(lignes_mois, entrees, methode)
+    resultat = M_archive.comparer(lignes_mois, entrees, methode, pieces_archive=pieces)
 
     # Ou sont parties les manquantes, si elles sont parties quelque part : une piece rattachee au
     # dossier d'un autre mois est deja chez le comptable, elle n'est pas a rattraper.
@@ -324,6 +333,9 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         "manifeste_message": _message_manifeste(defaut) if defaut else "",
         "manquantes": [_vue_manquante(e, detail, porteurs, mois) for e in manquantes],
         "disparues": resultat["disparues"],
+        # Combien de charges la seule empreinte aurait declarees manquantes, et que leur
+        # justificatif a sauvees : le compte des faux « non envoyés » evites.
+        "retrouvees_par_piece": resultat["retrouvees_par_piece"],
         "totaux_manquantes": resultat["totaux_manquantes"],
         "totaux_disparues": resultat["totaux_disparues"],
         "nb_mois": resultat["nb_mois"],
