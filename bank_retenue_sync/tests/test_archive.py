@@ -17,9 +17,11 @@ from bank_retenue_sync.facturation import archive as A
 
 
 def _ligne(nom, date="2026-07-05", tiers="Sté ALPHA", ttc=120.0, ref="FA-1",
-           categorie="Fournitures", dt="Purchase Invoice"):
+           categorie="Fournitures", dt="Purchase Invoice", pieces=()):
     return {"document_type": dt, "document_name": nom, "date": date, "tiers": tiers,
-            "ttc": ttc, "reference_export": ref, "categorie": categorie}
+            "ttc": ttc, "reference_export": ref, "categorie": categorie,
+            "justificatifs": [{"file_name": p, "file_url": "/private/files/%s" % p}
+                              for p in pieces]}
 
 
 def _donnees(lignes_par_bloc):
@@ -49,9 +51,9 @@ def _classeur(lignes):
     return flux.getvalue()
 
 
-def _rang(ref, date, tiers, categorie, ttc):
-    """Une ligne de charge du classeur : douze colonnes, TTC en dixieme."""
-    return [ref, date, tiers, categorie, "Virement", 100.0, 0.0, 20.0, 20.0, ttc, 0.0, "piece.pdf"]
+def _rang(ref, date, tiers, categorie, ttc, pieces="piece.pdf"):
+    """Une ligne de charge du classeur d AUJOURD HUI : douze colonnes, TTC en dixieme."""
+    return [ref, date, tiers, categorie, "Virement", 100.0, 0.0, 20.0, 20.0, ttc, 0.0, pieces]
 
 
 class TestManifeste(unittest.TestCase):
@@ -267,6 +269,228 @@ class TestLectureDuClasseur(unittest.TestCase):
     def test_un_zip_sans_classeur_de_charges_rend_none(self):
         octets = _zip({"2026-07/Caisse espèces 2026-07.xlsx": _classeur([["Indicateur"]])})
         self.assertIsNone(A.lire_classeur_charges(octets))
+
+
+class TestClasseurDUneVersionAnterieure(unittest.TestCase):
+    """Le dossier de juillet 2026 : un classeur dont les colonnes ne sont plus a la meme place.
+
+    « Référence » et « Type » sont sortis du fichier depuis. Lues par POSITION, les colonnes d un
+    dossier ancien decalent tout : la neuvieme colonne y porte la TVA 19 %, pas le TTC. Les lignes
+    etaient donc lues avec une date qui est une reference, un tiers qui est une date et un montant
+    qui est une TVA — aucune ne se rapprochait, et le mois entier ressortait « non envoye ».
+    """
+
+    ENTETE_ANCIEN = ["Référence", "Référence export", "Date", "Type", "Tiers", "Catégorie",
+                     "Mode", "Valeur HT", "TVA 7%", "TVA 19%", "TVA", "Valeur TTC", "Retenue",
+                     "Justificatifs"]
+
+    def _rang_ancien(self, ref, date, tiers, categorie, ttc, pieces="piece.pdf"):
+        return ["JV-001", ref, date, "Journal Entry", tiers, categorie, "Chèque",
+                100.0, 0.0, 20.0, 20.0, ttc, 0.0, pieces]
+
+    def _octets(self, lignes):
+        return _zip({"2026-07/Liste des Charges 2026-07.xlsx": _classeur(lignes)})
+
+    def _classeur_ancien(self):
+        return [
+            self.ENTETE_ANCIEN,
+            [],
+            ["DÉPENSES", "1 ligne(s)"],
+            self._rang_ancien("Facture Aramex 07-2026 2605049", "2026-07-18",
+                              "Fournisseurs - A&S", "Transport sur achat", 486.2,
+                              "facture_aramex_072026.pdf"),
+            ["TOTAL Dépenses", "", "", "", "", "", "", 406.0, "", "", 80.2, 486.2, 0.0, "0 sans"],
+        ]
+
+    def test_les_colonnes_sont_retrouvees_par_leur_intitule(self):
+        positions = A.positions_des_colonnes(self.ENTETE_ANCIEN)
+        # « Référence export » l emporte sur « Référence », qui la precede pourtant.
+        self.assertEqual(positions["reference"], 1)
+        self.assertEqual(positions["date"], 2)
+        self.assertEqual(positions["tiers"], 4)
+        self.assertEqual(positions["ttc"], 11)
+        self.assertEqual(positions["pieces"], 13)
+
+    def test_une_ligne_de_charge_n_est_pas_prise_pour_un_en_tete(self):
+        self.assertIsNone(A.positions_des_colonnes(
+            _rang("FA-1", "2026-07-05", "Sté ALPHA", "Fournitures", 120.0)))
+
+    def test_un_classeur_ancien_est_lu_avec_les_bonnes_valeurs(self):
+        lignes = A.lire_classeur_charges(self._octets(self._classeur_ancien()))
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["date"], "2026-07-18")
+        self.assertEqual(lignes[0]["tiers"], "Fournisseurs - A&S")
+        self.assertEqual(lignes[0]["ttc"], 486.2)
+        self.assertEqual(lignes[0]["reference"], "Facture Aramex 07-2026 2605049")
+        self.assertEqual(lignes[0]["pieces"], ["facture_aramex_072026.pdf"])
+
+    def test_la_charge_du_classeur_ancien_n_est_plus_annoncee_manquante(self):
+        # Le cas signale : la facture Aramex de juillet 2026 EST dans le ZIP.
+        lignes = A.lire_classeur_charges(self._octets(self._classeur_ancien()))
+        mois = [A.entree(_ligne("JV-001", date="2026-07-18", tiers="Fournisseurs - A&S",
+                                ttc=486.2, ref="Facture Aramex 07-2026 2605049",
+                                dt="Journal Entry", pieces=["facture_aramex_072026.pdf"]))]
+        r = A.comparer(mois, lignes, A.METHODE_EMPREINTE)
+        self.assertEqual(r["manquantes"], [])
+        self.assertEqual(r["disparues"], [])
+
+    def test_un_classeur_illisible_n_est_pas_un_mois_vide(self):
+        # Sans en-tete reconnu ni ligne lue, on refuse de conclure : declarer l archive vide
+        # ferait annoncer TOUT le mois comme non envoye.
+        octets = self._octets([["Compte", "Libellé"], ["606100", "Fournitures de bureau"]])
+        self.assertIsNone(A.lire_classeur_charges(octets))
+
+
+class TestPiecesPresentesDansLArchive(unittest.TestCase):
+    """La preuve la plus directe : le fichier est dans le ZIP, donc la charge est partie."""
+
+    def _octets(self):
+        return _zip({
+            "2026-07/Liste des Charges 2026-07.xlsx": b"x",
+            "2026-07/manifeste.json": b"{}",
+            "2026-07/Dépenses/facture_aramex_072026.pdf": b"pdf",
+            "2026-07/Dépenses/Retenue à la source Vente/certificat_ras_1.pdf": b"pdf",
+            "2026-07/Dépenses/Retenue à la source Achat/certificat_ras_2.pdf": b"pdf",
+            "2026-07/Dépenses/Retards 2026-06/facture_juin.pdf": b"pdf",
+            "2026-07/Chiffre D'affaire Facturé/FA-1 - Client.pdf": b"pdf",
+            "2026-07/Relevé bancaire/releve_2026-07.pdf": b"pdf",
+        })
+
+    def test_les_justificatifs_des_charges_sont_rendus(self):
+        pieces = A.pieces_de_l_archive(self._octets())
+        self.assertIn("facture_aramex_072026.pdf", pieces)
+        self.assertIn("certificat_ras_1.pdf", pieces)
+        self.assertIn("certificat_ras_2.pdf", pieces)
+
+    def test_les_pieces_des_retardataires_sont_ecartees(self):
+        # Elles appartiennent a juin : les compter ferait passer une charge de juin pour envoyee
+        # avec le dossier de juillet.
+        self.assertNotIn("facture_juin.pdf", A.pieces_de_l_archive(self._octets()))
+
+    def test_ni_les_pdf_de_ventes_ni_le_releve_ni_les_classeurs(self):
+        pieces = A.pieces_de_l_archive(self._octets())
+        for nom in ("FA-1 - Client.pdf", "releve_2026-07.pdf", "manifeste.json",
+                    "Liste des Charges 2026-07.xlsx"):
+            self.assertNotIn(nom, pieces)
+
+    def test_une_archive_sans_justificatif_rend_un_ensemble_vide(self):
+        self.assertEqual(A.pieces_de_l_archive(_zip({"2026-07/manifeste.json": b"{}"})), set())
+
+
+class TestRepliParLeContenuDuDossier(unittest.TestCase):
+    """Ce que le ticket corrige : une charge presente dans le ZIP ne doit plus etre « manquante ».
+
+    L empreinte (date, tiers, TTC) est faite de trois valeurs qui BOUGENT — le compte credite se
+    renomme, le montant se corrige, la date se rectifie. Le nom du justificatif, lui, ne bouge pas.
+    """
+
+    def _comparer(self, mois, archive, pieces=None):
+        return A.comparer([A.entree(l) for l in mois], [A.entree(l) for l in archive],
+                          A.METHODE_EMPREINTE, pieces_archive=pieces)
+
+    def test_un_montant_corrige_depuis_l_envoi_ne_fait_plus_une_manquante(self):
+        mois = [_ligne("JV-1", ttc=486.2, pieces=["aramex.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 402.0,
+                    "pieces": ["aramex.pdf"]}]
+        r = self._comparer(mois, archive)
+        self.assertEqual(r["manquantes"], [])
+        self.assertEqual(r["disparues"], [])
+        self.assertEqual(r["retrouvees_par_piece"], 1)
+
+    def test_un_tiers_renomme_depuis_l_envoi_ne_fait_plus_une_manquante(self):
+        mois = [_ligne("JV-1", tiers="Fournisseurs divers - A&S", pieces=["aramex.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Fournisseurs - A&S", "ttc": 120.0,
+                    "pieces": ["aramex.pdf"]}]
+        self.assertEqual(self._comparer(mois, archive)["manquantes"], [])
+
+    def test_une_date_rectifiee_depuis_l_envoi_ne_fait_plus_une_manquante(self):
+        mois = [_ligne("JV-1", date="2026-07-31", pieces=["aramex.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0,
+                    "pieces": ["aramex.pdf"]}]
+        self.assertEqual(self._comparer(mois, archive)["manquantes"], [])
+
+    def test_la_piece_physiquement_dans_le_zip_sauve_une_ligne_introuvable(self):
+        # Le classeur ne dit rien de cette charge — mais son justificatif est dans l archive.
+        mois = [_ligne("JV-1", pieces=["aramex.pdf"])]
+        r = self._comparer(mois, [], pieces={"aramex.pdf"})
+        self.assertEqual(r["manquantes"], [])
+        self.assertEqual(r["retrouvees_par_piece"], 1)
+
+    def test_une_piece_absente_du_zip_laisse_la_charge_manquante(self):
+        mois = [_ligne("JV-1", pieces=["jamais_envoye.pdf"])]
+        r = self._comparer(mois, [], pieces={"autre.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-1"])
+        self.assertEqual(r["retrouvees_par_piece"], 0)
+
+    def test_une_charge_sans_justificatif_reste_jugee_a_l_empreinte(self):
+        mois = [_ligne("JV-1", ttc=999.0)]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 120.0}]
+        r = self._comparer(mois, archive, pieces={"aramex.pdf"})
+        self.assertEqual(len(r["manquantes"]), 1)
+        self.assertEqual(len(r["disparues"]), 1)
+
+    def test_deux_charges_sans_piece_ne_s_apparient_pas_sur_le_vide(self):
+        # Une liste de justificatifs vide ne doit rapprocher personne de personne.
+        mois = [_ligne("JV-1", ttc=10.0), _ligne("JV-2", ttc=20.0)]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 30.0}]
+        r = self._comparer(mois, archive)
+        self.assertEqual(len(r["manquantes"]), 2)
+
+    def test_un_justificatif_n_apparie_qu_une_seule_ligne_d_archive(self):
+        mois = [_ligne("JV-1", ttc=10.0, pieces=["commun.pdf"]),
+                _ligne("JV-2", ttc=20.0, pieces=["commun.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 10.0,
+                    "pieces": ["commun.pdf"]}]
+        r = self._comparer(mois, archive)
+        # La seconde ne trouve plus de ligne libre : elle repasse a l empreinte, qui echoue.
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+
+    def test_un_fichier_du_zip_n_absout_qu_une_seule_charge(self):
+        # Deux ecritures dont la piece jointe porte le meme nom, et un seul fichier dans le ZIP :
+        # une seule est partie, l autre reste a rattraper.
+        mois = [_ligne("JV-1", ttc=10.0, pieces=["scan.pdf"]),
+                _ligne("JV-2", ttc=20.0, pieces=["scan.pdf"])]
+        r = self._comparer(mois, [], pieces={"scan.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+
+    def test_un_nom_deja_consomme_par_le_classeur_ne_sauve_pas_une_seconde_charge(self):
+        mois = [_ligne("JV-1", ttc=10.0, pieces=["scan.pdf"]),
+                _ligne("JV-2", ttc=20.0, pieces=["scan.pdf"])]
+        archive = [{"date": "2026-07-05", "tiers": "Sté ALPHA", "ttc": 10.0,
+                    "pieces": ["scan.pdf"]}]
+        r = self._comparer(mois, archive, pieces={"scan.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["JV-2"])
+
+    def test_le_manifeste_ignore_les_pieces_et_reste_exact(self):
+        # Avec une cle de document, aucun repli n est necessaire ni souhaitable.
+        mois = [A.entree(_ligne("PI-1", pieces=["a.pdf"]))]
+        archive = [A.entree(_ligne("PI-2", pieces=["a.pdf"]))]
+        r = A.comparer(mois, archive, A.METHODE_MANIFESTE, pieces_archive={"a.pdf"})
+        self.assertEqual([e["document_name"] for e in r["manquantes"]], ["PI-1"])
+        self.assertEqual(r["retrouvees_par_piece"], 0)
+
+
+class TestJustificatifsDuClasseur(unittest.TestCase):
+    """La colonne « Justificatifs » melange noms de fichiers, motifs d exemption et « AUCUN »."""
+
+    def _lire(self, cellule):
+        octets = _zip({"2026-07/Liste des Charges 2026-07.xlsx": _classeur([
+            ["Référence export", "Date", "Tiers", "Catégorie", "Mode", "Valeur HT", "TVA 7%",
+             "TVA 19%", "TVA", "Valeur TTC", "Retenue", "Justificatifs"],
+            _rang("FA-1", "2026-07-05", "Sté ALPHA", "Fournitures", 120.0, cellule),
+        ])})
+        return A.lire_classeur_charges(octets)[0]["pieces"]
+
+    def test_plusieurs_pieces_sont_separees(self):
+        self.assertEqual(self._lire("facture.pdf · avoir.pdf"), ["facture.pdf", "avoir.pdf"])
+
+    def test_la_mention_deja_remise_est_retiree(self):
+        self.assertEqual(self._lire("facture.pdf — DÉJÀ REMISE avec le dossier de juin 2026"),
+                         ["facture.pdf"])
+
+    def test_aucun_et_les_motifs_d_exemption_ne_sont_pas_des_fichiers(self):
+        for cellule in ("AUCUN", "Salaires : pas de justificatif exigible", ""):
+            self.assertEqual(self._lire(cellule), [], "cellule %r" % (cellule,))
 
 
 class TestComparaisonParPiece(unittest.TestCase):
