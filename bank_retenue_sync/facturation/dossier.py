@@ -23,6 +23,7 @@ from frappe import _
 from frappe.utils import flt, now_datetime
 
 from bank_retenue_sync.bank import registry
+from bank_retenue_sync.facturation import archive as M_archive
 from bank_retenue_sync.facturation import charges as M_charges
 from bank_retenue_sync.facturation import factures as M_factures
 from bank_retenue_sync.facturation import periode
@@ -543,6 +544,15 @@ def _constituer(mois: str, avec_pdf: bool, avec_releve: bool) -> dict:
                          _classeur(feuilles_banque))
         archive.writestr("%s/Caisse espèces %s.xlsx" % (racine, mois),
                          _classeur(_feuilles_caisse(mois)))
+
+        # ⚠️ CE QUI EST DANS LE ZIP DOIT ETRE ECRIT DANS LE ZIP. Un dossier est un gel : passe
+        # l'envoi, plus rien ne dit quelles pieces il portait — reconstituer le mois rend une
+        # autre liste. Le manifeste nomme chaque charge embarquee par son document, ce qui rend
+        # la comparaison « qu'est-ce que le comptable n'a PAS recu ? » exacte au lieu
+        # d'approchee. Quelques Ko, un fichier de plus dans l'archive remise.
+        archive.writestr(M_archive.chemin_manifeste(racine),
+                         M_archive.serialiser(M_archive.manifeste(
+                             mois, donnees_charges, retardataires, genere_le=debut)))
 
         _poser_etat(mois, etape="justificatifs des charges", avancement=28)
         for chemin, octets in _justificatifs_du_mois(donnees_charges, retardataires):
