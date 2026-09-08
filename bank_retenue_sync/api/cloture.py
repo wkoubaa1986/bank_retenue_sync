@@ -190,13 +190,15 @@ def _archive_du_mois(mois: str, fichier: str):
 
     ⚠️ ON NE TOUCHE QUE DES DOSSIERS. Le nom du fichier est verifie contre celui qu'une
     constitution produit : sans ce controle, les methodes qui s'appuient dessus deviendraient une
-    porte ouverte sur n'importe quel fichier prive du site — servi, ou supprime.
+    porte ouverte sur n'importe quel fichier prive du site — servi, ou supprime. La regle de nom
+    elle-meme vit dans `archive.est_archive_du_mois`, ou elle est testee sans site.
     """
+    from bank_retenue_sync.facturation import archive as M_archive
+
     doc = frappe.db.get_value("File", fichier,
                               ["name", "file_name", "is_private", "creation"], as_dict=True) \
         if fichier else None
-    attendu = "Dossier facturation %s " % mois
-    if not doc or not (doc.file_name or "").startswith(attendu):
+    if not doc or not M_archive.est_archive_du_mois(doc.file_name, mois):
         frappe.throw(_("Archive introuvable pour {0}.").format(mois))
     return doc
 
@@ -220,7 +222,7 @@ def telecharger_dossier(mois=None, fichier=None):
     frappe.response["type"] = "binary"
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def supprimer_dossier(mois=None, fichier=None) -> dict:
     """Supprime UNE archive du mois. Irreversible : le fichier physique part avec le document.
 
@@ -229,6 +231,12 @@ def supprimer_dossier(mois=None, fichier=None) -> dict:
     etre remise au comptable. D'ou les droits d'ecriture, la confirmation cote ecran, et le meme
     controle de nom que le telechargement — on ne supprime jamais qu'un dossier de CE mois, un a
     la fois.
+
+    ⚠️ ET EN POST SEULEMENT. `@frappe.whitelist()` sans argument ouvre GET, POST, PUT et DELETE :
+    une destruction definitive devenait alors atteignable en NAVIGUANT vers une URL. Une image
+    distante, un lien colle dans un message, un onglet reouvert — et l'archive partait avec la
+    session du gestionnaire, sans confirmation et hors de la protection CSRF que Frappe
+    n'applique qu'aux requetes non idempotentes.
 
     L'etat en cache n'est pas touche : `get_dossier` efface deja de lui-meme un etat « terminé »
     dont le fichier a disparu, et deux endroits qui oublient la meme chose finissent par diverger.
@@ -269,7 +277,13 @@ def comparer_archive(mois=None, fichier=None) -> dict:
 
     try:
         manifeste = M_archive.lire_manifeste(octets)
-        if manifeste:
+        # ⚠️ ON NE SE FIE PAS A UN MANIFESTE QU'ON N'A PAS VERIFIE. Un JSON valide mais incomplet
+        # — un `{"version": 1}` — se lirait comme « archive sans aucune charge », et TOUTES les
+        # charges du mois ressortiraient manquantes : l'ecran enverrait rattraper un dossier
+        # complet. Un manifeste douteux vaut donc un manifeste absent, et on retombe sur le
+        # classeur, qui est de la donnee et non une promesse de structure.
+        defaut = M_archive.defaut_du_manifeste(manifeste, mois)
+        if not defaut:
             methode = M_archive.METHODE_MANIFESTE
             entrees = M_archive.entrees_du_manifeste(manifeste)
         else:
@@ -281,8 +295,7 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         frappe.throw(_("Archive illisible : {0}").format(str(e)[:200]))
 
     if entrees is None:
-        frappe.throw(_("Cette archive ne porte ni manifeste ni liste des charges : "
-                       "elle ne peut pas être comparée."))
+        frappe.throw(_message_archive_incomparable(defaut))
 
     # Les charges d'AUJOURD'HUI, sans les controles IA : ce qui se compare ici, c'est la
     # presence d'une piece dans l'archive, pas la lecture de son PDF.
@@ -305,6 +318,10 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         "nom_fichier": doc.file_name,
         "creation": str(doc.creation) if doc.creation else None,
         "methode": resultat["methode"],
+        # Pourquoi le manifeste n'a pas servi, quand il n'a pas servi : « sans manifeste » et
+        # « manifeste refuse » ne se lisent pas de la meme facon devant une liste de manquantes.
+        "manifeste_defaut": defaut,
+        "manifeste_message": _message_manifeste(defaut) if defaut else "",
         "manquantes": [_vue_manquante(e, detail, porteurs, mois) for e in manquantes],
         "disparues": resultat["disparues"],
         "totaux_manquantes": resultat["totaux_manquantes"],
@@ -312,6 +329,30 @@ def comparer_archive(mois=None, fichier=None) -> dict:
         "nb_mois": resultat["nb_mois"],
         "nb_archive": resultat["nb_archive"],
     }
+
+
+def _message_manifeste(defaut: str) -> str:
+    """Pourquoi le manifeste de l'archive n'a pas servi. Les cles viennent de `archive.py`."""
+    from bank_retenue_sync.facturation import archive as M_archive
+
+    return {
+        M_archive.DEFAUT_ABSENT:
+            _("cette archive a été constituée avant le manifeste"),
+        M_archive.DEFAUT_VERSION:
+            _("son manifeste porte une version que cette page ne sait pas lire"),
+        M_archive.DEFAUT_MOIS:
+            _("son manifeste ne porte pas le mois affiché"),
+        M_archive.DEFAUT_CHARGES:
+            _("son manifeste n'a pas de liste de charges exploitable"),
+        M_archive.DEFAUT_PIECES:
+            _("son manifeste ne nomme pas les pièces qu'il liste"),
+    }.get(defaut) or _("son manifeste est inexploitable")
+
+
+def _message_archive_incomparable(defaut: str) -> str:
+    """Ni manifeste utilisable, ni classeur : on dit ce qui manque plutot qu'une erreur 500."""
+    return _("Cette archive ne peut pas être comparée : {0}, et elle ne porte pas de "
+             "« Liste des Charges ».").format(_message_manifeste(defaut))
 
 
 def _vue_manquante(e: dict, detail: dict, porteurs: dict, mois: str) -> dict:

@@ -34,6 +34,15 @@ VERSION = 1
 
 NOM_MANIFESTE = "manifeste.json"
 PREFIXE_CLASSEUR_CHARGES = "Liste des Charges"
+PREFIXE_DOSSIER = "Dossier facturation "
+
+# Pourquoi un manifeste ne peut PAS servir de reference, en cles stables — le module reste pur,
+# c'est l'appelant qui les traduit. `None` veut dire « exploitable ».
+DEFAUT_ABSENT = "absent"
+DEFAUT_VERSION = "version"
+DEFAUT_MOIS = "mois"
+DEFAUT_CHARGES = "charges"
+DEFAUT_PIECES = "pieces"
 
 # Les deux facons de rapprocher une archive et un mois, en cles stables : le module reste pur,
 # c'est l'ecran qui les traduit en phrase.
@@ -148,6 +157,57 @@ def chemin_manifeste(mois: str) -> str:
     return "%s/%s" % (mois, NOM_MANIFESTE)
 
 
+def est_archive_du_mois(nom_fichier, mois) -> bool:
+    """« Dossier facturation 2026-07 (20260801-1030).zip » pour 2026-07, et rien d'autre.
+
+    ⚠️ L'ESPACE APRES LE MOIS FAIT PARTIE DE LA REGLE. Sans elle, « Dossier facturation 2026-1 »
+    laisserait passer le dossier de 2026-10 : deux mois qui n'ont rien a voir, dont l'un serait
+    servi — ou supprime — au nom de l'autre. Fonction pure, pour qu'elle soit testee ailleurs que
+    dans un site.
+    """
+    if not mois or not nom_fichier:
+        return False
+    return str(nom_fichier).startswith("%s%s " % (PREFIXE_DOSSIER, mois))
+
+
+def defaut_du_manifeste(donnees, mois: str | None = None) -> str | None:
+    """Ce manifeste peut-il servir de reference ? -> None si oui, la cle du defaut sinon.
+
+    ⚠️ UN MANIFESTE INCOMPLET EST PIRE QU'UN MANIFESTE ABSENT. `{"version": 1}` se lit sans erreur
+    et rend « zero charge dans l'archive » : TOUTES les charges du mois ressortent alors
+    manquantes, et l'ecran envoie rattraper un dossier qui etait complet. Absent, au moins, on
+    retombe sur le classeur. On exige donc que la structure soit entiere avant de s'y fier :
+
+      · une version connue — un manifeste ecrit par une version plus recente ne se devine pas ;
+      · le mois attendu — comparer le dossier de juillet a l'archive d'aout n'a aucun sens ;
+      · une liste `charges` (vide est legitime : un mois peut n'avoir aucune charge) ;
+      · et CHAQUE entree identifiee par son document — c'est la seule chose sur quoi la
+        comparaison par piece s'appuie.
+
+    Fonction pure.
+    """
+    if not isinstance(donnees, dict) or not donnees:
+        return DEFAUT_ABSENT
+
+    version = donnees.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= VERSION:
+        return DEFAUT_VERSION
+
+    porte = _texte(donnees.get("mois"))
+    if not porte or (mois and porte != mois):
+        return DEFAUT_MOIS
+
+    charges = donnees.get("charges")
+    if not isinstance(charges, list) or not isinstance(donnees.get("retards", []), list):
+        return DEFAUT_CHARGES
+
+    for e in charges:
+        if not isinstance(e, dict) or not _texte(e.get("document_type")) \
+                or not _texte(e.get("document_name")):
+            return DEFAUT_PIECES
+    return None
+
+
 # ------------------------------------------------------------------ lecture d'une archive
 
 
@@ -163,6 +223,10 @@ def lire_manifeste(octets: bytes) -> dict | None:
 
     Seul le membre JSON est decompresse : l'archive entiere pese jusqu'a une trentaine de Mo.
     Un manifeste illisible vaut un manifeste absent — on retombera sur le classeur.
+
+    ⚠️ CETTE FONCTION NE JUGE PAS CE QU'ELLE LIT. Elle rend le JSON tel quel ; c'est
+    `defaut_du_manifeste` qui dit s'il est exploitable, et l'appelant qui decide alors de retomber
+    sur le classeur. Un `{"version": 1}` passe donc ici sans bruit — et se fait refuser la.
     """
     with zipfile.ZipFile(io.BytesIO(octets)) as zf:
         nom = _membre(zf.namelist(),

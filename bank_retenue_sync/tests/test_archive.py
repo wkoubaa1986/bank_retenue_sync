@@ -92,6 +92,103 @@ class TestManifeste(unittest.TestCase):
         self.assertEqual(A.chemin_manifeste("2026-07"), "2026-07/manifeste.json")
 
 
+class TestValidationDuManifeste(unittest.TestCase):
+    """Un manifeste incomplet est PIRE qu absent : il se lit comme une archive vide.
+
+    `{"version": 1}` sans cle `charges` rendrait « zero charge dans le ZIP » — toutes les charges
+    du mois ressortiraient manquantes, et l ecran enverrait rattraper un dossier complet. On exige
+    donc la structure entiere avant de s y fier ; a defaut, le classeur reprend la main.
+    """
+
+    def _bon(self, **remplace):
+        m = {"version": A.VERSION, "mois": "2026-07",
+             "charges": [{"document_type": "Purchase Invoice", "document_name": "PI-1",
+                          "date": "2026-07-05", "tiers": "A", "ttc": 10.0}],
+             "retards": []}
+        m.update(remplace)
+        return m
+
+    def test_un_manifeste_complet_est_accepte(self):
+        self.assertIsNone(A.defaut_du_manifeste(self._bon(), "2026-07"))
+
+    def test_un_manifeste_sans_charge_est_accepte_un_mois_peut_etre_vide(self):
+        self.assertIsNone(A.defaut_du_manifeste(self._bon(charges=[]), "2026-07"))
+
+    def test_version_seule_sans_charges_est_refusee(self):
+        # Le cas qui motive tout ce garde-fou.
+        self.assertEqual(A.defaut_du_manifeste({"version": 1}, "2026-07"), A.DEFAUT_MOIS)
+        self.assertEqual(A.defaut_du_manifeste({"version": 1, "mois": "2026-07"}, "2026-07"),
+                         A.DEFAUT_CHARGES)
+
+    def test_rien_du_tout_est_un_manifeste_absent(self):
+        for vide in (None, {}, [], "", 0):
+            self.assertEqual(A.defaut_du_manifeste(vide, "2026-07"), A.DEFAUT_ABSENT)
+
+    def test_une_version_inconnue_ou_illisible_est_refusee(self):
+        for version in (None, "1", 0, -1, A.VERSION + 1, True, 1.0):
+            self.assertEqual(A.defaut_du_manifeste(self._bon(version=version), "2026-07"),
+                             A.DEFAUT_VERSION, "version %r" % (version,))
+
+    def test_le_manifeste_d_un_autre_mois_est_refuse(self):
+        # Comparer le dossier de juillet a l archive d aout rendrait deux mois entiers en ecart.
+        self.assertEqual(A.defaut_du_manifeste(self._bon(mois="2026-08"), "2026-07"),
+                         A.DEFAUT_MOIS)
+        self.assertEqual(A.defaut_du_manifeste(self._bon(mois=""), "2026-07"), A.DEFAUT_MOIS)
+
+    def test_sans_mois_attendu_seule_la_presence_du_mois_est_exigee(self):
+        self.assertIsNone(A.defaut_du_manifeste(self._bon(mois="2026-08")))
+
+    def test_des_charges_qui_ne_sont_pas_une_liste_sont_refusees(self):
+        for charges in (None, {}, "PI-1", 3):
+            self.assertEqual(A.defaut_du_manifeste(self._bon(charges=charges), "2026-07"),
+                             A.DEFAUT_CHARGES, "charges %r" % (charges,))
+        self.assertEqual(A.defaut_du_manifeste(self._bon(retards="x"), "2026-07"),
+                         A.DEFAUT_CHARGES)
+
+    def test_une_charge_sans_identifiant_de_piece_est_refusee(self):
+        # La comparaison par piece ne s appuie que la-dessus : sans nom, elle inventerait.
+        for charge in ({"document_type": "Purchase Invoice"}, {"document_name": "PI-1"},
+                       {"document_type": "", "document_name": "PI-1"}, {}, "PI-1", None):
+            self.assertEqual(A.defaut_du_manifeste(self._bon(charges=[charge]), "2026-07"),
+                             A.DEFAUT_PIECES, "charge %r" % (charge,))
+
+    def test_le_manifeste_que_la_constitution_ecrit_est_toujours_accepte(self):
+        donnees = _donnees([("achats", "Achats", [_ligne("PI-1")]),
+                            ("depenses", "Dépenses", [_ligne("JV-1", dt="Journal Entry")])])
+        retards = [{"mois": "2026-06", "lignes": [_ligne("PI-JUIN", date="2026-06-02")]}]
+        m = A.manifeste("2026-07", donnees, retards, genere_le="2026-08-01 10:00:00")
+        self.assertIsNone(A.defaut_du_manifeste(json.loads(A.serialiser(m)), "2026-07"))
+
+
+class TestNomDArchive(unittest.TestCase):
+    """La seule chose qui protege les fichiers prives du site : le nom attendu, et lui seul."""
+
+    def test_le_dossier_du_mois_demande_est_accepte(self):
+        self.assertTrue(A.est_archive_du_mois(
+            "Dossier facturation 2026-07 (20260801-1030).zip", "2026-07"))
+
+    def test_le_dossier_d_un_autre_mois_est_refuse(self):
+        self.assertFalse(A.est_archive_du_mois(
+            "Dossier facturation 2026-08 (20260901-1030).zip", "2026-07"))
+
+    def test_un_prefixe_de_mois_ne_suffit_pas(self):
+        # Sans l espace exige apres le mois, « 2026-1 » attraperait le dossier de 2026-10.
+        self.assertFalse(A.est_archive_du_mois(
+            "Dossier facturation 2026-10 (20261101-1030).zip", "2026-1"))
+
+    def test_tout_autre_fichier_prive_est_refuse(self):
+        for nom in ("sauvegarde-site-database.sql.gz", "Bulletin de paie.pdf",
+                    "dossier facturation 2026-07 (x).zip",
+                    " Dossier facturation 2026-07 (x).zip",
+                    "Dossier facturation 2026-07.zip", "", None):
+            self.assertFalse(A.est_archive_du_mois(nom, "2026-07"), "nom %r" % (nom,))
+
+    def test_sans_mois_rien_n_est_accepte(self):
+        for mois in ("", None):
+            self.assertFalse(A.est_archive_du_mois(
+                "Dossier facturation 2026-07 (20260801-1030).zip", mois))
+
+
 class TestLectureDuManifeste(unittest.TestCase):
     """Lire le manifeste d un ZIP en memoire — et repondre None quand il n y en a pas."""
 
