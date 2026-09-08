@@ -770,9 +770,15 @@ class FacturationMensuelle {
       this._rendre_comparaison();
       return;
     }
-    const $c = this.$root.find('[data-role="comparaison"]');
-    $c.html('<div class="fm-chargement">Lecture de l’archive…</div>');
+    this.$root.find('[data-role="comparaison"]')
+      .html('<div class="fm-chargement">Lecture de l’archive…</div>');
+    // ⚠️ LE MOIS OU L’ARCHIVE ONT PU CHANGER PENDANT LA LECTURE D’UN ZIP DE TRENTE MÉGAOCTETS —
+    // ET ÇA VAUT AUSSI POUR L’ÉCHEC. Une comparaison A qui échoue après le succès d’une
+    // comparaison B effaçait le résultat de B et affichait l’erreur de A : la péremption se
+    // vérifie donc AVANT toute écriture, des deux côtés du try. Et le conteneur se retrouve
+    // après l’attente, jamais avant : le bloc Dossier se réécrit tout seul toutes les 4 s.
     const demande = `${this.mois}|${fichier}`;
+    const perimee = () => demande !== `${this.mois}|${this._archive_comparee}`;
     let d;
     try {
       d = (await frappe.call({
@@ -780,13 +786,12 @@ class FacturationMensuelle {
         args: { mois: this.mois, fichier },
       })).message || {};
     } catch (e) {
+      if (perimee()) return;
       this._comparaison = null;
-      $c.html(this._erreur(e));
+      this.$root.find('[data-role="comparaison"]').html(this._erreur(e));
       return;
     }
-    // Le mois ou l’archive ont pu changer pendant la lecture d’un ZIP de trente mégaoctets :
-    // afficher une réponse périmée ferait chercher des pièces dans le mauvais dossier.
-    if (demande !== `${this.mois}|${this._archive_comparee}`) return;
+    if (perimee()) return;
     this._comparaison = d;
     this._rendre_comparaison();
   }
@@ -802,12 +807,13 @@ class FacturationMensuelle {
     // selon qu’il vient d’un manifeste ou d’une empreinte.
     const methode = d.methode === "manifeste"
       ? "comparaison pièce par pièce (manifeste de l’archive)"
-      : "comparaison par date, tiers et montant (archive sans manifeste)";
+      : `comparaison par date, tiers et montant (${
+        d.manifeste_message || "archive sans manifeste"})`;
 
     const entete = `<div class="fm-note"><b>${manque.length} charge(s) absente(s) de
       ${this._esc(d.nom_fichier || "")}</b> — TTC ${this._m(tm.ttc)}.
       ${d.nb_mois || 0} ligne(s) au mois, ${d.nb_archive || 0} dans l’archive ·
-      <span class="muted">${methode}.</span></div>`;
+      <span class="muted">${this._esc(methode)}.</span></div>`;
 
     const corps = manque.map((l) => `<tr>
       <td class="muted">${this._esc(l.date || "")}</td>
