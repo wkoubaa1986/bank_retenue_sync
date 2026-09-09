@@ -778,12 +778,19 @@ class TestSuiviDesDepotsIncertains(unittest.TestCase):
              "numero_depot": "", "numero_declarant": "2605094", "suivi": "",
              "verifications": 3}
 
-    def _suivre(self, vu, ligne=None):
+    def _suivre(self, vu, ligne=None, certs=None):
+        """`suivre_depot` sous mocks. `certs` : ce que l'export du portail porterait.
+
+        L'export est TOUJOURS mocké, jamais lu : le repli du suivi (cf.
+        `TestRepliSurLExportDesCertificatsEmis`) passe par lui, et un test qui parlerait au
+        service TEJ ne serait plus un test.
+        """
         from unittest import mock
 
         from bank_retenue_sync.tej import emis
         appels = {}
         with mock.patch.object(depot, "interroger", return_value=vu), \
+             mock.patch.object(emis, "certificats_emis", return_value=list(certs or [])), \
              mock.patch.object(depot, "conclure",
                                side_effect=lambda *a, **k: appels.setdefault("conclure", (a, k))), \
              mock.patch.object(depot, "toucher",
@@ -823,7 +830,265 @@ class TestSuiviDesDepotsIncertains(unittest.TestCase):
         self.assertNotIn("conclure", appels)
 
     def test_un_incertain_sans_reponse_exploitable_le_reste(self):
+        """Ni la route de statut, ni l'export : le doute reste entier, et il se DIT."""
         resultat, appels = self._suivre({"statut": None, "reference": "",
                                          "depot_numero": "", "message": "portail muet"})
         self.assertIn("toucher", appels)
         self.assertNotIn("conclure", appels)
+        # ⚠️ ET LA LIGNE NE SE DIT PLUS « EN ANALYSE ». Elle ne l'est pas : aucun depot n'a jamais
+        # ete constate. L'ecran repondait « TEJ n'a pas encore analyse le depot — c'est normal »
+        # sur une soumission dont on ne sait rien, ce qui est exactement l'inverse de la verite.
+        self.assertEqual(resultat["statut"], depot.INCERTAIN)
+
+
+class TestRepliSurLExportDesCertificatsEmis(unittest.TestCase):
+    """`emis.suivre_depot` : quand la route de statut ne conclut pas, l'export du portail tranche.
+
+    ⚠️ LE CAS DU TICKET #11 : la pastille rouge « TEJ : à vérifier sur le portail » restait rouge
+    A VIE alors que le certificat existait bel et bien sur le portail. Le suivi n'avait qu'une
+    source — la route de statut — et elle peut echouer pour de bonnes raisons : numero incremente
+    par TEJ (`_V2`), date de paiement qui ne correspond a aucun depot, service qui repond a cote.
+    Chaque passage se contentait alors d'un `toucher`, et rien ne pouvait plus conclure.
+
+    L'export des certificats EMIS est la meme preuve que celle de la troisieme barriere
+    anti-doublon, lue dans l'autre sens : le couple « numero chez le declarant + matricule », etat
+    vivant. S'il porte le certificat, la declaration etait partie — on conclut `genere` et le PDF
+    revient sur la piece.
+    """
+
+    #: L'enveloppe rendue par le service, avec le numero REELLEMENT soumis (`_V2`) : c'est celui
+    #: que l'export affiche, et la ligne, elle, garde le numero demande.
+    ENVELOPPE = ('{"endpoint": "/jobs/tej/certificats-emis/statut", "body": '
+                 '{"numero_chez_declarant": "26FA01134_V2", "beneficiaire": "1802542W", '
+                 '"date_paiement": "2026-08-13", "exercice": 2026}}')
+
+    LIGNE = {"name": "DEP-TEST-11", "facture": "ACC-PINV-TEST", "piece_type": "Purchase Invoice",
+             "statut": "incertain", "numero_depot": "", "numero_declarant": "26FA01134",
+             "beneficiaire": "1802542W", "suivi": ENVELOPPE, "verifications": 7}
+
+    def cert(self, **kw):
+        """Une ligne d'export du portail, telle que `certificats_emis` la rend."""
+        return dict({"numero": "26FA01134_V2", "beneficiaire": "1802542W", "etat": "VALIDÉE",
+                     "reference": "2f8fbad3-cert", "beneficiaire_nom": "JEGHAM INDUSTRIES",
+                     "retenue": 11.9, "cree": "13-08-2026", "date_paiement": "13-08-2026"}, **kw)
+
+    def _suivre(self, vu, ligne=None, certs=None, export_leve=False):
+        """`suivre_depot` sous mocks : la route de statut ET l'export sont simulés."""
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        appels = {}
+        interroger = ({"side_effect": vu} if isinstance(vu, Exception) else {"return_value": vu})
+        export = ({"side_effect": RuntimeError("service TEJ injoignable")} if export_leve
+                  else {"return_value": list(certs or [])})
+        with mock.patch.object(depot, "interroger", **interroger), \
+             mock.patch.object(emis, "certificats_emis", **export), \
+             mock.patch.object(emis.frappe, "clear_last_message", lambda: None), \
+             mock.patch.object(depot, "conclure",
+                               side_effect=lambda *a, **k: appels.setdefault("conclure", (a, k))), \
+             mock.patch.object(depot, "toucher",
+                               side_effect=lambda *a, **k: appels.setdefault("toucher", (a, k))), \
+             mock.patch.object(emis, "attacher_pdf",
+                               side_effect=lambda *a, **k: appels.setdefault("pdf", (a, k)) or {}):
+            resultat = emis.suivre_depot(dict(ligne or self.LIGNE))
+        return resultat, appels
+
+    MUET = {"statut": None, "reference": "", "depot_numero": "", "message": "portail muet"}
+
+    def test_le_portail_muet_et_le_certificat_dans_l_export_concluent_la_ligne(self):
+        resultat, appels = self._suivre(self.MUET, certs=[self.cert()])
+        self.assertEqual(resultat["statut"], depot.GENERE)
+        self.assertEqual(resultat["reference"], "2f8fbad3-cert")
+        self.assertEqual(resultat["source"], "export")
+        a, k = appels["conclure"]
+        self.assertEqual(a[1], depot.GENERE)
+        self.assertEqual(a[2], "2f8fbad3-cert")
+        self.assertIn("export", a[3], "la ligne doit dire D'OÙ vient la conclusion")
+        self.assertNotIn("toucher", appels)
+
+    def test_le_pdf_revient_sur_la_facture(self):
+        """C'est lui qui fait passer la pastille de liste à « Certificat TEJ ✓ » : le PDF attaché
+        EST la mémoire du certificat, et la seule chose qui prime sur toute ligne de dépôt."""
+        _, appels = self._suivre(self.MUET, certs=[self.cert()])
+        self.assertEqual(appels["pdf"][0],
+                         ("ACC-PINV-TEST", "2f8fbad3-cert", "Purchase Invoice"))
+
+    def test_un_suivi_qui_LEVE_n_empeche_pas_l_export_de_conclure(self):
+        """Le service injoignable sur la route de statut ne dit rien du certificat lui-même."""
+        resultat, appels = self._suivre(RuntimeError("job jb_x cancelled"),
+                                       certs=[self.cert()])
+        self.assertEqual(resultat["statut"], depot.GENERE)
+        self.assertIn("conclure", appels)
+        self.assertNotIn("toucher", appels)
+
+    def test_le_certificat_se_retrouve_aussi_sur_le_numero_DEMANDE(self):
+        """Sans corps verbatim, la ligne ne connaît que le numéro demandé — et c'est souvent
+        celui que le portail a gardé."""
+        ligne = dict(self.LIGNE, suivi="")
+        resultat, _ = self._suivre(self.MUET, ligne=ligne,
+                                   certs=[self.cert(numero="26FA01134")])
+        self.assertEqual(resultat["statut"], depot.GENERE)
+
+    def test_le_certificat_part_sur_la_piece_du_depot(self):
+        """Une retenue prélevée en caisse est portée par une ÉCRITURE : y poser le certificat sur
+        une facture d'achat qui n'existe pas laisserait l'écriture sans justificatif."""
+        ligne = dict(self.LIGNE, piece_type="Journal Entry", facture="ACC-JV-2026-00698")
+        _, appels = self._suivre(self.MUET, ligne=ligne, certs=[self.cert()])
+        self.assertEqual(appels["pdf"][0][2], "Journal Entry")
+
+    def test_un_export_sans_correspondance_ne_conclut_rien(self):
+        resultat, appels = self._suivre(self.MUET, certs=[self.cert(numero="AUTRE-FACTURE")])
+        self.assertIn("toucher", appels)
+        self.assertNotIn("conclure", appels)
+        self.assertEqual(resultat["statut"], depot.INCERTAIN)
+
+    def test_un_autre_matricule_au_meme_numero_ne_conclut_rien(self):
+        """« 108 » ou « 30/2026 » sont des numéros de facture : deux fournisseurs en émettent
+        chaque année. Le couple fait la clé, jamais le numéro seul."""
+        _, appels = self._suivre(self.MUET, certs=[self.cert(beneficiaire="1234567A")])
+        self.assertNotIn("conclure", appels)
+
+    def test_un_certificat_ANNULE_ne_conclut_rien(self):
+        """Un annulé ne prouve aucune déclaration vivante — c'est justement pour cela qu'on
+        l'annule."""
+        _, appels = self._suivre(self.MUET, certs=[self.cert(etat="ANNULE")])
+        self.assertNotIn("conclure", appels)
+
+    def test_un_certificat_sans_reference_ne_conclut_rien(self):
+        """Sans référence, ni PDF ni preuve : la ligne reste incertaine plutôt que faussement
+        conclue."""
+        _, appels = self._suivre(self.MUET, certs=[self.cert(reference="")])
+        self.assertNotIn("conclure", appels)
+
+    def test_le_message_de_la_ligne_dit_que_l_export_a_ete_consulte(self):
+        """C'est ce message que la fiche affiche. « portail muet » tout seul ne disait pas que le
+        certificat avait aussi été cherché dans l'export, ni sur quelle clé — et l'utilisateur qui
+        voit le certificat sur le portail ne pouvait pas comprendre pourquoi rien ne bougeait."""
+        _, appels = self._suivre(self.MUET, certs=[])
+        message = appels["toucher"][0][1]
+        self.assertIn("portail muet", message)
+        self.assertIn("export des certificats émis", message)
+        self.assertIn("matricule", message)
+
+    def test_un_en_analyse_ne_recoit_pas_ce_message(self):
+        """Il n'y a aucun doute sur lui : le dépôt existe, TEJ l'analyse."""
+        ligne = dict(self.LIGNE, statut="en_analyse")
+        _, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "", "depot_numero": "",
+                                  "message": "patienter"}, ligne=ligne)
+        self.assertEqual(appels["toucher"][0][1], "patienter")
+
+    def test_un_export_injoignable_ne_fait_pas_tomber_le_suivi(self):
+        """⚠️ LE SUIVI DES `en_analyse` NE DOIT PAS DÉPENDRE DE L'EXPORT. Une lecture qui échoue
+        laisse la ligne incertaine et le cron continue ; lever ici arrêterait le passage entier."""
+        resultat, appels = self._suivre(self.MUET, export_leve=True)
+        self.assertEqual(resultat["statut"], depot.INCERTAIN)
+        self.assertIn("toucher", appels)
+        self.assertNotIn("conclure", appels)
+
+    def test_un_en_analyse_n_est_JAMAIS_conclu_par_l_export(self):
+        """Il est dans son état nominal : TEJ analyse. Le conclure sur une ligne d'export
+        remplacerait un fait par une déduction — et le numéro de dépôt existe, lui."""
+        ligne = dict(self.LIGNE, statut="en_analyse")
+        resultat, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "",
+                                         "depot_numero": "IN260052", "message": "patienter"},
+                                        ligne=ligne, certs=[self.cert()])
+        self.assertEqual(resultat["statut"], depot.EN_ANALYSE)
+        self.assertIn("toucher", appels)
+        self.assertNotIn("conclure", appels)
+
+    def test_l_export_ne_se_lit_qu_une_fois_par_passage(self):
+        """⚠️ UNE LECTURE PAR PASSAGE, PAS UNE PAR DÉPÔT. Le cron examine jusqu'à quarante lignes
+        et l'export est un classeur servi par un service à worker unique."""
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        with mock.patch.object(emis, "certificats_emis", return_value=[]) as lecture:
+            lire = emis.export_du_passage()
+            self.assertEqual(lire(), [])
+            self.assertEqual(lire(), [])
+        self.assertEqual(lecture.call_count, 1)
+
+    def test_l_export_n_est_pas_lu_du_tout_sans_ligne_incertaine(self):
+        """Un passage qui ne suit que des `en_analyse` ne doit rien demander au service."""
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        with mock.patch.object(emis, "certificats_emis", return_value=[]) as lecture:
+            emis.export_du_passage()
+        self.assertEqual(lecture.call_count, 0)
+
+    def test_le_repli_ne_rafraichit_JAMAIS_l_export(self):
+        """Régénérer l'export pilote une session sur le portail : c'est le prix d'une soumission
+        réelle, pas celui d'un suivi qui tourne cinq fois par jour."""
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        with mock.patch.object(emis, "certificats_emis", return_value=[]) as lecture:
+            emis.export_du_passage()()
+        self.assertEqual(lecture.call_args.kwargs.get("rafraichir", False), False)
+        self.assertEqual(lecture.call_args.args, ())
+
+
+class TestCertificatDuPortailPourUnDepot(unittest.TestCase):
+    """`emis.certificat_du_portail` : la clé du rapprochement, sans base ni réseau."""
+
+    def _c(self, ligne, certs):
+        from bank_retenue_sync.tej.emis import certificat_du_portail
+        return certificat_du_portail(ligne, certs)
+
+    def cert(self, numero, mat="1802542W", etat="VALIDÉE", reference="ref-1"):
+        return {"numero": numero, "beneficiaire": mat, "etat": etat, "reference": reference}
+
+    def test_le_numero_SOUMIS_du_corps_verbatim_prime(self):
+        """`26FA01134` annulé puis resoumis en `26FA01134_V2` : l'export porte le second."""
+        ligne = {"suivi": '{"numero_chez_declarant": "26FA01134_V2"}',
+                 "numero_declarant": "26FA01134", "beneficiaire": "1802542W"}
+        self.assertEqual(self._c(ligne, [self.cert("26FA01134_V2")])["numero"], "26FA01134_V2")
+
+    def test_sans_matricule_on_ne_rapproche_rien(self):
+        """Le numéro seul n'identifie pas un certificat : on préfère ne pas conclure."""
+        ligne = {"suivi": "", "numero_declarant": "26FA01134", "beneficiaire": ""}
+        self.assertIsNone(self._c(ligne, [self.cert("26FA01134")]))
+
+    def test_le_matricule_long_de_la_fiche_rejoint_celui_du_portail(self):
+        """« 1827548K/P/M/000 » côté ERPNext, « 1827548K » côté portail : la normalisation est la
+        seule clé exacte du flux."""
+        ligne = {"suivi": "", "numero_declarant": "FA9260543",
+                 "beneficiaire": "1827548K/P/M/000"}
+        self.assertIsNotNone(self._c(ligne, [self.cert("FA9260543", mat="1827548K")]))
+
+    def test_un_export_vide_ne_rend_rien(self):
+        ligne = {"suivi": "", "numero_declarant": "FA-1", "beneficiaire": "1802542W"}
+        self.assertIsNone(self._c(ligne, []))
+        self.assertIsNone(self._c(ligne, None))
+
+
+class TestDateDeLaLigneDeDepot(unittest.TestCase):
+    """`emis.contexte_reserve` : la ligne porte la date DÉCLARÉE, pas celle de comptabilisation.
+
+    ⚠️ LA RÉSERVATION GARDAIT `posting_date`. Le dialogue demande pourtant la date que portera le
+    certificat, et c'est elle qui part au portail (`charge_utile`) : le corps de suivi reconstruit
+    (`depot.corps_de_suivi`) partait donc avec une date que TEJ n'associe à aucun dépôt, et la
+    ligne restait « à vérifier sur le portail » sans que rien ne puisse la conclure.
+    """
+
+    CTX = {"facture": "ACC-PINV-2026-00093", "date_paiement": "2026-08-01", "bill_no": "26FA01134"}
+
+    def _r(self, date_paiement=None):
+        from bank_retenue_sync.tej.emis import contexte_reserve
+        return contexte_reserve(self.CTX, date_paiement)
+
+    def test_la_date_declaree_est_celle_de_la_ligne(self):
+        self.assertEqual(self._r("2026-08-13")["date_paiement"], "2026-08-13")
+
+    def test_sans_date_declaree_celle_de_la_piece_reste(self):
+        self.assertEqual(self._r()["date_paiement"], "2026-08-01")
+
+    def test_le_contexte_d_origine_n_est_pas_modifie(self):
+        """Le même contexte sert ensuite à la charge utile et à l'écran : le muter en place ferait
+        diverger silencieusement ce qui est affiché de ce qui est envoyé."""
+        self._r("2026-08-13")
+        self.assertEqual(self.CTX["date_paiement"], "2026-08-01")
+
+    def test_le_reste_du_contexte_voyage_intact(self):
+        self.assertEqual(self._r("2026-08-13")["bill_no"], "26FA01134")
