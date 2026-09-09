@@ -302,6 +302,24 @@ class TestVentilationParTaux(unittest.TestCase):
         self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
                                            {"taux_tva": 7, "montant_ht": 500.0}])
 
+    def test_le_HT_de_chaque_taux_est_sa_TVA_DIVISEE_par_son_taux(self):
+        """La regle, dite par l'utilisateur le 09/09/2026 : « TVA 7 % = 35, alors le HT pour 7 %
+        est 35 / 0,07 ; meme logique pour 19 % — lorsqu'on envoie a TEJ, elle a besoin du HT par
+        rapport a chaque TVA ». C'est bien ce que fait la ventilation, et ce test l'y attache."""
+        lignes = [self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)]
+        operations = self._v(lignes, 1500.0)["operations"]
+        # `round` au millime, comme la ventilation : 35 / 0,07 vaut 499,999999… en flottant.
+        self.assertEqual({o["taux_tva"]: o["montant_ht"] for o in operations},
+                         {19: round(190.0 / 0.19, 3), 7: round(35.0 / 0.07, 3)})
+        self.assertEqual([o["montant_ht"] for o in operations], [1000.0, 500.0])
+
+    def test_chaque_base_redonne_exactement_la_TVA_de_sa_ligne(self):
+        """Le chemin inverse, celui que le portail refera : base × taux = la TVA de la facture."""
+        lignes = [self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)]
+        rendu = {o["taux_tva"]: round(o["montant_ht"] * o["taux_tva"] / 100.0, 3)
+                 for o in self._v(lignes, 1500.0)["operations"]}
+        self.assertEqual(rendu, {19: 190.0, 7: 35.0})
+
     def test_la_base_se_reconstitue_depuis_la_tva_pas_au_prorata(self):
         """Un prorata du HT total se tromperait des que la facture porte une ligne exoneree."""
         r = self._v([self._tva("TVA 19% - A&S", 190.0)], 1000.0)
@@ -332,7 +350,13 @@ class TestVentilationParTaux(unittest.TestCase):
                                            {"taux_tva": 0, "montant_ht": 300.0}])
 
     def test_un_reliquat_d_arrondi_est_absorbe_par_la_plus_grosse_base(self):
-        """Un millime ne fait pas une part exoneree : la somme des bases retombe sur le HT."""
+        """Un millime ne fait pas une part exoneree : la somme des bases retombe sur le HT.
+
+        C'est le SEUL endroit ou la base d'un taux s'ecarte de « sa TVA divisee par son taux », et
+        l'ecart y est borne a 0,05 DT. Sans cette absorption, un arrondi de quelques millimes
+        ferait naitre une operation a 0 % de 4 centimes sur le certificat ; et sur une facture
+        mono-taux, c'est elle qui garantit que le HT declare reste EXACTEMENT celui de la piece,
+        comme avant la ventilation."""
         r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)],
                     1500.04)
         self.assertEqual([o["taux_tva"] for o in r["operations"]], [19, 7])
@@ -501,6 +525,28 @@ class TestChargeUtile(unittest.TestCase):
             self.assertEqual(o["exercice"], 2026)
             self.assertEqual(o["type_operation"], "Honoraires")
             self.assertEqual(o["operation"], "soumis à l'IS au taux de 15%")
+
+    def test_ce_qui_part_a_TEJ_porte_le_HT_DE_CHAQUE_TAUX(self):
+        """De la table des taxes jusqu'au corps envoye, sans rien deviner au passage.
+
+        C'est ce dont le portail a besoin : un bloc par taux, chacun avec SON HT. Une facture a
+        1 000 HT a 19 % et 500 a 7 % part donc en deux operations de 1 000 et 500 — et le portail,
+        qui recalcule la TVA de chaque bloc, retrouve les 190 et 35 de la facture."""
+        from bank_retenue_sync.tej.emis import taxes_lues, ventiler
+
+        import frappe
+
+        taxes = [frappe._dict(account_head=c, tax_amount=m,
+                              tax_amount_after_discount_amount=m, add_deduct_tax="Add")
+                 for c, m in (("TVA 19% - A&S", 190.0), ("TVA 7% - A&S", 35.0))]
+        ventilation = ventiler(taxes_lues(taxes), 1500.0)
+        corps = self._c(dict(self.CTX, taux_tva=None, montant_ht=1500.0,
+                             operations=ventilation["operations"]))
+        self.assertEqual([(o["montant_ht"], o["taux_tva"]) for o in corps["operations"]],
+                         [(1000.0, 19), (500.0, 7)])
+        self.assertEqual(sum(o["montant_ht"] for o in corps["operations"]), 1500.0)
+        self.assertEqual([round(o["montant_ht"] * o["taux_tva"] / 100.0, 3)
+                          for o in corps["operations"]], [190.0, 35.0])
 
     def test_le_taux_part_en_entier(self):
         """Le contrat du service veut un `int` : « 19.0 » ferait echouer la validation."""

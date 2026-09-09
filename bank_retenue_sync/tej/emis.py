@@ -87,9 +87,15 @@ def ventiler(lignes_taxes, net_total) -> dict:
     disent l'inverse : un certificat porte AUTANT D'OPERATIONS QUE DE TAUX. Refuser les factures a
     19 % et 7 % laissait leur retenue sans certificat — le fournisseur ne pouvait pas l'imputer.
 
-    ⚠️ LA BASE SE RECONSTITUE DEPUIS LA TVA, ELLE NE SE REPARTIT PAS AU PRORATA. La TVA de chaque
-    ligne et le taux lu sur son compte donnent la base exacte (montant × 100 / taux) ; un prorata
-    du HT total se tromperait des que la facture porte une ligne exoneree.
+    ⚠️ LA BASE SE RECONSTITUE DEPUIS LA TVA, ELLE NE SE REPARTIT PAS AU PRORATA. C'est ce que TEJ
+    demande : le HT DE CHAQUE TAUX, pas un HT global qu'il faudrait decouper. Chaque ligne de TVA
+    donne le sien en divisant son montant par son taux — 35 a 7 % font 500 de HT (35 / 0,07),
+    190 a 19 % en font 1 000 (190 / 0,19). Un prorata du HT total se tromperait des que la facture
+    porte une ligne exoneree, et c'est precisement le cas que ce module doit savoir declarer.
+
+    Le HT de la piece (`net_total`) ne sert donc pas a repartir : il sert de CONTROLE. Ce que les
+    bases ne couvrent pas est exonere (operation a 0 %), ce qu'elles depassent est une incoherence
+    (manque), et un ecart d'arrondi sous 0,05 DT tranche en faveur du HT de la piece.
 
     ⚠️ ET LE HT NON COUVERT PAR UNE LIGNE DE TVA EST DECLARE A 0 %. C'est la part exoneree : la
     laisser dehors ferait calculer par TEJ une retenue inferieure a celle que porte la facture —
@@ -130,6 +136,8 @@ def ventiler(lignes_taxes, net_total) -> dict:
             # Un montant sur une ligne a 0 % ne dit rien de sa base : elle part avec le reliquat.
             exoneration_declaree = True
             continue
+        # Le HT de ce taux : sa TVA divisee par lui (35 a 7 % -> 500). Deux lignes du meme taux
+        # s'additionnent — c'est un seul bloc sur le portail.
         bases[taux] = round(bases.get(taux, 0.0) + montant * 100.0 / taux, 3)
 
     if not bases and not exoneration_declaree:
