@@ -191,6 +191,27 @@ class TestAdaptateurDEmission(unittest.TestCase):
         self.assertEqual(ht, 1000.0)
         self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
 
+    def test_une_retenue_SUR_TVA_creditee_ne_change_ni_le_HT_ni_les_operations(self):
+        """⚠️ UN COMPTE « Retenue à la source sur TVA 25% » PORTE LE MOT ET UN POURCENTAGE. Le
+        calcul du HT le reconnaissait comme de la TVA alors que la ventilation, elle, l'écartait :
+        les 47,500 crédités étaient rendus au HT, qui passait à 1 047,500, et la ventilation
+        ajoutait aux 1 000 à 19 % une opération FANTÔME de 47,500 à 0 %. Les deux étapes doivent
+        reconnaître la même TVA — c'est `porte_une_base_de_tva` qui le dit, pour les deux."""
+        je = self.ecriture(("Achats - A&S", 1000.0), ("TVA 19% - A&S", 190.0),
+                           ("Retenue à la source sur TVA 25% - A&S", 0.0, 47.5))
+        ht, ventilation = F._ht_et_ventilation(je, 1190.0)
+        self.assertEqual(ht, 1000.0)
+        self.assertEqual(ventilation["manque"], "")
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_ce_qui_forme_une_base_est_dit_une_fois_pour_les_deux_etapes(self):
+        """La retenue à la source, sur TVA ou non, n'est jamais de la TVA."""
+        self.assertTrue(F.porte_une_base_de_tva("TVA 19% - A&S"))
+        self.assertTrue(F.porte_une_base_de_tva("tva 7 % - A&S"))
+        for compte in ("Retenue à la source sur TVA 25% - A&S", "Retenue à la source 1% - A&S",
+                       "TVA 0% - A&S", "TVA suspendue - A&S", "Achats - A&S", ""):
+            self.assertFalse(F.porte_une_base_de_tva(compte), compte)
+
     def test_une_ecriture_sans_ligne_de_TVA_reste_bloquee(self):
         """Sans TVA, rien ne dit comment répartir le HT : mieux vaut le dire que déclarer au
         hasard."""

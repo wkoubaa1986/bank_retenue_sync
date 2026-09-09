@@ -281,6 +281,17 @@ def _lignes_comme_taxes(je) -> list:
             for a in (je.accounts or [])]
 
 
+def porte_une_base_de_tva(compte) -> bool:
+    """Ce compte formera-t-il une base dans `emis.ventiler` ? Fonction pure.
+
+    ⚠️ LA SEULE DEFINITION, POUR LES DEUX ETAPES. Le HT se deduit de ce que la ventilation saura
+    repartir : tout ce que l'un reconnait et pas l'autre finit en operation fantome a 0 %, ou en
+    HT gonfle. Les deux conditions sont donc dites une fois et lues deux fois — un compte de TVA
+    (`est_compte_tva`, qui ecarte les retenues SUR TVA) portant un taux lisible et non nul.
+    """
+    return regles.est_compte_tva(compte) and bool(regles.taux_tva_du_compte(compte))
+
+
 def _ht_et_ventilation(je, ttc):
     """(HT, ventilation par taux) d'une ecriture de depense. -> (float, dict).
 
@@ -288,16 +299,16 @@ def _ht_et_ventilation(je, ttc):
     Le HT est le TTC moins TOUTES les lignes de TVA : une depense a 19 % et 7 % en porte deux, et
     n'en soustraire qu'une gonflerait le HT declare.
 
-    ⚠️ LES DEUX ETAPES DOIVENT RECONNAITRE LA MEME TVA. Ce qui est soustrait ici est exactement ce
-    qui formera une base dans `emis.ventiler` : les lignes dont le compte porte un taux lisible et
-    non nul, casse comprise. Reconnaitre « TVA 19% » ici et pas la-bas — ou l'inverse — faisait
-    d'une ligne minuscule un HT sans base, declare a 0 % en silence.
+    ⚠️ LES DEUX ETAPES RECONNAISSENT LA MEME TVA, ET UNE SEULE FONCTION LE DIT. Cette exigence a
+    ete prise en defaut deux fois : sur la casse du libelle, puis sur la retenue SUR TVA — un
+    compte « Retenue à la source sur TVA 25% » credite de 47,500 etait soustrait du TTC ici, mais
+    refuse par la ventilation la-bas, qui rendait alors une operation fantome de 47,500 a 0 % a
+    cote des 1 000 a 19 %. `porte_une_base_de_tva` est desormais le seul juge.
     """
     from bank_retenue_sync.tej import emis as E
 
     lignes = _lignes_comme_taxes(je)
-    tva = sum(l["tax_amount"] for l in lignes
-              if regles.taux_tva_du_compte(l["account_head"]))
+    tva = sum(l["tax_amount"] for l in lignes if porte_une_base_de_tva(l["account_head"]))
     ht = round(flt(ttc) - tva, 3)
     return ht, E.ventiler(lignes, ht)
 
