@@ -93,12 +93,21 @@ def ventiler(lignes_taxes, net_total) -> dict:
 
     ⚠️ ET LE HT NON COUVERT PAR UNE LIGNE DE TVA EST DECLARE A 0 %. C'est la part exoneree : la
     laisser dehors ferait calculer par TEJ une retenue inferieure a celle que porte la facture —
-    le controle d'ecart apres repetition reste le garde-fou de cette hypothese.
+    le controle d'ecart apres repetition reste le garde-fou de cette hypothese. Une facture
+    ENTIEREMENT exoneree — une ligne « TVA 0 % » explicite, sans montant — se declare donc d'un
+    bloc a 0 %, comme elle le faisait avant la ventilation.
+
+    ⚠️ LA TVA LUE EST CELLE D'APRES REMISE, PARCE QUE `net_total` L'EST. Une remise globale sur le
+    total TTC laisse `tax_amount` a sa valeur d'avant remise et ne remplit que
+    `tax_amount_after_discount_amount` ; reconstituer la base sur la premiere donnait 1 000 la ou
+    la facture porte 900, et une facture parfaitement coherente se faisait refuser. La cle absente
+    (une ecriture de journal n'en a pas), le montant brut fait foi.
 
     Les manques sont ecrits en clair, sans `_()` : comme `achat/regles`, cette fonction ne parle a
     personne — ni base, ni cache de traductions — et c'est ce qui la rend testable sans site.
     """
     bases = {}
+    exoneration_declaree = False
     for l in lignes_taxes or []:
         compte = l.get("account_head") or ""
         # ⚠️ LA MEME LECTURE QUE PARTOUT AILLEURS, CASSE COMPRISE : « tva 7 % » est un compte de
@@ -106,20 +115,24 @@ def ventiler(lignes_taxes, net_total) -> dict:
         # partaient en operation a 0 %, et rien ne le disait.
         if (l.get("add_deduct_tax") or "Add") != "Add" or not regles.est_compte_tva(compte):
             continue
-        montant = round(float(l.get("tax_amount") or 0), 3)
-        if montant <= 0:
-            continue
         taux = regles.taux_tva_du_compte(compte)
+        montant = round(float(montant_apres_remise(l) or 0), 3)
+        if montant <= 0:
+            # Une ligne sans montant ne forme aucune base. Mais un « TVA 0 % » explicite DIT
+            # quelque chose : la piece est exoneree, et c'est different de n'en rien savoir.
+            exoneration_declaree = exoneration_declaree or taux == 0
+            continue
         if taux is None:
             return {"operations": [],
                     "manque": "le taux de TVA ne se lit pas sur le compte « %s » : le portail "
                               "attend un taux par opération" % compte}
         if not taux:
-            # Une ligne « TVA 0 % » ne dit rien de sa base : elle part avec le reliquat.
+            # Un montant sur une ligne a 0 % ne dit rien de sa base : elle part avec le reliquat.
+            exoneration_declaree = True
             continue
         bases[taux] = round(bases.get(taux, 0.0) + montant * 100.0 / taux, 3)
 
-    if not bases:
+    if not bases and not exoneration_declaree:
         return {"operations": [],
                 "manque": "aucune ligne de TVA sur cette pièce : sans elle, le montant HT ne "
                           "peut pas être réparti par taux"}
@@ -134,19 +147,54 @@ def ventiler(lignes_taxes, net_total) -> dict:
 
     operations = [{"taux_tva": t, "montant_ht": b} for t, b in bases.items()]
     if abs(reliquat) <= RELIQUAT_NEGLIGEABLE:
-        if reliquat:
+        if reliquat and operations:
             # Un millime d'arrondi ne fait pas une part exoneree : la plus grosse base l'absorbe,
             # et la somme des operations retombe exactement sur le HT de la piece.
             plus_grosse = max(operations, key=lambda o: o["montant_ht"])
             plus_grosse["montant_ht"] = round(plus_grosse["montant_ht"] + reliquat, 3)
     else:
         operations.append({"taux_tva": 0, "montant_ht": reliquat})
+    if not operations:
+        # Une exoneration declaree sur un HT nul : le certificat n'aurait aucune operation, et le
+        # service les exige (`operations` a `min_length=1`). Le dire vaut mieux que l'envoyer.
+        return {"operations": [],
+                "manque": "le montant HT est nul : il n'y a rien à déclarer sur ce certificat"}
     return {"operations": sorted(operations, key=lambda o: -o["taux_tva"]), "manque": ""}
+
+
+def montant_apres_remise(ligne_taxe):
+    """La TVA d'une ligne, celle qui correspond au `net_total` de la piece. Pure.
+
+    ⚠️ `tax_amount` EST LE MONTANT D'AVANT LA REMISE GLOBALE. Quand une remise porte sur le total
+    TTC, ERPNext repartit la remise sur le net des articles, recalcule `net_total` et
+    `tax_amount_after_discount_amount` — mais LAISSE `tax_amount` a sa valeur d'origine. Sur une
+    facture ramenee de 1 000 a 900 HT, la TVA a 19 % vaut 171 apres remise et 190 avant : la base
+    reconstituee sur 190 rendait 1 000 face a un HT de 900, et la facture se faisait refuser pour
+    une incoherence qui n'existait pas.
+
+    Le champ n'existe pas partout (une ecriture de journal n'a pas de remise) : a defaut, le
+    montant brut fait foi, et il vaut alors exactement la meme chose.
+    """
+    apres = ligne_taxe.get("tax_amount_after_discount_amount")
+    return ligne_taxe.get("tax_amount") if apres is None else apres
 
 
 def ventilation_tva(lignes_taxes, net_total) -> list:
     """La ventilation seule : [{taux_tva, montant_ht}], vide si elle est impossible. Pure."""
     return ventiler(lignes_taxes, net_total)["operations"]
+
+
+def taxes_lues(taxes) -> list:
+    """La table des taxes de la facture, en dicts. Fonction pure.
+
+    ⚠️ LES DEUX MONTANTS VOYAGENT, ET CHACUN A SON LECTEUR. `regles` compte la retenue et le timbre
+    sur `tax_amount` — c'est le controle qui existait avant, il ne bouge pas ; la ventilation, elle,
+    reconstitue ses bases sur le montant D'APRES REMISE, seul comparable au `net_total`. Ne
+    transporter qu'un seul des deux obligeait a choisir lequel des deux calculs se tromperait.
+    """
+    return [{"account_head": t.account_head, "tax_amount": t.tax_amount,
+             "tax_amount_after_discount_amount": t.get("tax_amount_after_discount_amount"),
+             "add_deduct_tax": t.add_deduct_tax} for t in (taxes or [])]
 
 
 def contexte(facture: str) -> dict:
@@ -156,8 +204,7 @@ def contexte(facture: str) -> dict:
     bloquerait, comme le fait `achat.facture.diagnostic` avant une validation.
     """
     doc = frappe.get_doc("Purchase Invoice", facture)
-    lignes = [{"account_head": t.account_head, "tax_amount": t.tax_amount,
-               "add_deduct_tax": t.add_deduct_tax} for t in (doc.get("taxes") or [])]
+    lignes = taxes_lues(doc.get("taxes"))
     ras = regles.retenue_saisie(lignes)
     ht = flt(doc.net_total, 3)
     ventilation = ventiler(lignes, ht)

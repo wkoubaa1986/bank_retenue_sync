@@ -349,6 +349,21 @@ class TestVentilationParTaux(unittest.TestCase):
         self.assertEqual(r["operations"], [])
         self.assertIn("TVA ne correspond pas au HT", r["manque"])
 
+    def test_une_exoneration_EXPLICITE_declare_tout_le_HT_a_zero_pour_cent(self):
+        """⚠️ NE PAS CONFONDRE « EXONERE » ET « ON N'EN SAIT RIEN ». Une facture portant une ligne
+        « TVA 0% » sans montant s'emettait tres bien avant la ventilation — tout le HT a 0 %, un
+        taux que le contrat du service accepte. La refuser pour « aucune ligne de TVA » aurait
+        bloque une facture que rien n'empeche de declarer."""
+        r = self._v([self._tva("TVA 0% - A&S", 0.0)], 1200.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 0, "montant_ht": 1200.0}])
+
+    def test_une_exoneration_explicite_sur_un_HT_nul_est_dite(self):
+        """Le service exige au moins une operation : un certificat vide ne s'envoie pas."""
+        r = self._v([self._tva("TVA 0% - A&S", 0.0)], 0.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("montant HT est nul", r["manque"])
+
     def test_sans_aucune_ligne_de_tva_rien_ne_se_ventile(self):
         r = self._v([{"account_head": "Retenue à la source - A&S", "tax_amount": 12.0,
                       "add_deduct_tax": "Deduct"}], 1200.0)
@@ -378,6 +393,68 @@ class TestVentilationParTaux(unittest.TestCase):
         from bank_retenue_sync.tej.emis import ventilation_tva
         self.assertEqual(ventilation_tva([self._tva("TVA 19% - A&S", 190.0)], 1000.0),
                          [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+
+class TestRemiseGlobale(unittest.TestCase):
+    """⚠️ `tax_amount` EST LA TVA D'AVANT LA REMISE GLOBALE, `net_total` EST LE HT D'APRES.
+
+    Quand la remise porte sur le total, ERPNext la repartit sur le net des articles, recalcule
+    `net_total` et `tax_amount_after_discount_amount`, mais LAISSE `tax_amount` a sa valeur
+    d'origine. Reconstituer la base sur `tax_amount` rendait 1 000 face a un HT de 900 : une
+    facture parfaitement coherente se faisait refuser « la TVA ne correspond pas au HT », la ou
+    l'ancien code declarait simplement 900 a 19 %.
+
+    On part de la table des taxes telle que `contexte` la lit — c'est le seul moyen de verifier,
+    sans site, que le bon montant arrive jusqu'a la ventilation.
+    """
+
+    def taxes(self, *lignes):
+        """La table des taxes d'une facture : (compte, tax_amount, apres_remise, sens)."""
+        import frappe
+
+        return [frappe._dict(account_head=c, tax_amount=brut,
+                             tax_amount_after_discount_amount=apres, add_deduct_tax=sens)
+                for c, brut, apres, sens in lignes]
+
+    def _ventiler(self, taxes, net_total):
+        from bank_retenue_sync.tej.emis import taxes_lues, ventiler
+        return ventiler(taxes_lues(taxes), net_total)
+
+    def test_mono_taux_la_base_suit_le_HT_apres_remise(self):
+        """1 000 HT ramenes a 900 : 171 de TVA apres remise, 190 avant."""
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add")), 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_multi_taux_chaque_base_suit_sa_TVA_apres_remise(self):
+        """Sans cela, la repartition entre les taux serait fausse en silence."""
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add"),
+                                      ("TVA 7% - A&S", 35.0, 31.5, "Add")), 1350.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 450.0}])
+
+    def test_sans_remise_les_deux_montants_sont_egaux_et_rien_ne_change(self):
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 190.0, "Add")), 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_un_montant_apres_remise_absent_laisse_le_montant_brut_faire_foi(self):
+        """Une ecriture de journal n'a pas de remise : la cle n'existe pas chez elle."""
+        from bank_retenue_sync.tej.emis import ventiler
+        r = ventiler([{"account_head": "TVA 19% - A&S", "tax_amount": 190.0,
+                       "add_deduct_tax": "Add"}], 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_retenue_saisie_continue_de_se_lire_sur_le_montant_BRUT(self):
+        """⚠️ LE CALCUL DE LA RETENUE NE BOUGE PAS. Il precede la ventilation et sert de reference
+        au controle d'ecart apres repetition : le changer ici deplacerait le garde-fou lui-meme."""
+        from bank_retenue_sync.achat import regles
+        from bank_retenue_sync.tej.emis import taxes_lues
+
+        lignes = taxes_lues(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add"),
+                                       ("Retenue à la source 1% - A&S", 11.9, 10.71, "Deduct")))
+        self.assertEqual(regles.retenue_saisie(lignes), 11.9)
+        self.assertEqual(regles.tva_facturee(lignes), 190.0)
 
 
 class TestChargeUtile(unittest.TestCase):
