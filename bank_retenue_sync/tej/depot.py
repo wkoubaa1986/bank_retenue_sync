@@ -115,6 +115,26 @@ def en_cours(facture: str, sauf: str = None, piece_type: str = None):
     return frappe.get_doc(DOCTYPE, nom) if nom else None
 
 
+def dernier_incertain(facture: str, piece_type: str = None):
+    """Le dernier depot `incertain` de cette piece, ou None.
+
+    ⚠️ IL BLOQUE LA PIECE AUTANT QUE `en_cours`, ET RIEN NE LE DISAIT A L'ECRAN. La quatrieme
+    barriere ne regarde que `en_envoi` et `en_analyse` : la fiche d'une facture dont la derniere
+    soumission ne s'est pas conclue proprement n'affichait donc aucun indicateur, le bouton
+    reproposait l'emission — le seul geste a ne pas faire tant qu'on ne sait pas si la declaration
+    est partie — et « Vérifier maintenant » repondait « aucun dépôt en attente » alors que c'est
+    precisement la ligne qu'il faut relire.
+
+    Le PLUS RECENT, parce qu'une facture refusee puis resoumise porte plusieurs lignes et que
+    seule la derniere dit ou on en est.
+    """
+    filtres = {"facture": facture, "statut": INCERTAIN}
+    if piece_type:
+        filtres["piece_type"] = piece_type
+    nom = frappe.db.get_value(DOCTYPE, filtres, "name", order_by="creation desc")
+    return frappe.get_doc(DOCTYPE, nom) if nom else None
+
+
 def vue(ligne) -> dict:
     """Ce qu'un ecran doit savoir d'un depot. -> dict. Accepte `dict` comme `Document`.
 
@@ -141,9 +161,14 @@ def ouverts(limite: int = 50) -> list:
     """Les depots que TEJ n'a pas encore analyses, du plus ancien au plus recent.
 
     Seulement `en_analyse` : une ligne `en_envoi` n'a pas encore de depot a suivre.
+
+    ⚠️ `piece_type` EN FAIT PARTIE, SINON LE CERTIFICAT SE POSE SUR LA MAUVAISE PIECE. Absent de
+    ces champs, il valait « Purchase Invoice » par defaut dans `emis.suivre_depot` : le PDF d'une
+    retenue prelevee en CAISSE partait se poser sur une facture d'achat qui n'existe pas, et
+    l'ecriture restait sans justificatif — le seul document qui prouve la retenue au controle.
     """
     return frappe.get_all(DOCTYPE, filters={"statut": EN_ANALYSE},
-                          fields=["name", "facture", "statut", "numero_depot",
+                          fields=["name", "facture", "piece_type", "statut", "numero_depot",
                                   "numero_declarant", "suivi", "verifications"],
                           order_by="soumis_le asc", limit_page_length=limite)
 
@@ -157,10 +182,16 @@ def incertains(limite: int = 20) -> list:
     post-Valider du service avait rendu une erreur alors que le certificat etait GENERE — et le
     cron, qui ne relisait que `en_analyse`, laissait la facture « a verifier sur le portail »
     pour toujours.
+
+    ⚠️ LE BENEFICIAIRE VOYAGE AVEC CES LIGNES-LA, ET LUI SEUL PERMET LE REPLI SUR L'EXPORT. Le
+    couple « numero chez le declarant + matricule » est la cle du certificat cote portail
+    (`emis.certificat_du_portail`) : sans le matricule, un depot `incertain` dont le certificat
+    existe pourtant dans l'export ne peut pas se conclure. Il affine aussi le filtre poste sur la
+    route de statut, comme le fait deja le bouton de la fiche, qui passe la ligne complete.
     """
     return frappe.get_all(DOCTYPE, filters={"statut": INCERTAIN},
-                          fields=["name", "facture", "statut", "numero_depot",
-                                  "numero_declarant", "suivi", "verifications"],
+                          fields=["name", "facture", "piece_type", "statut", "numero_depot",
+                                  "numero_declarant", "beneficiaire", "suivi", "verifications"],
                           order_by="soumis_le asc", limit_page_length=limite)
 
 

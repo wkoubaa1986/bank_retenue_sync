@@ -547,10 +547,26 @@ class TestCertificatPoseSurLaBonnePiece(unittest.TestCase):
         self.assertIn("piece_type", inspect.signature(E._certificat_attache).parameters)
 
     def test_le_suivi_transmet_la_nature_du_depot(self):
+        """Deux chemins concluent désormais un dépôt `genere` — la route de statut et le repli sur
+        l'export du portail — et un seul attachement les sert : la nature de la pièce traverse le
+        suivi jusqu'à lui, sinon le certificat se poserait sur une facture qui n'existe pas."""
         from bank_retenue_sync.tej import emis as E
 
-        self.assertIn("attacher_pdf(facture, vu[\"reference\"], piece_type)",
+        self.assertIn("_conclure_genere(nom, facture, piece_type,",
                       inspect.getsource(E.suivre_depot))
+        self.assertIn("attacher_pdf(facture, reference, piece_type)",
+                      inspect.getsource(E._conclure_genere))
+        self.assertIn('ligne.get("piece_type") or "Purchase Invoice"',
+                      inspect.getsource(E._repli_export))
+
+    def test_le_cron_lit_la_nature_de_la_piece_sur_le_depot(self):
+        """⚠️ ABSENTE DES CHAMPS LUS, ELLE VALAIT « Purchase Invoice » PAR DÉFAUT : le PDF d'une
+        retenue prélevée en caisse partait se poser sur une facture d'achat inexistante, et
+        l'écriture restait sans justificatif."""
+        from bank_retenue_sync.tej import depot as M_depot
+
+        for fn in (M_depot.ouverts, M_depot.incertains):
+            self.assertIn('"piece_type"', inspect.getsource(fn), fn.__name__)
 
     def test_le_defaut_reste_la_facture_d_achat(self):
         from bank_retenue_sync.tej import emis as E

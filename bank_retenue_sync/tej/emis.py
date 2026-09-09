@@ -450,23 +450,37 @@ def est_aveugle(genere_le, maintenant, marge_minutes: int = FRAICHEUR_EXPORT_MIN
     return (maintenant - genere_le).total_seconds() > marge_minutes * 60
 
 
-def deja_chez_tej(numero: str, mat: str, rafraichir: bool = False):
-    """Le certificat vivant qui porte deja ce numero pour ce beneficiaire, ou None.
+def certificat_vivant(numero: str, mat: str, certs):
+    """Le certificat VIVANT que ces lignes d'export portent pour ce couple, ou None. Pure.
 
     ⚠️ LA CLE EST LE COUPLE, PAS LE NUMERO SEUL. « 108 » ou « 30/2026 » sont des numeros de
     facture fournisseur : deux fournisseurs differents en emettent chaque annee. Croiser le
     numero avec le matricule du beneficiaire est ce qui distingue un vrai doublon d'une
     homonymie de numerotation.
+
+    Sans reseau ni base : c'est la meme lecture pour la barriere anti-doublon (avant d'emettre)
+    et pour le repli du suivi (apres, quand on cherche un certificat qu'on croit perdu). Deux
+    implementations auraient diverge au premier changement de l'export.
     """
     cible_num = (numero or "").strip()
     cible_mat = matricule.normaliser(mat)
     if not cible_num or not cible_mat:
         return None
-    for c in certificats_emis(rafraichir=rafraichir):
-        if c["numero"] == cible_num and c["beneficiaire"] == cible_mat \
-                and c["etat"] in ETATS_VIVANTS:
-            return c
-    return None
+    return next((c for c in certs or []
+                 if (c.get("numero") or "") == cible_num
+                 and (c.get("beneficiaire") or "") == cible_mat
+                 and c.get("etat") in ETATS_VIVANTS), None)
+
+
+def deja_chez_tej(numero: str, mat: str, rafraichir: bool = False):
+    """Le certificat vivant qui porte deja ce numero pour ce beneficiaire, ou None.
+
+    La cle incomplete ne coute AUCUN appel : `rafraichir` lance une session de scraping sur le
+    portail, et il n'y a rien a chercher sans numero ni matricule.
+    """
+    if not (numero or "").strip() or not matricule.normaliser(mat):
+        return None
+    return certificat_vivant(numero, mat, certificats_emis(rafraichir=rafraichir))
 
 
 def charge_utile(ctx: dict, date_paiement=None) -> dict:
@@ -515,6 +529,21 @@ def cle_idempotence(ctx: dict, dry_run: bool):
     return None if dry_run else "PINV-%s" % ctx["facture"]
 
 
+def contexte_reserve(ctx: dict, date_paiement=None) -> dict:
+    """Le contexte tel que la LIGNE DE DEPOT doit le porter. Fonction pure.
+
+    ⚠️ C'EST LA DATE DECLAREE QUI FAIT FOI, PAS CELLE DE LA COMPTABILISATION. `contexte` lit
+    `posting_date`, mais le dialogue demande la date que portera le CERTIFICAT et c'est elle qui
+    part au portail (`charge_utile`). La reservation gardait pourtant la date comptable : le corps
+    de suivi reconstruit (`depot.corps_de_suivi`) partait alors avec une date que TEJ n'associe a
+    aucun depot, et la ligne restait « a verifier sur le portail » sans que rien ne puisse la
+    conclure. La ligne doit dire ce qui a ete DECLARE, pas ce qui a ete comptabilise.
+    """
+    if not date_paiement:
+        return dict(ctx)
+    return dict(ctx, date_paiement=str(date_paiement))
+
+
 def emettre(facture: str, dry_run: bool = True, date_paiement=None,
             depot_reserve: str = None, ctx: dict = None) -> dict:
     """Repete (dry_run) ou soumet (dry_run=False) le certificat sur TEJ. -> dict.
@@ -557,10 +586,7 @@ def emettre(facture: str, dry_run: bool = True, date_paiement=None,
     # demande au portail lui-meme, et on RAFRAICHIT avant une soumission reelle : un export vieux
     # de trois semaines ne prouve rien sur ce qui a ete emis hier.
     certs = certificats_emis(rafraichir=not dry_run)
-    doublon = next((c for c in certs
-                    if c["numero"] == (ctx["bill_no"] or "").strip()
-                    and c["beneficiaire"] == ctx["matricule"]
-                    and c["etat"] in ETATS_VIVANTS), None)
+    doublon = certificat_vivant(ctx["bill_no"], ctx["matricule"], certs)
     if doublon:
         return {"statut": "deja chez tej", "doublon": doublon, **ctx}
     # ⚠️ « PAS TROUVE » N'EST PAS « PAS DE DOUBLON » — MAIS LA QUESTION EST QUAND L'EXPORT A ETE
@@ -608,14 +634,14 @@ def emettre(facture: str, dry_run: bool = True, date_paiement=None,
 
     if lecture["statut"] == M_depot.EN_ANALYSE:
         # Le numero de depot est le fait le plus couteux a perdre : en base AVANT tout le reste.
-        nom = _persister(ctx, lecture, job, depot_reserve)
+        nom = _persister(contexte_reserve(ctx, date_paiement), lecture, job, depot_reserve)
         return {"statut": "depot en analyse",
                 "depot": M_depot.vue(frappe.get_doc(M_depot.DOCTYPE, nom)), **commun}
 
     if lecture["statut"] == M_depot.GENERE and lecture["reference"]:
         # Trace du depot meme quand TEJ a analyse tout de suite : l'historique de ce qui est parti
         # au fisc ne doit pas dependre de la vitesse de son analyse.
-        _persister(ctx, lecture, job, depot_reserve)
+        _persister(contexte_reserve(ctx, date_paiement), lecture, job, depot_reserve)
         return {"statut": "soumis", **commun}
 
     # Ni reference, ni depot, ni statut connu : on ne sait pas. C'est different de « rien n'est
@@ -959,6 +985,13 @@ def preparer(facture):
     # Un depot en analyse doit se voir AVANT le premier clic, pas au refus du serveur.
     en_cours = M_depot.en_cours(facture)
     ctx["depot_en_cours"] = M_depot.vue(en_cours) if en_cours else None
+    # ⚠️ ET UN `incertain` AUSSI, PARCE QU'IL BLOQUE AUTANT SANS RIEN DIRE. `en_cours` ne voit que
+    # `en_envoi` et `en_analyse` : la fiche d'une facture dont la soumission ne s'est pas conclue
+    # proprement n'affichait donc RIEN, et le bouton reproposait l'emission — le seul geste a ne
+    # pas faire tant qu'on ne sait pas si la declaration est partie. C'est la pastille rouge
+    # « TEJ : à vérifier sur le portail » de la vue liste, enfin explicable sur la fiche.
+    incertain = None if en_cours else M_depot.dernier_incertain(facture)
+    ctx["depot_incertain"] = M_depot.vue(incertain) if incertain else None
     return ctx
 
 
@@ -1049,7 +1082,9 @@ def soumettre(facture, date_paiement=None):
     if en_cours:
         return {"statut": "depot en analyse", "depot": M_depot.vue(en_cours), **ctx}
 
-    nom = M_depot.reserver(ctx)
+    # La ligne porte la date DECLAREE, pas la date de comptabilisation : c'est elle qui part au
+    # portail, donc la seule sous laquelle TEJ connait ce depot (cf. `contexte_reserve`).
+    nom = M_depot.reserver(contexte_reserve(ctx, date_paiement))
     frappe.db.commit()
     frappe.enqueue("bank_retenue_sync.tej.emis.executer_soumission",
                    queue="long", timeout=2400, facture=facture,
@@ -1118,38 +1153,156 @@ def reprendre_pdf(facture, reference):
     return res
 
 
-def suivre_depot(ligne) -> dict:
+def export_du_passage():
+    """Un lecteur de l'export des certificats emis qui ne lit QU'UNE FOIS. -> callable.
+
+    ⚠️ UNE LECTURE PAR PASSAGE, JAMAIS UNE PAR DEPOT. Le cron examine jusqu'a quarante lignes ;
+    l'export est un classeur de plusieurs milliers de lignes servi par le service TEJ. Le relire
+    pour chaque depot ferait payer quarante fois la meme reponse au worker unique.
+
+    ⚠️ ET IL NE RAFRAICHIT PAS. Regenerer l'export pilote une session sur le portail : c'est le
+    prix d'une soumission reelle, pas celui d'un suivi qui tourne cinq fois par jour. On lit donc
+    le dernier export genere — celui de 09h50, ou celui qu'une soumission a produit depuis.
+
+    ⚠️ ET SON ABSENCE NE BLOQUE RIEN. Service injoignable (dev, panne, jeton illisible apres un
+    restore) : on rend une liste vide, comme le recap des retenues, en retirant le message qu'un
+    `frappe.throw` en profondeur a pu empiler — le suivi des `en_analyse` doit continuer.
+    """
+    lu = {}
+
+    def lire():
+        if "certs" not in lu:
+            try:
+                lu["certs"] = certificats_emis()
+            except Exception:
+                lu["certs"] = []
+                frappe.clear_last_message()
+        return lu["certs"]
+
+    return lire
+
+
+def certificat_du_portail(ligne, certs):
+    """Le certificat vivant que l'export porte pour CE depot, ou None. Pure (hors export).
+
+    ⚠️ DEUX NUMEROS PEUVENT DESIGNER LE MEME DEPOT. Quand le portail incremente le numero chez le
+    declarant (`26FA01134` annule -> `26FA01134_V2`), la ligne ERPNext garde celui qui a ete
+    DEMANDE tandis que le corps de suivi rendu par le service porte celui qui a ete SOUMIS — et
+    c'est ce dernier que l'export affiche. On essaie donc les deux, toujours croises avec le
+    matricule du beneficiaire : le numero seul est un numero de facture fournisseur, et deux
+    fournisseurs en emettent le meme chaque annee.
+    """
+    corps = M_depot.corps_de_suivi(ligne)
+    mat = corps.get("beneficiaire") or ligne.get("beneficiaire")
+    for numero in (corps.get("numero_chez_declarant"), ligne.get("numero_declarant")):
+        trouve = certificat_vivant(numero, mat, certs)
+        if trouve:
+            return trouve
+    return None
+
+
+def _conclure_genere(nom, facture, piece_type, reference, message="", numero="",
+                     source="") -> dict:
+    """Conclut la ligne sur `genere` et pose le PDF sur la piece d'origine. -> dict.
+
+    Les deux chemins qui peuvent apprendre qu'un certificat existe — la route de statut et le
+    repli sur l'export — passent par ici : un seul attachement, donc un seul endroit ou se tromper
+    de piece. Un PDF qui echoue ne remet pas la conclusion en cause : le certificat EXISTE chez
+    TEJ, sa reference est en base, et le PDF se reprend.
+    """
+    M_depot.conclure(nom, M_depot.GENERE, reference, message, numero=numero)
+    resultat = {"depot": nom, "statut": M_depot.GENERE, "reference": reference}
+    if source:
+        resultat["source"] = source
+    # Le PDF suit le certificat, pas le depot : il n'existait pas avant cet instant.
+    try:
+        resultat["pdf"] = attacher_pdf(facture, reference, piece_type)
+    except Exception as e:
+        resultat["pdf"] = {"statut": "echec", "erreur": str(e)[:200]}
+        frappe.log_error(title="PDF du certificat TEJ %s" % facture,
+                         message=frappe.get_traceback())
+    return resultat
+
+
+def _repli_export(ligne, lire_export) -> dict:
+    """Ce que l'export du portail sait d'un depot `incertain` que la route de statut n'a pas
+    conclu. -> dict de conclusion, ou None si personne ne peut trancher.
+
+    ⚠️ SANS CE REPLI, UN `incertain` PEUT RESTER ROUGE A VIE ALORS QUE LE CERTIFICAT EXISTE. Le
+    suivi ne connaissait qu'une source : la route de statut. Si elle echoue ou ne rend rien —
+    numero incremente par le portail, date de paiement qui ne correspond a aucun depot, service
+    qui repond a cote — la ligne se contentait d'un `toucher` a chaque passage, et la facture
+    portait la pastille « à vérifier sur le portail » pour toujours. L'export des certificats
+    EMIS, lui, dit ce que le portail a genere : c'est la meme preuve que celle de la troisieme
+    barriere anti-doublon, lue dans l'autre sens.
+
+    ⚠️ SEULEMENT POUR UN `incertain`. Un depot `en_analyse` est dans son etat nominal : le
+    conclure sur un homonyme d'export serait remplacer un fait (TEJ analyse) par une deduction.
+    """
+    if (ligne.get("statut") or "") != M_depot.INCERTAIN:
+        return None
+    cert = certificat_du_portail(ligne, lire_export())
+    if not cert or not cert.get("reference"):
+        return None
+    return _conclure_genere(
+        ligne.get("name"), ligne.get("facture"),
+        ligne.get("piece_type") or "Purchase Invoice", cert["reference"],
+        "certificat retrouvé dans l'export des certificats émis du portail (état %s) : "
+        "la déclaration était bien partie" % (cert.get("etat") or "?"),
+        source="export")
+
+
+def _sans_certificat(statut_courant) -> str:
+    """Ce qu'on ajoute au message d'un `incertain` que personne n'a pu conclure. Pure.
+
+    Le champ `message` est ce que la fiche affiche : sans cette phrase, il disait « portail muet »
+    et l'utilisateur, qui voit pourtant le certificat sur le portail, ne pouvait pas savoir que
+    l'export avait ete consulte lui aussi — ni que la cle du rapprochement est le couple
+    « n° de facture fournisseur + matricule ».
+    """
+    if statut_courant != M_depot.INCERTAIN:
+        return ""
+    # « n'a rien apporté » plutot que « ne le porte pas » : l'export peut aussi avoir ete
+    # illisible, et affirmer l'absence d'un certificat qu'on n'a pas pu lire serait un mensonge.
+    return (" — l'export des certificats émis n'a rien apporté non plus (clé : n° chez le "
+            "déclarant + matricule) : le doute reste entier, ne pas resoumettre")
+
+
+def suivre_depot(ligne, lire_export=None) -> dict:
     """Demande a TEJ ou en est UN depot, et conclut s'il est genere. -> dict.
 
     ⚠️ RIEN N'EST RESOUMIS ICI. La route de statut est en lecture seule au contrat ; c'est
     precisement ce qui permet de la rappeler autant que necessaire. TEJ analyse ses depots quand
     il veut, et rien de notre cote ne peut l'accelerer.
+
+    ⚠️ ET QUAND ELLE NE CONCLUT PAS, L'EXPORT DES CERTIFICATS EMIS EST LA SECONDE SOURCE. Elle
+    seule ne suffisait pas : un depot `incertain` qu'elle ignore restait bloque a vie (cf.
+    `_repli_export`). `lire_export` permet a un passage de cron de ne lire l'export qu'une fois
+    pour toutes ses lignes.
     """
     nom = ligne["name"] if isinstance(ligne, dict) else ligne.name
     facture = ligne["facture"] if isinstance(ligne, dict) else ligne.facture
     # La nature de la piece voyage avec le depot : c'est elle qui dit ou poser le certificat.
     piece_type = ((ligne.get("piece_type") if isinstance(ligne, dict) else ligne.piece_type)
                   or "Purchase Invoice")
+    statut_courant = ligne["statut"] if isinstance(ligne, dict) else ligne.statut
+    lire_export = lire_export or export_du_passage()
+
     try:
         vu = M_depot.interroger(ligne)
     except Exception as e:
-        M_depot.toucher(nom, "suivi impossible : %s" % str(e)[:200])
+        # Le suivi est muet, mais le certificat peut EXISTER : l'export tranche avant qu'on se
+        # contente de noter l'echec.
+        repli = _repli_export(ligne, lire_export)
+        if repli:
+            return repli
+        M_depot.toucher(nom, "suivi impossible : %s%s" % (
+            str(e)[:200], _sans_certificat(statut_courant)))
         return {"depot": nom, "statut": "erreur", "erreur": str(e)[:200]}
 
-    statut_courant = ligne["statut"] if isinstance(ligne, dict) else ligne.statut
-
     if vu["statut"] == M_depot.GENERE and vu["reference"]:
-        M_depot.conclure(nom, M_depot.GENERE, vu["reference"], vu.get("message") or "",
-                         numero=vu.get("depot_numero") or "")
-        resultat = {"depot": nom, "statut": M_depot.GENERE, "reference": vu["reference"]}
-        # Le PDF suit le certificat, pas le depot : il n'existait pas avant cet instant.
-        try:
-            resultat["pdf"] = attacher_pdf(facture, vu["reference"], piece_type)
-        except Exception as e:
-            resultat["pdf"] = {"statut": "echec", "erreur": str(e)[:200]}
-            frappe.log_error(title="PDF du certificat TEJ %s" % facture,
-                             message=frappe.get_traceback())
-        return resultat
+        return _conclure_genere(nom, facture, piece_type, vu["reference"],
+                                vu.get("message") or "", vu.get("depot_numero") or "")
 
     if vu["statut"] and vu["statut"] not in (M_depot.EN_ANALYSE, M_depot.GENERE):
         M_depot.conclure(nom, vu["statut"], "", vu.get("message") or "")
@@ -1164,10 +1317,19 @@ def suivre_depot(ligne) -> dict:
         return {"depot": nom, "statut": M_depot.EN_ANALYSE,
                 "message": vu.get("message") or ""}
 
-    M_depot.toucher(nom, vu.get("message") or "")
+    # La route de statut n'a rien conclu : l'export est la derniere chance de sortir un
+    # `incertain` de son doute. Un `en_analyse`, lui, attend simplement son tour.
+    repli = _repli_export(ligne, lire_export)
+    if repli:
+        return repli
+
+    M_depot.toucher(nom, (vu.get("message") or "") + _sans_certificat(statut_courant))
     # Le message du service dit s'il faut attendre ou surtout pas resoumettre : il remonte jusqu'a
     # l'ecran, au lieu de finir dans un champ que personne n'ouvre.
-    return {"depot": nom, "statut": M_depot.EN_ANALYSE, "message": vu.get("message") or ""}
+    return {"depot": nom,
+            "statut": (M_depot.INCERTAIN if statut_courant == M_depot.INCERTAIN
+                       else M_depot.EN_ANALYSE),
+            "message": vu.get("message") or ""}
 
 
 def verifier_depots(limite: int = 20) -> dict:
@@ -1188,9 +1350,12 @@ def verifier_depots(limite: int = 20) -> dict:
     # (fausse alerte constatee en prod le 26/08/2026 sur DEP-2026-00323, certificat pourtant
     # genere). Sans cette reprise, la facture restait « a verifier sur le portail » a jamais.
     a_suivre = M_depot.ouverts(limite) + M_depot.incertains(limite)
+    # Un seul lecteur pour tout le passage : l'export ne se lit qu'a la premiere ligne qui en a
+    # besoin, et pas du tout si aucune n'est `incertain`.
+    lire_export = export_du_passage()
     out = []
     for ligne in a_suivre:
-        out.append(suivre_depot(ligne))
+        out.append(suivre_depot(ligne, lire_export))
         frappe.db.commit()
     return {"perdus": len(perdus), "examines": len(a_suivre),
             "generes": len([r for r in out if r.get("statut") == M_depot.GENERE]),
@@ -1199,9 +1364,15 @@ def verifier_depots(limite: int = 20) -> dict:
 
 @frappe.whitelist()
 def suivre(facture):
-    """Le bouton : ou en est le depot de cette facture, maintenant."""
+    """Le bouton : ou en est le depot de cette facture, maintenant.
+
+    ⚠️ LES `incertain` AUSSI, ET C'ETAIT LE SEUL CAS OU LE BOUTON SERVAIT VRAIMENT. `en_cours` ne
+    voit que `en_envoi` et `en_analyse` : devant une facture bloquee « à vérifier sur le portail »,
+    « Vérifier maintenant » repondait « aucun dépôt en attente » — alors que c'est precisement la
+    ligne a relire, et que le suivi sait maintenant la conclure depuis l'export.
+    """
     frappe.only_for(["System Manager", "Accounts Manager"])
-    ligne = M_depot.en_cours(facture)
+    ligne = M_depot.en_cours(facture) or M_depot.dernier_incertain(facture)
     if not ligne:
         return {"statut": "aucun depot en analyse"}
     # Rien a demander a TEJ tant que la tache de fond n'a pas fini : il n'y a pas encore de depot
