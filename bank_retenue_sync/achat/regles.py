@@ -71,8 +71,14 @@ def est_compte_tva(compte) -> bool:
     taux sans egard a la casse : une reconnaissance stricte a un seul endroit suffisait a faire
     diverger la somme de TVA et la ventilation qui la repartit. La base du taux minuscule tombait
     alors dans le reliquat et partait declaree a 0 %, sans manque pour l'annoncer.
+
+    ⚠️ MAIS UNE RETENUE SUR TVA N'EST PAS DE LA TVA. Un compte « Retenue à la source sur TVA 25% »
+    contient le mot ET un pourcentage : lu comme une TVA a 25 %, il ferait naitre une base — ou,
+    en deduction, une TVA nette negative qui bloquerait la piece. C'est une retenue, elle a son
+    propre chemin (`retenue_saisie`), et le mot qui la nomme la sort d'ici.
     """
-    return MOT_TVA.lower() in (compte or "").lower()
+    libelle = (compte or "").lower()
+    return MOT_TVA.lower() in libelle and MOT_RETENUE.lower() not in libelle
 
 
 def taux_tva_du_compte(compte) -> int | None:

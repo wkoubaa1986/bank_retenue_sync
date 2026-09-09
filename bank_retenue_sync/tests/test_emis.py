@@ -276,7 +276,10 @@ class TestTauxLuSurLeCompte(unittest.TestCase):
         from bank_retenue_sync.achat.regles import est_compte_tva
         for compte in ("TVA 19% - A&S", "tva 7 % - A&S", "Tva deductible"):
             self.assertTrue(est_compte_tva(compte), compte)
-        for compte in ("4366 Achats", "Retenue à la source 1% - A&S", "", None):
+        for compte in ("4366 Achats", "Retenue à la source 1% - A&S", "", None,
+                       # Il porte le mot et un pourcentage, mais c'est une retenue : lu comme une
+                       # TVA a 25 %, il ferait naitre une base que la facture ne porte pas.
+                       "Retenue à la source sur TVA 25% - A&S"):
             self.assertFalse(est_compte_tva(compte), compte)
 
 
@@ -351,6 +354,37 @@ class TestVentilationParTaux(unittest.TestCase):
         r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0)], 900.0)
         self.assertEqual(r["manque"], "")
         self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_une_reprise_de_TVA_en_DEDUCT_corrige_la_ligne_qu_elle_vise(self):
+        """⚠️ « DEDUCT » EST LA FAÇON NORMALE D'ECRIRE UNE REPRISE DANS ERPNEXT : le sens de la
+        ligne EST son signe. Ecarter les « Deduct » des comptes de TVA revenait a declarer la TVA
+        d'avant la reprise — 190 la ou la facture en porte 171, donc 1 000 de base face a 900 de
+        HT, et un refus pour incoherence sur une facture que l'ancien parcours mono-taux envoyait
+        tres bien a 900."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "TVA 19% - A&S", "tax_amount": 19.0,
+                      "add_deduct_tax": "Deduct"}], 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_une_reprise_en_DEDUCT_ne_touche_que_son_taux(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "TVA 19% - A&S", "tax_amount": 19.0,
+                      "add_deduct_tax": "Deduct"},
+                     self._tva("TVA 7% - A&S", 35.0)], 1400.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_une_retenue_SUR_TVA_n_est_pas_de_la_TVA(self):
+        """⚠️ Un compte « Retenue à la source sur TVA 25% » porte le mot ET un pourcentage. Lu
+        comme une TVA a 25 % en deduction, il rendrait la TVA nette de ce taux negative et
+        bloquerait une facture saine. C'est une retenue, elle a son propre chemin."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "Retenue à la source sur TVA 25% - A&S",
+                      "tax_amount": 47.5, "add_deduct_tax": "Deduct"}], 1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
 
     def test_la_correction_ne_touche_que_le_taux_qu_elle_vise(self):
         r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0),

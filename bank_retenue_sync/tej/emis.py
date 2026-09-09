@@ -93,8 +93,10 @@ def ventiler(lignes_taxes, net_total) -> dict:
     font 1 000 (190 / 0,19). Un prorata du HT total se tromperait des que la facture porte une
     ligne exoneree, et c'est precisement le cas que ce module doit savoir declarer.
 
-    « NETTE », parce que plusieurs lignes peuvent porter le meme taux et se corriger : +190 puis
-    −19 font 171, donc 900 de HT — pas 1 000. La somme par taux vient donc AVANT la division.
+    « NETTE », parce que plusieurs lignes peuvent porter le meme taux et se corriger : 190 puis
+    −19 font 171, donc 900 de HT — pas 1 000. La somme par taux vient donc AVANT la division, et
+    la correction compte quelle que soit sa forme — un montant negatif, ou une ligne « Deduct »,
+    qui est la façon dont ERPNext l'ecrit d'ordinaire.
 
     Le HT de la piece (`net_total`) ne sert donc pas a repartir : il sert de CONTROLE. Ce que les
     bases ne couvrent pas est exonere (operation a 0 %), ce qu'elles depassent est une incoherence
@@ -126,10 +128,16 @@ def ventiler(lignes_taxes, net_total) -> dict:
         # ⚠️ LA MEME LECTURE QUE PARTOUT AILLEURS, CASSE COMPRISE : « tva 7 % » est un compte de
         # TVA autant que « TVA 19% ». Ecarte ici, il ne formait aucune base — ses 500 DT de HT
         # partaient en operation a 0 %, et rien ne le disait.
-        if (l.get("add_deduct_tax") or "Add") != "Add" or not regles.est_compte_tva(compte):
+        if not regles.est_compte_tva(compte):
             continue
         taux = regles.taux_tva_du_compte(compte)
         montant = round(float(montant_apres_remise(l) or 0), 3)
+        # ⚠️ UNE REPRISE DE TVA S'ECRIT AUSSI EN « DEDUCT », ET C'EST MEME LA FAÇON NORMALE DE
+        # L'ECRIRE DANS ERPNEXT : le sens de la ligne EST son signe. Ecarter les « Deduct » des
+        # comptes de TVA revenait a declarer la TVA d'avant la reprise — 190 la ou la facture en
+        # porte 171, donc 1 000 de base face a 900 de HT, et un refus pour incoherence.
+        if (l.get("add_deduct_tax") or "Add") == "Deduct":
+            montant = -montant
         if taux is None:
             # Une ligne de modele restee a zero n'apprend rien et ne doit rien bloquer ; la meme
             # ligne AVEC un montant porte une TVA dont on ne sait pas le taux, et la, on refuse.
