@@ -63,6 +63,18 @@ MOT_TVA = "TVA"
 _TAUX_TVA = re.compile(r"TVA\s*(\d+)\s*%", re.IGNORECASE)
 
 
+def est_compte_tva(compte) -> bool:
+    """Ce compte porte-t-il de la TVA ? Fonction pure, INSENSIBLE A LA CASSE.
+
+    ⚠️ RECONNAITRE « TVA 19% » MAIS PAS « tva 7 % » FAIT DISPARAITRE UNE LIGNE SANS RIEN DIRE.
+    `_somme` — donc `tva_facturee` — compare deja en minuscules, et `taux_tva_du_compte` lit son
+    taux sans egard a la casse : une reconnaissance stricte a un seul endroit suffisait a faire
+    diverger la somme de TVA et la ventilation qui la repartit. La base du taux minuscule tombait
+    alors dans le reliquat et partait declaree a 0 %, sans manque pour l'annoncer.
+    """
+    return MOT_TVA.lower() in (compte or "").lower()
+
+
 def taux_tva_du_compte(compte) -> int | None:
     """Le taux de TVA que porte le NOM d'un compte, ou None. Fonction pure.
 

@@ -270,6 +270,15 @@ class TestTauxLuSurLeCompte(unittest.TestCase):
         """Elle porte un pourcentage elle aussi : sans ancrage sur « TVA », on lisait 1 %."""
         self.assertIsNone(self._t("Retenue à la source 1% - A&S"))
 
+    def test_un_compte_de_tva_se_reconnait_quelle_que_soit_la_casse(self):
+        """⚠️ `tva_facturee` compare deja en minuscules : reconnaitre « TVA 19% » mais pas
+        « tva 7 % » faisait diverger la somme de TVA et la ventilation qui la repartit."""
+        from bank_retenue_sync.achat.regles import est_compte_tva
+        for compte in ("TVA 19% - A&S", "tva 7 % - A&S", "Tva deductible"):
+            self.assertTrue(est_compte_tva(compte), compte)
+        for compte in ("4366 Achats", "Retenue à la source 1% - A&S", "", None):
+            self.assertFalse(est_compte_tva(compte), compte)
+
 
 class TestVentilationParTaux(unittest.TestCase):
     """`emis.ventiler` : le HT reparti par taux, une operation par taux.
@@ -301,6 +310,19 @@ class TestVentilationParTaux(unittest.TestCase):
     def test_deux_lignes_du_MEME_taux_ne_font_qu_une_operation(self):
         r = self._v([self._tva("TVA 19% - A&S", 100.0), self._tva("4366 TVA 19% - A&S", 90.0)],
                     1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_casse_du_compte_ne_fait_pas_disparaitre_un_taux(self):
+        """⚠️ LE FILTRE EXIGEAIT « TVA » EN MAJUSCULES, LE LECTEUR DE TAUX NON. « tva 7 % » etait
+        donc ecarte sans former de base : ses 500 DT de HT partaient declares a 0 %, sans aucun
+        manque pour le dire — une sous-declaration silencieuse."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("tva 7 % - A&S", 35.0)], 1500.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_un_mono_taux_tout_en_minuscules_se_ventile(self):
+        r = self._v([self._tva("tva 19% - a&s", 190.0)], 1000.0)
         self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
 
     def test_le_HT_exonere_part_en_operation_a_zero_pour_cent(self):
@@ -337,6 +359,12 @@ class TestVentilationParTaux(unittest.TestCase):
         r = self._v([self._tva("TVA déductible - A&S", 190.0)], 1000.0)
         self.assertEqual(r["operations"], [])
         self.assertIn("TVA déductible - A&S", r["manque"])
+
+    def test_un_taux_illisible_en_minuscules_est_dit_aussi(self):
+        """La casse ne doit pas transformer un refus explicite en operation a 0 % muette."""
+        r = self._v([self._tva("tva déductible - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("tva déductible - A&S", r["manque"])
 
     def test_la_retenue_et_le_timbre_ne_sont_pas_de_la_tva(self):
         lignes = [self._tva("TVA 19% - A&S", 190.0),

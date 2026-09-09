@@ -282,6 +282,11 @@ def _ht_et_ventilation(je, ttc):
     Le TTC est celui de la piece — retenue comprise, puisqu'elle en est deduite et non ajoutee.
     Le HT est le TTC moins TOUTES les lignes de TVA : une depense a 19 % et 7 % en porte deux, et
     n'en soustraire qu'une gonflerait le HT declare.
+
+    ⚠️ LES DEUX ETAPES DOIVENT RECONNAITRE LA MEME TVA. Ce qui est soustrait ici est exactement ce
+    qui formera une base dans `emis.ventiler` : les lignes dont le compte porte un taux lisible et
+    non nul, casse comprise. Reconnaitre « TVA 19% » ici et pas la-bas — ou l'inverse — faisait
+    d'une ligne minuscule un HT sans base, declare a 0 % en silence.
     """
     from bank_retenue_sync.tej import emis as E
 

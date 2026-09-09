@@ -158,6 +158,25 @@ class TestAdaptateurDEmission(unittest.TestCase):
         self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
                                                      {"taux_tva": 7, "montant_ht": 500.0}])
 
+    def test_la_casse_du_compte_de_TVA_ne_change_rien(self):
+        """⚠️ LES DEUX ETAPES DOIVENT RECONNAITRE LA MEME TVA. Le HT déduisait « tva 7 % » du TTC
+        pendant que la ventilation l'écartait : ses 500 DT partaient déclarés à 0 %, sans manque
+        pour le dire. Et une écriture entièrement en minuscules, jusque-là parfaitement lue,
+        serait devenue une pièce sans TVA du tout."""
+        je = self.ecriture(("Achats - A&S", 1000.0), ("TVA 19% - A&S", 190.0),
+                           ("Achats - A&S", 500.0), ("tva 7 % - A&S", 35.0))
+        ht, ventilation = F._ht_et_ventilation(je, 1725.0)
+        self.assertEqual(ht, 1500.0)
+        self.assertEqual(ventilation["manque"], "")
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                                     {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_un_mono_taux_tout_en_minuscules_reste_emettable(self):
+        je = self.ecriture(("achats - a&s", 1000.0), ("tva 19% - a&s", 190.0))
+        ht, ventilation = F._ht_et_ventilation(je, 1190.0)
+        self.assertEqual(ht, 1000.0)
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
     def test_une_ecriture_sans_ligne_de_TVA_reste_bloquee(self):
         """Sans TVA, rien ne dit comment répartir le HT : mieux vaut le dire que déclarer au
         hasard."""

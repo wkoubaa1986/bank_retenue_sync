@@ -101,7 +101,10 @@ def ventiler(lignes_taxes, net_total) -> dict:
     bases = {}
     for l in lignes_taxes or []:
         compte = l.get("account_head") or ""
-        if (l.get("add_deduct_tax") or "Add") != "Add" or regles.MOT_TVA not in compte:
+        # ⚠️ LA MEME LECTURE QUE PARTOUT AILLEURS, CASSE COMPRISE : « tva 7 % » est un compte de
+        # TVA autant que « TVA 19% ». Ecarte ici, il ne formait aucune base — ses 500 DT de HT
+        # partaient en operation a 0 %, et rien ne le disait.
+        if (l.get("add_deduct_tax") or "Add") != "Add" or not regles.est_compte_tva(compte):
             continue
         montant = round(float(l.get("tax_amount") or 0), 3)
         if montant <= 0:
