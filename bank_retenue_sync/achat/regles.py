@@ -18,6 +18,8 @@ fournisseur, et lui seul, ouvre ou ferme tout ce fichier.
 """
 from __future__ import annotations
 
+import re
+
 PAYS_LOCAL = "Tunisia"
 
 # Seuil legal : 1 % de retenue a la source sur les acquisitions de biens et services a partir de
@@ -54,6 +56,23 @@ TOLERANCE_RETENUE = 0.01
 MOT_RETENUE = "etenue"
 MOT_TIMBRE = "imbre"
 MOT_TVA = "TVA"
+
+#: Le taux vit dans le NOM du compte (« TVA 19% - A&S »), pas dans un champ. Ancre sur le mot
+#: « TVA » a dessein : « Retenue à la source 1% » porte lui aussi un pourcentage, et ce n'est pas
+#: un taux de TVA.
+_TAUX_TVA = re.compile(r"TVA\s*(\d+)\s*%", re.IGNORECASE)
+
+
+def taux_tva_du_compte(compte) -> int | None:
+    """Le taux de TVA que porte le NOM d'un compte, ou None. Fonction pure.
+
+    ⚠️ CONCATENER LES CHIFFRES DU NOM N'EST PAS LIRE UN TAUX. La version precedente
+    (`tej/emis._taux_tva`) prenait tous les chiffres du libelle : « 4366 TVA 19% » rendait 436619,
+    et la facture partait au portail avec un taux inventé — ou, plus souvent, se faisait refuser
+    parce que deux comptes numerotes differemment paraissaient porter deux taux differents.
+    """
+    m = _TAUX_TVA.search(compte or "")
+    return int(m.group(1)) if m else None
 
 
 def pdf_present(pieces_jointes) -> bool:
