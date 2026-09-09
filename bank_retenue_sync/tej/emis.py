@@ -88,10 +88,13 @@ def ventiler(lignes_taxes, net_total) -> dict:
     19 % et 7 % laissait leur retenue sans certificat — le fournisseur ne pouvait pas l'imputer.
 
     ⚠️ LA BASE SE RECONSTITUE DEPUIS LA TVA, ELLE NE SE REPARTIT PAS AU PRORATA. C'est ce que TEJ
-    demande : le HT DE CHAQUE TAUX, pas un HT global qu'il faudrait decouper. Chaque ligne de TVA
-    donne le sien en divisant son montant par son taux — 35 a 7 % font 500 de HT (35 / 0,07),
-    190 a 19 % en font 1 000 (190 / 0,19). Un prorata du HT total se tromperait des que la facture
-    porte une ligne exoneree, et c'est precisement le cas que ce module doit savoir declarer.
+    demande : le HT DE CHAQUE TAUX, pas un HT global qu'il faudrait decouper. Chaque taux donne le
+    sien en divisant SA TVA NETTE par lui — 35 a 7 % font 500 de HT (35 / 0,07), 190 a 19 % en
+    font 1 000 (190 / 0,19). Un prorata du HT total se tromperait des que la facture porte une
+    ligne exoneree, et c'est precisement le cas que ce module doit savoir declarer.
+
+    « NETTE », parce que plusieurs lignes peuvent porter le meme taux et se corriger : +190 puis
+    −19 font 171, donc 900 de HT — pas 1 000. La somme par taux vient donc AVANT la division.
 
     Le HT de la piece (`net_total`) ne sert donc pas a repartir : il sert de CONTROLE. Ce que les
     bases ne couvrent pas est exonere (operation a 0 %), ce qu'elles depassent est une incoherence
@@ -100,8 +103,9 @@ def ventiler(lignes_taxes, net_total) -> dict:
     ⚠️ ET LE HT NON COUVERT PAR UNE LIGNE DE TVA EST DECLARE A 0 %. C'est la part exoneree : la
     laisser dehors ferait calculer par TEJ une retenue inferieure a celle que porte la facture —
     le controle d'ecart apres repetition reste le garde-fou de cette hypothese. Une facture
-    ENTIEREMENT exoneree — une ligne « TVA 0 % » explicite, sans montant — se declare donc d'un
-    bloc a 0 %, comme elle le faisait avant la ventilation.
+    ENTIEREMENT exoneree — une ligne « TVA 0 % » explicite, ou un taux dont les lignes s'annulent —
+    se declare donc d'un bloc a 0 %, comme elle le faisait avant la ventilation. Seule une piece
+    SANS AUCUNE ligne de TVA lisible reste bloquee : la, on ne sait rien.
 
     ⚠️ LA TVA LUE EST CELLE D'APRES REMISE, PARCE QUE `net_total` L'EST. Une remise globale sur le
     total TTC laisse `tax_amount` a sa valeur d'avant remise et ne remplit que
@@ -112,8 +116,11 @@ def ventiler(lignes_taxes, net_total) -> dict:
     Les manques sont ecrits en clair, sans `_()` : comme `achat/regles`, cette fonction ne parle a
     personne — ni base, ni cache de traductions — et c'est ce qui la rend testable sans site.
     """
-    bases = {}
-    exoneration_declaree = False
+    # ⚠️ D'ABORD LA TVA NETTE PAR TAUX, LA BASE ENSUITE. Une facture peut porter DEUX lignes du
+    # meme taux qui se corrigent — +190 puis −19 pour une reprise, soit 171 de TVA reelle sur
+    # 900 de HT. Reconstituer la base ligne par ligne en ignorant la negative rendait 1 000 face
+    # a 900, et faisait refuser une facture parfaitement coherente.
+    montants = {}
     for l in lignes_taxes or []:
         compte = l.get("account_head") or ""
         # ⚠️ LA MEME LECTURE QUE PARTOUT AILLEURS, CASSE COMPRISE : « tva 7 % » est un compte de
@@ -123,27 +130,32 @@ def ventiler(lignes_taxes, net_total) -> dict:
             continue
         taux = regles.taux_tva_du_compte(compte)
         montant = round(float(montant_apres_remise(l) or 0), 3)
-        if montant <= 0:
-            # Une ligne sans montant ne forme aucune base. Mais un « TVA 0 % » explicite DIT
-            # quelque chose : la piece est exoneree, et c'est different de n'en rien savoir.
-            exoneration_declaree = exoneration_declaree or taux == 0
-            continue
         if taux is None:
+            # Une ligne de modele restee a zero n'apprend rien et ne doit rien bloquer ; la meme
+            # ligne AVEC un montant porte une TVA dont on ne sait pas le taux, et la, on refuse.
+            if not montant:
+                continue
             return {"operations": [],
                     "manque": "le taux de TVA ne se lit pas sur le compte « %s » : le portail "
                               "attend un taux par opération" % compte}
-        if not taux:
-            # Un montant sur une ligne a 0 % ne dit rien de sa base : elle part avec le reliquat.
-            exoneration_declaree = True
-            continue
-        # Le HT de ce taux : sa TVA divisee par lui (35 a 7 % -> 500). Deux lignes du meme taux
-        # s'additionnent — c'est un seul bloc sur le portail.
-        bases[taux] = round(bases.get(taux, 0.0) + montant * 100.0 / taux, 3)
+        montants[taux] = round(montants.get(taux, 0.0) + montant, 3)
 
-    if not bases and not exoneration_declaree:
+    if not montants:
         return {"operations": [],
                 "manque": "aucune ligne de TVA sur cette pièce : sans elle, le montant HT ne "
                           "peut pas être réparti par taux"}
+
+    bases = {}
+    for taux, tva in montants.items():
+        if tva < 0:
+            return {"operations": [],
+                    "manque": "la TVA du taux %s %% est négative (%s) : cette pièce ne se "
+                              "déclare pas en l'état" % (taux, tva)}
+        # Ni un taux 0 %, ni un taux dont les lignes s'annulent ne donnent de base a reconstituer :
+        # leur HT n'est pas perdu pour autant, il tombe dans le reliquat et part declare a 0 %.
+        if taux and tva:
+            # Le HT de ce taux : sa TVA divisee par lui (35 a 7 % -> 500).
+            bases[taux] = round(tva * 100.0 / taux, 3)
 
     ht = round(float(net_total or 0), 3)
     reliquat = round(ht - round(sum(bases.values()), 3), 3)

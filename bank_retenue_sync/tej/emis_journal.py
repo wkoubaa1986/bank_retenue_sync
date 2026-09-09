@@ -265,15 +265,20 @@ def contexte(ligne: str) -> dict:
 
 
 def _lignes_comme_taxes(je) -> list:
-    """Les lignes debitrices de l'ecriture, dans la forme des taxes d'une facture. -> [dict].
+    """Les lignes de l'ecriture, dans la forme des taxes d'une facture. -> [dict].
 
     Toutes, pas seulement celles de TVA : c'est `emis.ventiler` qui reconnait la TVA, et une seule
     lecture pour les deux chemins vaut mieux que deux qui divergeront. Les comptes de TVA
     deductible de la caisse portent leur taux dans leur NOM (« TVA 19% - A&S »), pas dans un champ.
+
+    ⚠️ LE MONTANT EST SIGNE : debit MOINS credit. Une TVA reprise passe au credit du meme compte,
+    et ne garder que les debits la ferait disparaitre — le HT reconstitue serait celui d'avant la
+    reprise, comme il l'etait sur les factures avant la somme par taux.
     """
-    return [{"account_head": a.account or "", "tax_amount": flt(a.debit),
+    return [{"account_head": a.account or "",
+             "tax_amount": round(flt(a.debit) - flt(a.credit), 3),
              "add_deduct_tax": "Add"}
-            for a in (je.accounts or []) if flt(a.debit) > 0]
+            for a in (je.accounts or [])]
 
 
 def _ht_et_ventilation(je, ttc):

@@ -343,6 +343,45 @@ class TestVentilationParTaux(unittest.TestCase):
         r = self._v([self._tva("tva 19% - a&s", 190.0)], 1000.0)
         self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
 
+    def test_une_ligne_de_TVA_NEGATIVE_corrige_celle_qui_la_precede(self):
+        """⚠️ IGNORER LES LIGNES NEGATIVES, C'EST DECLARER LA TVA D'AVANT LA REPRISE. Une facture
+        peut porter +190 puis −19 sur le meme taux : la TVA reelle vaut 171, donc 900 de HT. En ne
+        gardant que la positive, la base rendait 1 000 face a un HT de 900 et la facture se faisait
+        refuser — alors que le parcours mono-taux d'avant la ventilation envoyait bien 900 a 19 %."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0)], 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_la_correction_ne_touche_que_le_taux_qu_elle_vise(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0),
+                     self._tva("TVA 7% - A&S", 35.0)], 1400.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_un_taux_dont_les_lignes_s_annulent_declare_son_HT_a_zero_pour_cent(self):
+        """La piece porte bien de la TVA, elle n'en doit simplement plus rien : son HT se declare,
+        il ne disparait pas."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -190.0)],
+                    1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 0, "montant_ht": 1000.0}])
+
+    def test_une_TVA_nette_negative_est_dite_au_lieu_d_etre_declaree(self):
+        """Une base negative n'existe pas sur un certificat : mieux vaut refuser et le nommer."""
+        r = self._v([self._tva("TVA 19% - A&S", 100.0), self._tva("TVA 19% - A&S", -120.0)],
+                    900.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("négative", r["manque"])
+        self.assertIn("19", r["manque"])
+
+    def test_une_ligne_de_modele_restee_a_zero_ne_bloque_rien(self):
+        """Un compte de TVA au libelle sans taux (« TVA suspendue »), mais sans montant, n'apprend
+        rien : faire refuser la facture pour cette ligne-la serait un faux positif."""
+        r = self._v([self._tva("TVA suspendue - A&S", 0.0),
+                     self._tva("TVA 19% - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
     def test_le_HT_exonere_part_en_operation_a_zero_pour_cent(self):
         """Sans elle, TEJ calculerait sa retenue sur un TTC ampute de la part exoneree."""
         r = self._v([self._tva("TVA 19% - A&S", 190.0)], 1300.0)

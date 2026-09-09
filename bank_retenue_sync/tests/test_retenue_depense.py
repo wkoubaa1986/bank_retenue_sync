@@ -128,10 +128,24 @@ class TestAdaptateurDEmission(unittest.TestCase):
         self.assertIn("ctx = ctx or contexte(facture)", inspect.getsource(E.emettre))
 
     def ecriture(self, *comptes):
-        """Une écriture de journal en mémoire : (compte, débit) — rien à demander à un site."""
+        """Une écriture de journal en mémoire : (compte, débit[, crédit]) — sans site."""
         import frappe
 
-        return frappe._dict(accounts=[frappe._dict(account=c, debit=d) for c, d in comptes])
+        return frappe._dict(accounts=[
+            frappe._dict(account=l[0], debit=l[1], credit=(l[2] if len(l) > 2 else 0))
+            for l in comptes])
+
+    def test_une_TVA_reprise_AU_CREDIT_corrige_celle_du_debit(self):
+        """⚠️ NE GARDER QUE LES DÉBITS, C'EST DÉCLARER LA TVA D'AVANT LA REPRISE. Une TVA reprise
+        passe au crédit du même compte : 190 débités puis 19 crédités font 171 de TVA réelle, donc
+        900 de HT. Le montant lu est donc signé, débit moins crédit — même règle que la somme par
+        taux des factures."""
+        je = self.ecriture(("Achats - A&S", 900.0), ("TVA 19% - A&S", 190.0),
+                           ("TVA 19% - A&S", 0.0, 19.0))
+        ht, ventilation = F._ht_et_ventilation(je, 1071.0)
+        self.assertEqual(ht, 900.0)
+        self.assertEqual(ventilation["manque"], "")
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
 
     def test_le_HT_se_deduit_du_TTC_et_de_la_TVA(self):
         """Une écriture de caisse ne porte pas de « net_total » : elle porte le TTC et la ligne
