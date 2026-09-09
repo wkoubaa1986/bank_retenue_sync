@@ -127,16 +127,43 @@ class TestAdaptateurDEmission(unittest.TestCase):
         self.assertIn("ctx", inspect.signature(E.emettre).parameters)
         self.assertIn("ctx = ctx or contexte(facture)", inspect.getsource(E.emettre))
 
+    def ecriture(self, *comptes):
+        """Une écriture de journal en mémoire : (compte, débit) — rien à demander à un site."""
+        import frappe
+
+        return frappe._dict(accounts=[frappe._dict(account=c, debit=d) for c, d in comptes])
+
     def test_le_HT_se_deduit_du_TTC_et_de_la_TVA(self):
         """Une écriture de caisse ne porte pas de « net_total » : elle porte le TTC et la ligne
         de TVA. Sur ACC-JV-2026-00698 : 1 310,000 − 209,000 = 1 101,000."""
-        self.assertIn("ttc - tva", self.source(F._ht_et_taux))
+        je = self.ecriture(("Achats - A&S", 1101.0), ("TVA 19% - A&S", 209.0))
+        ht, ventilation = F._ht_et_ventilation(je, 1310.0)
+        self.assertEqual(ht, 1101.0)
+        self.assertEqual(ventilation["manque"], "")
+        # 209 de TVA à 19 % couvrent 1 100 : le dinar qui reste est le TIMBRE FISCAL, qui ne
+        # supporte pas la TVA. Il part en opération à 0 % — le TTC que TEJ recalcule reste celui
+        # de la pièce (1 100 × 1,19 + 1 = 1 310), et la retenue qu'il en tire aussi.
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1100.0},
+                                                     {"taux_tva": 0, "montant_ht": 1.0}])
 
-    def test_deux_taux_de_TVA_rendent_le_taux_indeterminable(self):
-        """TEJ n'accepte qu'un taux par opération : mieux vaut refuser que déclarer au hasard."""
-        src = self.source(F._ht_et_taux)
-        self.assertIn("taux = t if taux in (None, t) else -1", src)
-        self.assertIn("return flt(ttc - tva, 3), None", src)
+    def test_deux_taux_de_TVA_donnent_DEUX_operations(self):
+        """⚠️ « UN SEUL TAUX OU RIEN » N'ÉTAIT PAS UNE RÈGLE DE TEJ. Le portail accepte une
+        opération par taux — le service clique « + Opération » autant de fois qu'il en reçoit.
+        Bloquer ces écritures laissait leur retenue sans certificat, donc non imputable par le
+        fournisseur."""
+        je = self.ecriture(("Achats - A&S", 1000.0), ("TVA 19% - A&S", 190.0),
+                           ("Achats - A&S", 500.0), ("TVA 7% - A&S", 35.0))
+        ht, ventilation = F._ht_et_ventilation(je, 1725.0)
+        self.assertEqual(ht, 1500.0)
+        self.assertEqual(ventilation["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                                     {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_une_ecriture_sans_ligne_de_TVA_reste_bloquee(self):
+        """Sans TVA, rien ne dit comment répartir le HT : mieux vaut le dire que déclarer au
+        hasard."""
+        _, ventilation = F._ht_et_ventilation(self.ecriture(("Achats - A&S", 1310.0)), 1310.0)
+        self.assertEqual(ventilation["operations"], [])
+        self.assertIn("aucune ligne de TVA", ventilation["manque"])
 
     def test_rien_ne_part_sans_dry_run_explicite(self):
         import inspect

@@ -31,6 +31,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate
 
+from bank_retenue_sync.achat import regles
 from bank_retenue_sync.achat import retenue_depense as R
 from bank_retenue_sync.tej import depot as M_depot
 
@@ -221,14 +222,14 @@ def contexte(ligne: str) -> dict:
     premier changement du portail.
 
     ⚠️ LE HT SE DEDUIT, IL NE SE LIT PAS. Une ecriture de caisse ne porte pas de « net_total » :
-    elle porte le TTC et la ligne de TVA. Le HT est leur difference, et le taux se retrouve a
-    partir des deux — ce que TEJ exige, un taux unique par operation.
+    elle porte le TTC et ses lignes de TVA. Le HT est leur difference, et les bases par taux se
+    reconstituent depuis chaque ligne de TVA — une operation par taux, comme le wizard TEJ.
     """
     from bank_retenue_sync.tej import matricule as M
 
     doc = frappe.get_doc(DOCTYPE, ligne)
     je = frappe.get_doc("Journal Entry", doc.journal_entry)
-    ht, taux = _ht_et_taux(je, flt(doc.montant_ttc), flt(doc.retenue))
+    ht, ventilation = _ht_et_ventilation(je, flt(doc.montant_ttc))
     mat = M.normaliser(doc.matricule or "")
 
     manques = _manques(doc)
@@ -237,9 +238,8 @@ def contexte(ligne: str) -> dict:
     if not mat:
         manques.append(_("le matricule fiscal {0} n'est pas exploitable")
                        .format(doc.matricule or "?"))
-    if taux is None:
-        manques.append(_("le taux de TVA n'est pas déterminable sur cette écriture : TEJ ne "
-                         "prend qu'un taux par opération"))
+    if ventilation["manque"]:
+        manques.append(ventilation["manque"])
 
     return {
         # `facture` est le nom que `tej.emis` donne a la piece d'origine : ici c'est l'ecriture.
@@ -252,7 +252,9 @@ def contexte(ligne: str) -> dict:
         "bill_no": doc.numero_facture or "",
         "date_paiement": str(doc.date_piece or ""),
         "montant_ht": ht,
-        "taux_tva": taux,
+        "operations": ventilation["operations"],
+        "taux_tva": (ventilation["operations"][0]["taux_tva"]
+                     if len(ventilation["operations"]) == 1 else None),
         "retenue_facture": flt(doc.retenue, 3),
         # La nature de la piece : c'est elle qui permet au depot de pointer une ECRITURE.
         "piece_type": "Journal Entry",
@@ -262,26 +264,32 @@ def contexte(ligne: str) -> dict:
     }
 
 
-#: Les comptes de TVA deductible de la caisse. Le taux se lit dans leur nom, pas dans un champ.
-_TVA = re.compile(r"TVA\s*(\d+)\s*%", re.IGNORECASE)
+def _lignes_comme_taxes(je) -> list:
+    """Les lignes debitrices de l'ecriture, dans la forme des taxes d'une facture. -> [dict].
+
+    Toutes, pas seulement celles de TVA : c'est `emis.ventiler` qui reconnait la TVA, et une seule
+    lecture pour les deux chemins vaut mieux que deux qui divergeront. Les comptes de TVA
+    deductible de la caisse portent leur taux dans leur NOM (« TVA 19% - A&S »), pas dans un champ.
+    """
+    return [{"account_head": a.account or "", "tax_amount": flt(a.debit),
+             "add_deduct_tax": "Add"}
+            for a in (je.accounts or []) if flt(a.debit) > 0]
 
 
-def _ht_et_taux(je, ttc, retenue):
-    """(HT, taux de TVA) d'une ecriture de depense. -> (float, int|None).
+def _ht_et_ventilation(je, ttc):
+    """(HT, ventilation par taux) d'une ecriture de depense. -> (float, dict).
 
     Le TTC est celui de la piece — retenue comprise, puisqu'elle en est deduite et non ajoutee.
+    Le HT est le TTC moins TOUTES les lignes de TVA : une depense a 19 % et 7 % en porte deux, et
+    n'en soustraire qu'une gonflerait le HT declare.
     """
-    tva, taux = 0.0, None
-    for a in je.accounts:
-        m = _TVA.search(a.account or "")
-        if m and flt(a.debit) > 0:
-            tva += flt(a.debit)
-            t = int(m.group(1))
-            # Deux taux differents sur la meme piece : TEJ n'en prend qu'un, on rend None.
-            taux = t if taux in (None, t) else -1
-    if taux == -1:
-        return flt(ttc - tva, 3), None
-    return flt(ttc - tva, 3), taux
+    from bank_retenue_sync.tej import emis as E
+
+    lignes = _lignes_comme_taxes(je)
+    tva = sum(l["tax_amount"] for l in lignes
+              if regles.taux_tva_du_compte(l["account_head"]))
+    ht = round(flt(ttc) - tva, 3)
+    return ht, E.ventiler(lignes, ht)
 
 
 @frappe.whitelist()
@@ -575,6 +583,7 @@ def etat(journal_entry: str) -> dict:
         "matricule": doc.matricule, "numero_facture": doc.numero_facture,
         "certificat": doc.certificat, "emis_le": str(doc.emis_le or ""),
         "montant_ht": ctx["montant_ht"], "taux_tva": ctx["taux_tva"],
+        "operations": ctx["operations"],
         "manques": ctx["manques"],
         "peut_emettre": not ctx["manques"] and doc.statut != "Émis",
     }

@@ -70,24 +70,80 @@ def operation() -> str:
     return (_reglage("tej_emis_operation", "") or "").strip()
 
 
-def _taux_tva(doc) -> float | None:
-    """Le taux de TVA de la facture, ou None si elle en porte plusieurs.
+#: Sous ce reliquat, l'ecart entre le HT de la facture et la somme des bases reconstituees vient
+#: des ARRONDIS, pas d'une part exoneree : il est absorbe par la plus grosse base plutot que de
+#: partir en operation a 0 % que personne n'a voulu declarer.
+RELIQUAT_NEGLIGEABLE = 0.05
 
-    TEJ ne prend qu'UN taux par operation. Une facture a 19 % et 7 % ne se declare donc pas d'un
-    bloc — mieux vaut refuser que d'en choisir un au hasard et sous-declarer.
+
+def ventiler(lignes_taxes, net_total) -> dict:
+    """Le HT reparti par taux de TVA, et ce qui l'en empeche. Fonction pure.
+
+    -> {"operations": [{"taux_tva": int, "montant_ht": float}], "manque": str}
+
+    ⚠️ « UN SEUL TAUX OU RIEN » N'ETAIT PAS UNE REGLE DE TEJ, C'ETAIT UNE LIMITE QU'ON S'IMPOSAIT.
+    Le contrat du service (`TejCertCreateRequest.operations`, une liste sans maximum, « un bloc par
+    taux de TVA ») et le scraper, qui clique « + Opération » autant de fois qu'il y a d'operations,
+    disent l'inverse : un certificat porte AUTANT D'OPERATIONS QUE DE TAUX. Refuser les factures a
+    19 % et 7 % laissait leur retenue sans certificat — le fournisseur ne pouvait pas l'imputer.
+
+    ⚠️ LA BASE SE RECONSTITUE DEPUIS LA TVA, ELLE NE SE REPARTIT PAS AU PRORATA. La TVA de chaque
+    ligne et le taux lu sur son compte donnent la base exacte (montant × 100 / taux) ; un prorata
+    du HT total se tromperait des que la facture porte une ligne exoneree.
+
+    ⚠️ ET LE HT NON COUVERT PAR UNE LIGNE DE TVA EST DECLARE A 0 %. C'est la part exoneree : la
+    laisser dehors ferait calculer par TEJ une retenue inferieure a celle que porte la facture —
+    le controle d'ecart apres repetition reste le garde-fou de cette hypothese.
+
+    Les manques sont ecrits en clair, sans `_()` : comme `achat/regles`, cette fonction ne parle a
+    personne — ni base, ni cache de traductions — et c'est ce qui la rend testable sans site.
     """
-    lignes = [t for t in (doc.get("taxes") or [])
-              if (t.add_deduct_tax or "Add") == "Add" and regles.MOT_TVA in (t.account_head or "")]
-    if not lignes:
-        return None
-    taux = set()
-    for t in lignes:
-        # Le taux se lit sur le compte (« TVA 19% - A&S »), pas sur un ratio calcule : le ratio
-        # derape des que la facture porte une ligne exoneree.
-        chiffres = "".join(c for c in (t.account_head or "") if c.isdigit())
-        if chiffres:
-            taux.add(int(chiffres))
-    return float(next(iter(taux))) if len(taux) == 1 else None
+    bases = {}
+    for l in lignes_taxes or []:
+        compte = l.get("account_head") or ""
+        if (l.get("add_deduct_tax") or "Add") != "Add" or regles.MOT_TVA not in compte:
+            continue
+        montant = round(float(l.get("tax_amount") or 0), 3)
+        if montant <= 0:
+            continue
+        taux = regles.taux_tva_du_compte(compte)
+        if taux is None:
+            return {"operations": [],
+                    "manque": "le taux de TVA ne se lit pas sur le compte « %s » : le portail "
+                              "attend un taux par opération" % compte}
+        if not taux:
+            # Une ligne « TVA 0 % » ne dit rien de sa base : elle part avec le reliquat.
+            continue
+        bases[taux] = round(bases.get(taux, 0.0) + montant * 100.0 / taux, 3)
+
+    if not bases:
+        return {"operations": [],
+                "manque": "aucune ligne de TVA sur cette pièce : sans elle, le montant HT ne "
+                          "peut pas être réparti par taux"}
+
+    ht = round(float(net_total or 0), 3)
+    reliquat = round(ht - round(sum(bases.values()), 3), 3)
+    if reliquat < -RELIQUAT_NEGLIGEABLE:
+        return {"operations": [],
+                "manque": "la TVA ne correspond pas au HT : les bases reconstituées par taux "
+                          "totalisent %s, au-delà du HT de %s"
+                          % (round(sum(bases.values()), 3), ht)}
+
+    operations = [{"taux_tva": t, "montant_ht": b} for t, b in bases.items()]
+    if abs(reliquat) <= RELIQUAT_NEGLIGEABLE:
+        if reliquat:
+            # Un millime d'arrondi ne fait pas une part exoneree : la plus grosse base l'absorbe,
+            # et la somme des operations retombe exactement sur le HT de la piece.
+            plus_grosse = max(operations, key=lambda o: o["montant_ht"])
+            plus_grosse["montant_ht"] = round(plus_grosse["montant_ht"] + reliquat, 3)
+    else:
+        operations.append({"taux_tva": 0, "montant_ht": reliquat})
+    return {"operations": sorted(operations, key=lambda o: -o["taux_tva"]), "manque": ""}
+
+
+def ventilation_tva(lignes_taxes, net_total) -> list:
+    """La ventilation seule : [{taux_tva, montant_ht}], vide si elle est impossible. Pure."""
+    return ventiler(lignes_taxes, net_total)["operations"]
 
 
 def contexte(facture: str) -> dict:
@@ -100,7 +156,8 @@ def contexte(facture: str) -> dict:
     lignes = [{"account_head": t.account_head, "tax_amount": t.tax_amount,
                "add_deduct_tax": t.add_deduct_tax} for t in (doc.get("taxes") or [])]
     ras = regles.retenue_saisie(lignes)
-    tva = _taux_tva(doc)
+    ht = flt(doc.net_total, 3)
+    ventilation = ventiler(lignes, ht)
     tax_id = frappe.db.get_value("Supplier", doc.supplier, "tax_id")
     deja = _certificat_attache(facture)
 
@@ -117,9 +174,8 @@ def contexte(facture: str) -> dict:
     if not doc.bill_no:
         manques.append(_("le n° de facture fournisseur est vide : c'est lui que le portail "
                          "attend comme « numéro chez le déclarant »"))
-    if tva is None:
-        manques.append(_("le taux de TVA n'est pas unique sur cette facture : TEJ ne prend "
-                         "qu'un taux par opération"))
+    if ventilation["manque"]:
+        manques.append(ventilation["manque"])
     if not type_operation() or not operation():
         manques.append(_("le type et le libellé d'opération TEJ ne sont pas réglés "
                          "(Réglages Bank Retenue Sync)"))
@@ -132,8 +188,12 @@ def contexte(facture: str) -> dict:
         "matricule_saisi": tax_id or "",
         "bill_no": doc.bill_no or "",
         "date_paiement": str(doc.posting_date or ""),
-        "montant_ht": flt(doc.net_total, 3),
-        "taux_tva": tva,
+        "montant_ht": ht,
+        # Une operation par taux — et `taux_tva` ne vaut plus que pour une facture mono-taux :
+        # au-dela, aucun nombre unique ne dit la verite, et en choisir un sous-declarerait.
+        "operations": ventilation["operations"],
+        "taux_tva": (ventilation["operations"][0]["taux_tva"]
+                     if len(ventilation["operations"]) == 1 else None),
         "retenue_facture": ras,
         "exercice": getdate(doc.posting_date).year if doc.posting_date else None,
         "deja_emis": deja,
@@ -332,7 +392,17 @@ def deja_chez_tej(numero: str, mat: str, rafraichir: bool = False):
 
 
 def charge_utile(ctx: dict, date_paiement=None) -> dict:
-    """Le corps envoye au service. Pure : c'est elle qu'on relit avant de soumettre."""
+    """Le corps envoye au service. Pure : c'est elle qu'on relit avant de soumettre.
+
+    UNE OPERATION PAR TAUX DE TVA — c'est ainsi que le wizard TEJ est fait, et le service clique
+    « + Opération » autant de fois qu'il en reçoit. Tout le reste (exercice, type d'operation,
+    libelle, prise en charge, convention) est commun : une facture ne se declare pas moitie en
+    honoraires et moitie en marchandises.
+
+    Une piece mono-taux produit exactement le corps d'avant la ventilation.
+    """
+    operations = ctx.get("operations") or [{"montant_ht": ctx["montant_ht"],
+                                            "taux_tva": ctx["taux_tva"]}]
     return {
         "beneficiaire": {"type_identifiant": "Matricule fiscal",
                          "identifiant": ctx["matricule"]},
@@ -344,9 +414,9 @@ def charge_utile(ctx: dict, date_paiement=None) -> dict:
             "operation": operation(),
             "prise_en_charge": False,
             "convention": False,
-            "montant_ht": ctx["montant_ht"],
-            "taux_tva": int(ctx["taux_tva"]),
-        }],
+            "montant_ht": o["montant_ht"],
+            "taux_tva": int(o["taux_tva"]),
+        } for o in operations],
     }
 
 
@@ -549,23 +619,31 @@ def _nombre_tej(valeur):
 def montants_calcules(reponse) -> dict:
     """Ce que TEJ a calcule, extrait de la reponse du job. -> {taux, tva, ttc, retenue, net}.
 
-    Le chemin est `result.cert_create.operations[0].computed` : le service rend le job entier, et
-    les montants du portail vivent au fond. Une seule operation par certificat ici — s'il y en
-    avait plusieurs, on sommerait les retenues.
+    Le chemin est `result.cert_create.operations[].computed` : le service rend le job entier, et
+    les montants du portail vivent au fond.
+
+    ⚠️ TOUT SE SOMME SUR LES OPERATIONS, PAS SEULEMENT LA RETENUE. Un certificat multi-taux porte
+    une operation par taux : lire la TVA et le TTC de la PREMIERE seulement afficherait, en face
+    de la retenue totale, une base qui ne la justifie pas — et personne ne saurait dire si l'ecart
+    vient du portail ou de l'ecran. Le taux de retenue, lui, est le meme partout : il se lit une
+    fois.
     """
     ops = (((reponse or {}).get("cert_create") or {}).get("operations")) or []
     calculs = [(o or {}).get("computed") or {} for o in ops]
     if not calculs:
         return {}
-    retenues = [_nombre_tej(c.get("mantantRs")) for c in calculs]
-    retenues = [r for r in retenues if r is not None]
-    premier = calculs[0]
+
+    def somme(cle):
+        lus = [_nombre_tej(c.get(cle)) for c in calculs]
+        lus = [v for v in lus if v is not None]
+        return round(sum(lus), 3) if lus else None
+
     return {
-        "taux": _nombre_tej(premier.get("tauxRs")),
-        "tva": _nombre_tej(premier.get("mantantTva")),
-        "ttc": _nombre_tej(premier.get("mantantTTC")),
-        "net": _nombre_tej(premier.get("mantantNet")),
-        "retenue": round(sum(retenues), 3) if retenues else None,
+        "taux": _nombre_tej(calculs[0].get("tauxRs")),
+        "tva": somme("mantantTva"),
+        "ttc": somme("mantantTTC"),
+        "net": somme("mantantNet"),
+        "retenue": somme("mantantRs"),
     }
 
 
