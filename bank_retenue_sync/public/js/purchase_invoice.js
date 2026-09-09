@@ -56,6 +56,10 @@ function bouton_certificat(frm) {
       const $tabs = frm.$wrapper.find("ul.form-tabs").first();
       const fait = !!ctx.deja_emis;
       const dep = ctx.depot_en_cours;
+      // ⚠️ UN DÉPÔT `incertain` N'EST PAS UNE FACTURE À ÉMETTRE. On ne sait pas si la déclaration
+      // est partie : le seul geste utile est de RELIRE le portail, jamais de resoumettre. Le
+      // bouton proposait pourtant l'émission, exactement comme sur une facture vierge.
+      const inc = !fait && !dep ? ctx.depot_incertain : null;
       // ⚠️ UN BOUTON ROUGE SUR UNE DÉCLARATION DÉJÀ PARTIE INVITE AU CLIC DE TROP. Rouge veut dire
       // « à faire » ; tant qu'un dépôt est en analyse, il n'y a rien à faire qu'attendre, et
       // l'état devait se lire SANS ouvrir le dialogue.
@@ -66,8 +70,11 @@ function bouton_certificat(frm) {
           ? dep.statut === "en_envoi"
             ? __("Envoi en cours ⏳")
             : __("Dépôt en analyse ⏳")
-          : __("Certificat de retenue (TEJ)");
-      const action = () => (fait ? voir_certificat(ctx) : ouvrir_certificat(frm, ctx));
+          : inc
+            ? __("TEJ à vérifier — vérifier maintenant")
+            : __("Certificat de retenue (TEJ)");
+      const action = () =>
+        fait ? voir_certificat(ctx) : inc ? suivre_depot(frm) : ouvrir_certificat(frm, ctx);
       if (!$tabs.length) {
         // Repli : sans barre d'onglets le bouton disparaîtrait en silence, et la fonction
         // passerait pour absente.
@@ -104,6 +111,38 @@ function etat_certificat(frm, ctx) {
          "soumission identique", [ctx.doublon_annule.reference || ctx.doublon_annule.numero || "—"]),
       "orange"
     );
+  }
+  // ⚠️ LA PASTILLE ROUGE DE LA VUE LISTE N'AVAIT AUCUNE EXPLICATION SUR LA FICHE. « TEJ : à
+  // vérifier sur le portail » veut dire que la soumission ne s'est pas conclue proprement :
+  // impossible de dire si la déclaration est partie, donc la facture reste bloquée. Sans ce
+  // bandeau, l'utilisateur allait constater sur le portail que le certificat existe, revenait, et
+  // ne trouvait ici ni raison ni geste — juste un bouton rouge qui proposait de tout réémettre.
+  if (ctx.depot_incertain && !ctx.depot_en_cours) {
+    const inc = ctx.depot_incertain;
+    frm.dashboard.add_indicator(__("Certificat TEJ : à vérifier sur le portail"), "red");
+    const lignes = [
+      __(
+        "La soumission lancée le {0} ne s'est pas conclue proprement : <b>impossible de dire si la déclaration est partie</b>. La facture reste bloquée — une seconde soumission déclarerait deux fois la même retenue.",
+        [frappe.utils.escape_html((inc.soumis_le || "").substring(0, 16) || "—")]
+      ),
+    ];
+    if (inc.message) {
+      lignes.push(`<span class="text-muted">${frappe.utils.escape_html(inc.message)}</span>`);
+    }
+    lignes.push(
+      __("Dernière vérification : {0} ({1}).", [
+        frappe.utils.escape_html((inc.derniere_verification || "").substring(0, 16) || __("jamais")),
+        inc.verifications || 0,
+      ])
+    );
+    // Le suivi automatique interroge la route de statut ET, depuis le ticket #11, l'export des
+    // certificats émis : si le certificat existe sur le portail, il revient tout seul avec son PDF.
+    lignes.push(
+      __(
+        "Le suivi automatique repasse cinq fois par jour et consulte aussi l'export des certificats émis du portail : si le certificat existe, il reviendra de lui-même avec son PDF. <b>Ne resoumets pas.</b>"
+      )
+    );
+    frm.dashboard.add_comment(lignes.join("<br>"), "red", true);
   }
   const dep = ctx.depot_en_cours;
   if (!dep) return;
@@ -653,6 +692,23 @@ function suivre_depot(frm) {
               ? `<div style="color:#dc2626">${frappe.utils.escape_html(p.erreur)}</div>`
               : "") +
             `<p>${__("Rien à faire, et surtout <b>ne relance pas</b>.")}</p>`,
+        });
+        return;
+      }
+      // Ni la route de statut, ni l'export des certificats émis ne connaissent ce dépôt : le
+      // doute reste entier, et c'est la seule réponse honnête. Le dire « toujours en analyse »
+      // laisserait croire à un circuit nominal qui n'a jamais démarré.
+      if (res.statut === "incertain") {
+        frappe.msgprint({
+          title: __("Toujours incertain"),
+          indicator: "red",
+          message:
+            __(
+              "Le portail ne rend rien sur ce dépôt, et l'export des certificats émis ne porte aucun certificat pour ce n° de facture et ce matricule. <b>Impossible de dire si la déclaration est partie.</b><br><br>Si tu vois le certificat sur le portail, passe par <b>Récap retenues → Rapatrier</b> pour attacher son PDF à la facture. <b>Ne resoumets pas</b> tant que le doute existe."
+            ) +
+            (res.message
+              ? `<p class="text-muted">${frappe.utils.escape_html(res.message)}</p>`
+              : ""),
         });
         return;
       }
