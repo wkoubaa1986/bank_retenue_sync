@@ -212,9 +212,427 @@ class TestMontantsCalculesParTej(unittest.TestCase):
             {"computed": {"mantantRs": "10,000"}}, {"computed": {"mantantRs": "5,500"}}]}})
         self.assertEqual(r["retenue"], 15.5)
 
+    def test_plusieurs_operations_la_TVA_et_le_TTC_se_somment_aussi(self):
+        """⚠️ Un certificat multi-taux porte une operation par taux. Lire la TVA et le TTC de la
+        PREMIERE seulement affichait, en face de la retenue totale, une base qui ne la justifiait
+        pas — et personne n'aurait pu dire d'ou venait l'ecart."""
+        r = self._m({"cert_create": {"operations": [
+            {"computed": {"tauxRs": "1", "mantantTva": "190,000", "mantantTTC": "1 190,000",
+                          "mantantRs": "11,900", "mantantNet": "1 178,100"}},
+            {"computed": {"tauxRs": "1", "mantantTva": "35,000", "mantantTTC": "535,000",
+                          "mantantRs": "5,350", "mantantNet": "529,650"}}]}})
+        self.assertEqual(r["tva"], 225.0)
+        self.assertEqual(r["ttc"], 1725.0)
+        self.assertEqual(r["retenue"], 17.25)
+        self.assertEqual(r["net"], 1707.75)
+        # Le taux de retenue est le meme partout : il se lit une fois, il ne se somme pas.
+        self.assertEqual(r["taux"], 1.0)
+
+    def test_un_montant_illisible_n_annule_pas_les_autres(self):
+        r = self._m({"cert_create": {"operations": [
+            {"computed": {"mantantTva": "190,000"}}, {"computed": {"mantantTva": "—"}}]}})
+        self.assertEqual(r["tva"], 190.0)
+        self.assertIsNone(r["ttc"])
+
     def test_aucune_operation_rend_un_dict_vide(self):
         self.assertEqual(self._m({"cert_create": {}}), {})
         self.assertEqual(self._m({}), {})
+
+
+class TestTauxLuSurLeCompte(unittest.TestCase):
+    """`regles.taux_tva_du_compte` : le taux vit dans le NOM du compte, pas dans un champ.
+
+    ⚠️ LA VERSION PRECEDENTE CONCATENAIT TOUS LES CHIFFRES DU LIBELLE : « 4366 TVA 19% » rendait
+    436619. Sur un plan comptable ou les comptes de TVA sont numerotes, deux comptes du meme taux
+    paraissaient porter deux taux differents — et la facture etait refusee « taux non unique »
+    alors qu'elle n'avait qu'un seul taux.
+    """
+
+    def _t(self, compte):
+        from bank_retenue_sync.achat.regles import taux_tva_du_compte
+        return taux_tva_du_compte(compte)
+
+    def test_le_compte_reel_de_prod(self):
+        self.assertEqual(self._t("TVA 19% - A&S"), 19)
+
+    def test_le_numero_de_compte_ne_pollue_plus_le_taux(self):
+        self.assertEqual(self._t("4366 TVA 19% - A&S"), 19)
+
+    def test_les_espaces_et_la_casse_ne_changent_rien(self):
+        self.assertEqual(self._t("tva 7 % - A&S"), 7)
+
+    def test_un_compte_sans_tva_ne_rend_rien(self):
+        self.assertIsNone(self._t("4366 Achats"))
+        self.assertIsNone(self._t(""))
+        self.assertIsNone(self._t(None))
+
+    def test_la_retenue_a_la_source_n_est_pas_un_taux_de_tva(self):
+        """Elle porte un pourcentage elle aussi : sans ancrage sur « TVA », on lisait 1 %."""
+        self.assertIsNone(self._t("Retenue à la source 1% - A&S"))
+
+    def test_un_compte_de_tva_se_reconnait_quelle_que_soit_la_casse(self):
+        """⚠️ `tva_facturee` compare deja en minuscules : reconnaitre « TVA 19% » mais pas
+        « tva 7 % » faisait diverger la somme de TVA et la ventilation qui la repartit."""
+        from bank_retenue_sync.achat.regles import est_compte_tva
+        for compte in ("TVA 19% - A&S", "tva 7 % - A&S", "Tva deductible"):
+            self.assertTrue(est_compte_tva(compte), compte)
+        for compte in ("4366 Achats", "Retenue à la source 1% - A&S", "", None,
+                       # Il porte le mot et un pourcentage, mais c'est une retenue : lu comme une
+                       # TVA a 25 %, il ferait naitre une base que la facture ne porte pas.
+                       "Retenue à la source sur TVA 25% - A&S"):
+            self.assertFalse(est_compte_tva(compte), compte)
+
+
+class TestVentilationParTaux(unittest.TestCase):
+    """`emis.ventiler` : le HT reparti par taux, une operation par taux.
+
+    ⚠️ « UN SEUL TAUX OU RIEN » N'ETAIT PAS UNE REGLE DE TEJ. Le contrat du service
+    (`TejCertCreateRequest.operations`, liste sans maximum, « un bloc par taux de TVA ») et le
+    scraper, qui clique « + Opération » autant de fois qu'il reçoit d'operations, disent l'inverse.
+    Refuser les factures a 19 % et 7 % laissait leur retenue sans certificat.
+    """
+
+    def _v(self, lignes, ht):
+        from bank_retenue_sync.tej.emis import ventiler
+        return ventiler(lignes, ht)
+
+    def _tva(self, compte, montant):
+        return {"account_head": compte, "tax_amount": montant, "add_deduct_tax": "Add"}
+
+    def test_deux_taux_donnent_deux_operations_du_plus_fort_au_plus_faible(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)], 1500.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_le_HT_de_chaque_taux_est_sa_TVA_DIVISEE_par_son_taux(self):
+        """La regle, dite par l'utilisateur le 09/09/2026 : « TVA 7 % = 35, alors le HT pour 7 %
+        est 35 / 0,07 ; meme logique pour 19 % — lorsqu'on envoie a TEJ, elle a besoin du HT par
+        rapport a chaque TVA ». C'est bien ce que fait la ventilation, et ce test l'y attache."""
+        lignes = [self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)]
+        operations = self._v(lignes, 1500.0)["operations"]
+        # `round` au millime, comme la ventilation : 35 / 0,07 vaut 499,999999… en flottant.
+        self.assertEqual({o["taux_tva"]: o["montant_ht"] for o in operations},
+                         {19: round(190.0 / 0.19, 3), 7: round(35.0 / 0.07, 3)})
+        self.assertEqual([o["montant_ht"] for o in operations], [1000.0, 500.0])
+
+    def test_chaque_base_redonne_exactement_la_TVA_de_sa_ligne(self):
+        """Le chemin inverse, celui que le portail refera : base × taux = la TVA de la facture."""
+        lignes = [self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)]
+        rendu = {o["taux_tva"]: round(o["montant_ht"] * o["taux_tva"] / 100.0, 3)
+                 for o in self._v(lignes, 1500.0)["operations"]}
+        self.assertEqual(rendu, {19: 190.0, 7: 35.0})
+
+    def test_la_base_se_reconstitue_depuis_la_tva_pas_au_prorata(self):
+        """Un prorata du HT total se tromperait des que la facture porte une ligne exoneree."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_deux_lignes_du_MEME_taux_ne_font_qu_une_operation(self):
+        r = self._v([self._tva("TVA 19% - A&S", 100.0), self._tva("4366 TVA 19% - A&S", 90.0)],
+                    1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_casse_du_compte_ne_fait_pas_disparaitre_un_taux(self):
+        """⚠️ LE FILTRE EXIGEAIT « TVA » EN MAJUSCULES, LE LECTEUR DE TAUX NON. « tva 7 % » etait
+        donc ecarte sans former de base : ses 500 DT de HT partaient declares a 0 %, sans aucun
+        manque pour le dire — une sous-declaration silencieuse."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("tva 7 % - A&S", 35.0)], 1500.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_un_mono_taux_tout_en_minuscules_se_ventile(self):
+        r = self._v([self._tva("tva 19% - a&s", 190.0)], 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_une_ligne_de_TVA_NEGATIVE_corrige_celle_qui_la_precede(self):
+        """⚠️ IGNORER LES LIGNES NEGATIVES, C'EST DECLARER LA TVA D'AVANT LA REPRISE. Une facture
+        peut porter +190 puis −19 sur le meme taux : la TVA reelle vaut 171, donc 900 de HT. En ne
+        gardant que la positive, la base rendait 1 000 face a un HT de 900 et la facture se faisait
+        refuser — alors que le parcours mono-taux d'avant la ventilation envoyait bien 900 a 19 %."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0)], 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_une_reprise_de_TVA_en_DEDUCT_corrige_la_ligne_qu_elle_vise(self):
+        """⚠️ « DEDUCT » EST LA FAÇON NORMALE D'ECRIRE UNE REPRISE DANS ERPNEXT : le sens de la
+        ligne EST son signe. Ecarter les « Deduct » des comptes de TVA revenait a declarer la TVA
+        d'avant la reprise — 190 la ou la facture en porte 171, donc 1 000 de base face a 900 de
+        HT, et un refus pour incoherence sur une facture que l'ancien parcours mono-taux envoyait
+        tres bien a 900."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "TVA 19% - A&S", "tax_amount": 19.0,
+                      "add_deduct_tax": "Deduct"}], 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_une_reprise_en_DEDUCT_ne_touche_que_son_taux(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "TVA 19% - A&S", "tax_amount": 19.0,
+                      "add_deduct_tax": "Deduct"},
+                     self._tva("TVA 7% - A&S", 35.0)], 1400.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_une_retenue_SUR_TVA_n_est_pas_de_la_TVA(self):
+        """⚠️ Un compte « Retenue à la source sur TVA 25% » porte le mot ET un pourcentage. Lu
+        comme une TVA a 25 % en deduction, il rendrait la TVA nette de ce taux negative et
+        bloquerait une facture saine. C'est une retenue, elle a son propre chemin."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0),
+                     {"account_head": "Retenue à la source sur TVA 25% - A&S",
+                      "tax_amount": 47.5, "add_deduct_tax": "Deduct"}], 1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_correction_ne_touche_que_le_taux_qu_elle_vise(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -19.0),
+                     self._tva("TVA 7% - A&S", 35.0)], 1400.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 500.0}])
+
+    def test_un_taux_dont_les_lignes_s_annulent_declare_son_HT_a_zero_pour_cent(self):
+        """La piece porte bien de la TVA, elle n'en doit simplement plus rien : son HT se declare,
+        il ne disparait pas."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 19% - A&S", -190.0)],
+                    1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 0, "montant_ht": 1000.0}])
+
+    def test_une_TVA_nette_negative_est_dite_au_lieu_d_etre_declaree(self):
+        """Une base negative n'existe pas sur un certificat : mieux vaut refuser et le nommer."""
+        r = self._v([self._tva("TVA 19% - A&S", 100.0), self._tva("TVA 19% - A&S", -120.0)],
+                    900.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("négative", r["manque"])
+        self.assertIn("19", r["manque"])
+
+    def test_une_ligne_de_modele_restee_a_zero_ne_bloque_rien(self):
+        """Un compte de TVA au libelle sans taux (« TVA suspendue »), mais sans montant, n'apprend
+        rien : faire refuser la facture pour cette ligne-la serait un faux positif."""
+        r = self._v([self._tva("TVA suspendue - A&S", 0.0),
+                     self._tva("TVA 19% - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_le_HT_exonere_part_en_operation_a_zero_pour_cent(self):
+        """Sans elle, TEJ calculerait sa retenue sur un TTC ampute de la part exoneree."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0)], 1300.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0},
+                                           {"taux_tva": 0, "montant_ht": 300.0}])
+
+    def test_un_reliquat_d_arrondi_est_absorbe_par_la_plus_grosse_base(self):
+        """Un millime ne fait pas une part exoneree : la somme des bases retombe sur le HT.
+
+        C'est le SEUL endroit ou la base d'un taux s'ecarte de « sa TVA divisee par son taux », et
+        l'ecart y est borne a 0,05 DT. Sans cette absorption, un arrondi de quelques millimes
+        ferait naitre une operation a 0 % de 4 centimes sur le certificat ; et sur une facture
+        mono-taux, c'est elle qui garantit que le HT declare reste EXACTEMENT celui de la piece,
+        comme avant la ventilation."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0), self._tva("TVA 7% - A&S", 35.0)],
+                    1500.04)
+        self.assertEqual([o["taux_tva"] for o in r["operations"]], [19, 7])
+        self.assertEqual(round(sum(o["montant_ht"] for o in r["operations"]), 3), 1500.04)
+        self.assertEqual(r["operations"][0]["montant_ht"], 1000.04)
+
+    def test_un_reliquat_negatif_d_arrondi_est_absorbe_aussi(self):
+        r = self._v([self._tva("TVA 19% - A&S", 190.0)], 999.97)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 999.97}])
+
+    def test_une_tva_incoherente_avec_le_HT_ne_se_ventile_pas(self):
+        """Le HT ne couvre pas les bases : declarer au hasard vaudrait moins qu'un refus."""
+        r = self._v([self._tva("TVA 19% - A&S", 190.0)], 800.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("TVA ne correspond pas au HT", r["manque"])
+
+    def test_une_exoneration_EXPLICITE_declare_tout_le_HT_a_zero_pour_cent(self):
+        """⚠️ NE PAS CONFONDRE « EXONERE » ET « ON N'EN SAIT RIEN ». Une facture portant une ligne
+        « TVA 0% » sans montant s'emettait tres bien avant la ventilation — tout le HT a 0 %, un
+        taux que le contrat du service accepte. La refuser pour « aucune ligne de TVA » aurait
+        bloque une facture que rien n'empeche de declarer."""
+        r = self._v([self._tva("TVA 0% - A&S", 0.0)], 1200.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 0, "montant_ht": 1200.0}])
+
+    def test_une_exoneration_explicite_sur_un_HT_nul_est_dite(self):
+        """Le service exige au moins une operation : un certificat vide ne s'envoie pas."""
+        r = self._v([self._tva("TVA 0% - A&S", 0.0)], 0.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("montant HT est nul", r["manque"])
+
+    def test_sans_aucune_ligne_de_tva_rien_ne_se_ventile(self):
+        r = self._v([{"account_head": "Retenue à la source - A&S", "tax_amount": 12.0,
+                      "add_deduct_tax": "Deduct"}], 1200.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("aucune ligne de TVA", r["manque"])
+
+    def test_un_taux_illisible_est_dit_au_lieu_d_etre_devine(self):
+        r = self._v([self._tva("TVA déductible - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("TVA déductible - A&S", r["manque"])
+
+    def test_un_taux_illisible_en_minuscules_est_dit_aussi(self):
+        """La casse ne doit pas transformer un refus explicite en operation a 0 % muette."""
+        r = self._v([self._tva("tva déductible - A&S", 190.0)], 1000.0)
+        self.assertEqual(r["operations"], [])
+        self.assertIn("tva déductible - A&S", r["manque"])
+
+    def test_la_retenue_et_le_timbre_ne_sont_pas_de_la_tva(self):
+        lignes = [self._tva("TVA 19% - A&S", 190.0),
+                  self._tva("Timbre fiscal - A&S", 1.0),
+                  {"account_head": "Retenue à la source 1% - A&S", "tax_amount": 11.9,
+                   "add_deduct_tax": "Deduct"}]
+        self.assertEqual(self._v(lignes, 1000.0)["operations"],
+                         [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_ventilation_seule_est_accessible(self):
+        from bank_retenue_sync.tej.emis import ventilation_tva
+        self.assertEqual(ventilation_tva([self._tva("TVA 19% - A&S", 190.0)], 1000.0),
+                         [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+
+class TestRemiseGlobale(unittest.TestCase):
+    """⚠️ `tax_amount` EST LA TVA D'AVANT LA REMISE GLOBALE, `net_total` EST LE HT D'APRES.
+
+    Quand la remise porte sur le total, ERPNext la repartit sur le net des articles, recalcule
+    `net_total` et `tax_amount_after_discount_amount`, mais LAISSE `tax_amount` a sa valeur
+    d'origine. Reconstituer la base sur `tax_amount` rendait 1 000 face a un HT de 900 : une
+    facture parfaitement coherente se faisait refuser « la TVA ne correspond pas au HT », la ou
+    l'ancien code declarait simplement 900 a 19 %.
+
+    On part de la table des taxes telle que `contexte` la lit — c'est le seul moyen de verifier,
+    sans site, que le bon montant arrive jusqu'a la ventilation.
+    """
+
+    def taxes(self, *lignes):
+        """La table des taxes d'une facture : (compte, tax_amount, apres_remise, sens)."""
+        import frappe
+
+        return [frappe._dict(account_head=c, tax_amount=brut,
+                             tax_amount_after_discount_amount=apres, add_deduct_tax=sens)
+                for c, brut, apres, sens in lignes]
+
+    def _ventiler(self, taxes, net_total):
+        from bank_retenue_sync.tej.emis import taxes_lues, ventiler
+        return ventiler(taxes_lues(taxes), net_total)
+
+    def test_mono_taux_la_base_suit_le_HT_apres_remise(self):
+        """1 000 HT ramenes a 900 : 171 de TVA apres remise, 190 avant."""
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add")), 900.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0}])
+
+    def test_multi_taux_chaque_base_suit_sa_TVA_apres_remise(self):
+        """Sans cela, la repartition entre les taux serait fausse en silence."""
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add"),
+                                      ("TVA 7% - A&S", 35.0, 31.5, "Add")), 1350.0)
+        self.assertEqual(r["manque"], "")
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 900.0},
+                                           {"taux_tva": 7, "montant_ht": 450.0}])
+
+    def test_sans_remise_les_deux_montants_sont_egaux_et_rien_ne_change(self):
+        r = self._ventiler(self.taxes(("TVA 19% - A&S", 190.0, 190.0, "Add")), 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_un_montant_apres_remise_absent_laisse_le_montant_brut_faire_foi(self):
+        """Une ecriture de journal n'a pas de remise : la cle n'existe pas chez elle."""
+        from bank_retenue_sync.tej.emis import ventiler
+        r = ventiler([{"account_head": "TVA 19% - A&S", "tax_amount": 190.0,
+                       "add_deduct_tax": "Add"}], 1000.0)
+        self.assertEqual(r["operations"], [{"taux_tva": 19, "montant_ht": 1000.0}])
+
+    def test_la_retenue_saisie_continue_de_se_lire_sur_le_montant_BRUT(self):
+        """⚠️ LE CALCUL DE LA RETENUE NE BOUGE PAS. Il precede la ventilation et sert de reference
+        au controle d'ecart apres repetition : le changer ici deplacerait le garde-fou lui-meme."""
+        from bank_retenue_sync.achat import regles
+        from bank_retenue_sync.tej.emis import taxes_lues
+
+        lignes = taxes_lues(self.taxes(("TVA 19% - A&S", 190.0, 171.0, "Add"),
+                                       ("Retenue à la source 1% - A&S", 11.9, 10.71, "Deduct")))
+        self.assertEqual(regles.retenue_saisie(lignes), 11.9)
+        self.assertEqual(regles.tva_facturee(lignes), 190.0)
+
+
+class TestChargeUtile(unittest.TestCase):
+    """`emis.charge_utile` : le corps envoye au service, une operation par taux.
+
+    ⚠️ UNE PIECE MONO-TAUX DOIT PRODUIRE EXACTEMENT LE CORPS D'AVANT LA VENTILATION. Ce qui part
+    au portail est declaratif et irreversible : le changement ne doit rien deplacer pour les
+    factures qui passaient deja.
+    """
+
+    CTX = {"matricule": "1802542W", "date_paiement": "2026-08-13", "bill_no": "26FA01134",
+           "exercice": 2026, "montant_ht": 1000.0, "taux_tva": 19,
+           "operations": [{"taux_tva": 19, "montant_ht": 1000.0}]}
+
+    def _c(self, ctx, date_paiement=None):
+        from unittest import mock
+
+        from bank_retenue_sync.tej import emis
+        with mock.patch.object(emis, "type_operation", return_value="Honoraires"), \
+             mock.patch.object(emis, "operation", return_value="soumis à l'IS au taux de 15%"):
+            return emis.charge_utile(ctx, date_paiement)
+
+    def test_une_operation_le_corps_est_celui_d_avant(self):
+        self.assertEqual(self._c(self.CTX), {
+            "beneficiaire": {"type_identifiant": "Matricule fiscal", "identifiant": "1802542W"},
+            "date_paiement": "2026-08-13",
+            "numero_chez_declarant": "26FA01134",
+            "operations": [{"exercice": 2026, "type_operation": "Honoraires",
+                            "operation": "soumis à l'IS au taux de 15%",
+                            "prise_en_charge": False, "convention": False,
+                            "montant_ht": 1000.0, "taux_tva": 19}]})
+
+    def test_deux_taux_donnent_deux_operations_de_meme_nature(self):
+        """Une facture ne se declare pas moitie en honoraires et moitie en marchandises : seuls
+        le HT et le taux changent d'une operation a l'autre."""
+        corps = self._c(dict(self.CTX, taux_tva=None,
+                             operations=[{"taux_tva": 19, "montant_ht": 1000.0},
+                                         {"taux_tva": 7, "montant_ht": 500.0}]))
+        ops = corps["operations"]
+        self.assertEqual(len(ops), 2)
+        self.assertEqual([o["taux_tva"] for o in ops], [19, 7])
+        self.assertEqual([o["montant_ht"] for o in ops], [1000.0, 500.0])
+        for o in ops:
+            self.assertEqual(o["exercice"], 2026)
+            self.assertEqual(o["type_operation"], "Honoraires")
+            self.assertEqual(o["operation"], "soumis à l'IS au taux de 15%")
+
+    def test_ce_qui_part_a_TEJ_porte_le_HT_DE_CHAQUE_TAUX(self):
+        """De la table des taxes jusqu'au corps envoye, sans rien deviner au passage.
+
+        C'est ce dont le portail a besoin : un bloc par taux, chacun avec SON HT. Une facture a
+        1 000 HT a 19 % et 500 a 7 % part donc en deux operations de 1 000 et 500 — et le portail,
+        qui recalcule la TVA de chaque bloc, retrouve les 190 et 35 de la facture."""
+        from bank_retenue_sync.tej.emis import taxes_lues, ventiler
+
+        import frappe
+
+        taxes = [frappe._dict(account_head=c, tax_amount=m,
+                              tax_amount_after_discount_amount=m, add_deduct_tax="Add")
+                 for c, m in (("TVA 19% - A&S", 190.0), ("TVA 7% - A&S", 35.0))]
+        ventilation = ventiler(taxes_lues(taxes), 1500.0)
+        corps = self._c(dict(self.CTX, taux_tva=None, montant_ht=1500.0,
+                             operations=ventilation["operations"]))
+        self.assertEqual([(o["montant_ht"], o["taux_tva"]) for o in corps["operations"]],
+                         [(1000.0, 19), (500.0, 7)])
+        self.assertEqual(sum(o["montant_ht"] for o in corps["operations"]), 1500.0)
+        self.assertEqual([round(o["montant_ht"] * o["taux_tva"] / 100.0, 3)
+                          for o in corps["operations"]], [190.0, 35.0])
+
+    def test_le_taux_part_en_entier(self):
+        """Le contrat du service veut un `int` : « 19.0 » ferait echouer la validation."""
+        corps = self._c(dict(self.CTX, operations=[{"taux_tva": 19.0, "montant_ht": 1000.0}]))
+        self.assertIsInstance(corps["operations"][0]["taux_tva"], int)
+
+    def test_un_contexte_sans_ventilation_reste_emettable(self):
+        """Repli sur `montant_ht`/`taux_tva` : un appelant d'avant le changement ne casse pas."""
+        ctx = {k: v for k, v in self.CTX.items() if k != "operations"}
+        self.assertEqual(self._c(ctx)["operations"][0]["montant_ht"], 1000.0)
+
+    def test_la_date_declaree_prime_sur_celle_de_la_piece(self):
+        self.assertEqual(self._c(self.CTX, "2026-09-01")["date_paiement"], "2026-09-01")
 
 
 class TestCleIdempotence(unittest.TestCase):

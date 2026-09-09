@@ -242,14 +242,31 @@ function ouvrir_certificat(frm, ctx) {
         ctx.fournisseur_nom || ctx.fournisseur
       )}</b> — ${__("matricule")} ${frappe.utils.escape_html(ctx.matricule)}</td></tr>
       <tr><td>${__("N° chez le déclarant")}</td><td>${frappe.utils.escape_html(ctx.bill_no)}</td></tr>
-      <tr><td>${__("Montant HT / TVA")}</td><td>${format_currency(ctx.montant_ht, dev)} · ${
-    ctx.taux_tva
-  } %</td></tr>
+      ${
+        // ⚠️ UNE LIGNE PAR TAUX : le certificat porte une OPÉRATION par taux de TVA, et c'est ce
+        // découpage-là qui part au portail. Afficher un seul « HT · taux % » sur une facture à
+        // 19 % et 7 % ferait relire autre chose que ce qui est envoyé.
+        (ctx.operations || []).map(
+          (o) =>
+            `<tr><td>${__("Montant HT · TVA")}</td><td>${format_currency(
+              o.montant_ht,
+              dev
+            )} · ${o.taux_tva} %</td></tr>`
+        ).join("")
+      }
       <tr><td>${__("Retenue portée par la facture")}</td><td><b>${format_currency(
     ctx.retenue_facture,
     dev
   )}</b></td></tr>
     </table>
+    ${
+      (ctx.operations || []).length > 1
+        ? `<p class="text-muted">${__(
+            "Ce certificat portera {0} opérations — une par taux de TVA, comme le fait la saisie manuelle sur le portail. Répétez d'abord : c'est TEJ qui calcule la retenue de chacune.",
+            [ctx.operations.length]
+          )}</p>`
+        : ""
+    }
     <p class="text-muted">${__(
       "La répétition remplit le formulaire TEJ et relève les montants que le portail calcule, sans valider. Elle est là pour confronter ce que dit l'administration à ce que porte la facture."
     )}</p>`);

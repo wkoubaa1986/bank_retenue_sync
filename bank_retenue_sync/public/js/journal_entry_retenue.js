@@ -77,6 +77,20 @@ function fenetre(frm, etat) {
     <tr><td>${__("Montant HT")}</td><td class="text-right">${M(etat.montant_ht)}</td>
         <td>${__("Taux de TVA")}</td>
         <td class="text-right">${etat.taux_tva == null ? "—" : etat.taux_tva + " %"}</td></tr>
+    ${
+      // ⚠️ UNE LIGNE PAR TAUX quand l'écriture en porte plusieurs : le certificat portera une
+      // OPÉRATION par taux, et c'est ce découpage qui part au portail. Un « — » à la place du
+      // taux ne dirait plus rien de ce qui est déclaré.
+      (etat.operations || []).length > 1
+        ? (etat.operations || [])
+            .map(
+              (o) => `<tr><td>${__("dont HT à {0} %", [o.taux_tva])}</td>
+        <td class="text-right">${M(o.montant_ht)}</td>
+        <td colspan="2" class="text-muted">${__("une opération du certificat")}</td></tr>`
+            )
+            .join("")
+        : ""
+    }
     <tr><td>${__("Matricule fiscal")}</td>
         <td class="text-right" colspan="3">${frappe.utils.escape_html(etat.matricule || "—")}</td></tr>
     ${etat.certificat ? `<tr><td>${__("Certificat")}</td>

@@ -31,6 +31,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate
 
+from bank_retenue_sync.achat import regles
 from bank_retenue_sync.achat import retenue_depense as R
 from bank_retenue_sync.tej import depot as M_depot
 
@@ -221,14 +222,14 @@ def contexte(ligne: str) -> dict:
     premier changement du portail.
 
     ⚠️ LE HT SE DEDUIT, IL NE SE LIT PAS. Une ecriture de caisse ne porte pas de « net_total » :
-    elle porte le TTC et la ligne de TVA. Le HT est leur difference, et le taux se retrouve a
-    partir des deux — ce que TEJ exige, un taux unique par operation.
+    elle porte le TTC et ses lignes de TVA. Le HT est leur difference, et les bases par taux se
+    reconstituent depuis chaque ligne de TVA — une operation par taux, comme le wizard TEJ.
     """
     from bank_retenue_sync.tej import matricule as M
 
     doc = frappe.get_doc(DOCTYPE, ligne)
     je = frappe.get_doc("Journal Entry", doc.journal_entry)
-    ht, taux = _ht_et_taux(je, flt(doc.montant_ttc), flt(doc.retenue))
+    ht, ventilation = _ht_et_ventilation(je, flt(doc.montant_ttc))
     mat = M.normaliser(doc.matricule or "")
 
     manques = _manques(doc)
@@ -237,9 +238,8 @@ def contexte(ligne: str) -> dict:
     if not mat:
         manques.append(_("le matricule fiscal {0} n'est pas exploitable")
                        .format(doc.matricule or "?"))
-    if taux is None:
-        manques.append(_("le taux de TVA n'est pas déterminable sur cette écriture : TEJ ne "
-                         "prend qu'un taux par opération"))
+    if ventilation["manque"]:
+        manques.append(ventilation["manque"])
 
     return {
         # `facture` est le nom que `tej.emis` donne a la piece d'origine : ici c'est l'ecriture.
@@ -252,7 +252,9 @@ def contexte(ligne: str) -> dict:
         "bill_no": doc.numero_facture or "",
         "date_paiement": str(doc.date_piece or ""),
         "montant_ht": ht,
-        "taux_tva": taux,
+        "operations": ventilation["operations"],
+        "taux_tva": (ventilation["operations"][0]["taux_tva"]
+                     if len(ventilation["operations"]) == 1 else None),
         "retenue_facture": flt(doc.retenue, 3),
         # La nature de la piece : c'est elle qui permet au depot de pointer une ECRITURE.
         "piece_type": "Journal Entry",
@@ -262,26 +264,53 @@ def contexte(ligne: str) -> dict:
     }
 
 
-#: Les comptes de TVA deductible de la caisse. Le taux se lit dans leur nom, pas dans un champ.
-_TVA = re.compile(r"TVA\s*(\d+)\s*%", re.IGNORECASE)
+def _lignes_comme_taxes(je) -> list:
+    """Les lignes de l'ecriture, dans la forme des taxes d'une facture. -> [dict].
+
+    Toutes, pas seulement celles de TVA : c'est `emis.ventiler` qui reconnait la TVA, et une seule
+    lecture pour les deux chemins vaut mieux que deux qui divergeront. Les comptes de TVA
+    deductible de la caisse portent leur taux dans leur NOM (« TVA 19% - A&S »), pas dans un champ.
+
+    ⚠️ LE MONTANT EST SIGNE : debit MOINS credit. Une TVA reprise passe au credit du meme compte,
+    et ne garder que les debits la ferait disparaitre — le HT reconstitue serait celui d'avant la
+    reprise, comme il l'etait sur les factures avant la somme par taux.
+    """
+    return [{"account_head": a.account or "",
+             "tax_amount": round(flt(a.debit) - flt(a.credit), 3),
+             "add_deduct_tax": "Add"}
+            for a in (je.accounts or [])]
 
 
-def _ht_et_taux(je, ttc, retenue):
-    """(HT, taux de TVA) d'une ecriture de depense. -> (float, int|None).
+def porte_une_base_de_tva(compte) -> bool:
+    """Ce compte formera-t-il une base dans `emis.ventiler` ? Fonction pure.
+
+    ⚠️ LA SEULE DEFINITION, POUR LES DEUX ETAPES. Le HT se deduit de ce que la ventilation saura
+    repartir : tout ce que l'un reconnait et pas l'autre finit en operation fantome a 0 %, ou en
+    HT gonfle. Les deux conditions sont donc dites une fois et lues deux fois — un compte de TVA
+    (`est_compte_tva`, qui ecarte les retenues SUR TVA) portant un taux lisible et non nul.
+    """
+    return regles.est_compte_tva(compte) and bool(regles.taux_tva_du_compte(compte))
+
+
+def _ht_et_ventilation(je, ttc):
+    """(HT, ventilation par taux) d'une ecriture de depense. -> (float, dict).
 
     Le TTC est celui de la piece — retenue comprise, puisqu'elle en est deduite et non ajoutee.
+    Le HT est le TTC moins TOUTES les lignes de TVA : une depense a 19 % et 7 % en porte deux, et
+    n'en soustraire qu'une gonflerait le HT declare.
+
+    ⚠️ LES DEUX ETAPES RECONNAISSENT LA MEME TVA, ET UNE SEULE FONCTION LE DIT. Cette exigence a
+    ete prise en defaut deux fois : sur la casse du libelle, puis sur la retenue SUR TVA — un
+    compte « Retenue à la source sur TVA 25% » credite de 47,500 etait soustrait du TTC ici, mais
+    refuse par la ventilation la-bas, qui rendait alors une operation fantome de 47,500 a 0 % a
+    cote des 1 000 a 19 %. `porte_une_base_de_tva` est desormais le seul juge.
     """
-    tva, taux = 0.0, None
-    for a in je.accounts:
-        m = _TVA.search(a.account or "")
-        if m and flt(a.debit) > 0:
-            tva += flt(a.debit)
-            t = int(m.group(1))
-            # Deux taux differents sur la meme piece : TEJ n'en prend qu'un, on rend None.
-            taux = t if taux in (None, t) else -1
-    if taux == -1:
-        return flt(ttc - tva, 3), None
-    return flt(ttc - tva, 3), taux
+    from bank_retenue_sync.tej import emis as E
+
+    lignes = _lignes_comme_taxes(je)
+    tva = sum(l["tax_amount"] for l in lignes if porte_une_base_de_tva(l["account_head"]))
+    ht = round(flt(ttc) - tva, 3)
+    return ht, E.ventiler(lignes, ht)
 
 
 @frappe.whitelist()
@@ -575,6 +604,7 @@ def etat(journal_entry: str) -> dict:
         "matricule": doc.matricule, "numero_facture": doc.numero_facture,
         "certificat": doc.certificat, "emis_le": str(doc.emis_le or ""),
         "montant_ht": ctx["montant_ht"], "taux_tva": ctx["taux_tva"],
+        "operations": ctx["operations"],
         "manques": ctx["manques"],
         "peut_emettre": not ctx["manques"] and doc.statut != "Émis",
     }
