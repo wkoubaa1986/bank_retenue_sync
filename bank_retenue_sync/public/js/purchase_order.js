@@ -51,13 +51,17 @@ const MOTIFS = {
 frappe.ui.form.on("Purchase Order", {
   refresh(frm) {
     // Une commande validée est partie chez le fournisseur, une commande annulée ne sert plus à
-    // rien : dans les deux cas il n'y a plus de lignes à fusionner. Le bouton du pied de tableau
-    // survit aux rafraîchissements de la grille, il faut le retirer à la main.
+    // rien : dans les deux cas il n'y a plus de lignes à fusionner.
     if (frm.doc.docstatus !== 0) {
       frm.__brs_boutons_fusion = [];
       retirer_bandeau(frm);
+      // Le bouton du pied de tableau survit aux rafraîchissements de la grille : c'est à nous de
+      // le masquer. Surtout PAS par `grid.clear_custom_buttons()`, qui masquerait du même coup
+      // les boutons qu'un autre script aurait posés là. La grille indexe le nôtre par son
+      // libellé — on ne touche qu'à celui-là.
       const table = grille(frm);
-      if (table && table.grid_buttons) table.clear_custom_buttons();
+      const pied = table && table.custom_buttons && table.custom_buttons[LIBELLE()];
+      if (pied) pied.addClass("hidden");
       return;
     }
     const barre = frm.add_custom_button(LIBELLE(), () => fusionner(frm));
@@ -84,14 +88,19 @@ function grille(frm) {
   return frm.fields_dict.items && frm.fields_dict.items.grid;
 }
 
-/** Combien d'articles figurent sur plus d'une ligne. */
+/** Combien d'articles figurent sur plus d'une ligne.
+ *
+ * Une `Map`, et pas un objet ordinaire : un code article s'écrit comme le fournisseur l'entend, et
+ * « constructor », « toString » ou « __proto__ » se heurteraient à ce qui vit déjà sur le
+ * prototype. Le compte ne serait plus un nombre, et le doublon passerait inaperçu.
+ */
 function articles_repetes(frm) {
-  const compte = {};
+  const compte = new Map();
   (frm.doc.items || []).forEach((ligne) => {
     const article = (ligne.item_code || "").trim();
-    if (article) compte[article] = (compte[article] || 0) + 1;
+    if (article) compte.set(article, (compte.get(article) || 0) + 1);
   });
-  return Object.keys(compte).filter((article) => compte[article] > 1).length;
+  return [...compte.values()].filter((lignes) => lignes > 1).length;
 }
 
 /** Rend les doublons visibles : boutons en orange et bandeau cliquable.
