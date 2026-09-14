@@ -7,8 +7,27 @@
 // qui enregistre, et un simple rechargement annule la fusion. Une fusion faite toute seule à
 // l'enregistrement supprimerait des lignes que personne n'a relues — l'entrepôt, la date de
 // réception et la description des doublons sont perdus au profit de ceux de la première ligne.
+//
+// ⚠️ NE REMETS NI LE GROUPE, NI LE `frm.is_new()` (#26). Le bouton a d'abord vécu dans un groupe
+// `__("Commande")` et caché tant que la commande n'était pas enregistrée : personne ne le trouvait.
+// Un groupe se rend en menu déroulant « Commande ▾ » qu'il faut ouvrir, coincé entre les menus
+// d'ERPNext. Et une commande d'import se construit ligne par ligne AVANT le premier
+// enregistrement — c'est exactement le moment où l'on empile les doublons ; les lignes non
+// enregistrées portent un nom local que `set_value` et `clear_doc` traitent sans broncher, rien
+// n'empêche la fusion. D'où trois accès au même geste, et ce n'est pas du luxe : sur écran étroit,
+// Frappe replie les boutons de la barre dans « ⋯ » (même parade que encaissement_paiement.js), le
+// bouton du pied de tableau reste là où l'utilisateur regarde ses lignes, et le bandeau orange est
+// le seul des trois à se voir sans rien chercher.
 
 const API_COMMANDE = "bank_retenue_sync.achat.commande";
+
+// Le libellé fait aussi office de clé : la barre d'outils et la grille indexent leurs boutons
+// dessus et refusent d'en poser un deuxième. Il se relit à chaque appel — la langue peut changer
+// entre deux formulaires.
+const LIBELLE = () => __("Fusionner les lignes en double");
+
+// Marque NOTRE bandeau parmi les messages du formulaire, pour le retirer sans toucher aux autres.
+const CLASSE_BANDEAU = "brs-doublons";
 
 // Pourquoi deux lignes du même article n'ont pas été regroupées. Le serveur rend le motif, pas sa
 // traduction : c'est une décision métier, pas une phrase.
@@ -20,13 +39,88 @@ const MOTIFS = {
 
 frappe.ui.form.on("Purchase Order", {
   refresh(frm) {
-    // Une commande validée est partie chez le fournisseur, et une commande jamais enregistrée n'a
-    // pas de lignes nommées à fusionner.
-    if (frm.doc.docstatus !== 0 || frm.is_new()) return;
-    frm.add_custom_button(__("Fusionner les lignes en double"), () => fusionner(frm),
-                          __("Commande"));
+    // Une commande validée est partie chez le fournisseur, une commande annulée ne sert plus à
+    // rien : dans les deux cas il n'y a plus de lignes à fusionner. Le bouton du pied de tableau
+    // survit aux rafraîchissements de la grille, il faut le retirer à la main.
+    if (frm.doc.docstatus !== 0) {
+      frm.__brs_boutons_fusion = [];
+      retirer_bandeau(frm);
+      const table = grille(frm);
+      if (table && table.grid_buttons) table.clear_custom_buttons();
+      return;
+    }
+    const barre = frm.add_custom_button(LIBELLE(), () => fusionner(frm));
+    const table = grille(frm);
+    const pied = table ? table.add_custom_button(LIBELLE(), () => fusionner(frm)) : null;
+    // `signaler` retravaille ces boutons hors du rafraîchissement du formulaire (ajout ou retrait
+    // d'une ligne) : on garde la main dessus au lieu de les redemander, car `add_custom_button`
+    // réinscrit au passage une entrée dans le menu « ⋯ » du mode mobile.
+    frm.__brs_boutons_fusion = [[barre, "btn-default"], [pied, "btn-secondary"]];
+    signaler(frm);
   },
 });
+
+// Ajouter une ligne, en retirer une ou changer son article : le décompte des doublons bouge.
+frappe.ui.form.on("Purchase Order Item", {
+  items_add: signaler,
+  items_remove: signaler,
+  items_delete: signaler,
+  item_code: signaler,
+});
+
+function grille(frm) {
+  return frm.fields_dict.items && frm.fields_dict.items.grid;
+}
+
+/** Combien d'articles figurent sur plus d'une ligne. */
+function articles_repetes(frm) {
+  const compte = {};
+  (frm.doc.items || []).forEach((ligne) => {
+    const article = (ligne.item_code || "").trim();
+    if (article) compte[article] = (compte[article] || 0) + 1;
+  });
+  return Object.keys(compte).filter((article) => compte[article] > 1).length;
+}
+
+/** Rend les doublons visibles : boutons en orange et bandeau cliquable.
+ *
+ * ⚠️ CE DÉCOMPTE N'EST PAS LA RÈGLE MÉTIER, et ne doit pas le devenir. La règle (article + unité +
+ * prix) reste au serveur ; ici on compte les codes articles répétés, rien de plus, pour attirer
+ * l'œil. Le bandeau peut donc s'allumer alors que la fusion ne gardera rien — c'est le message
+ * « non fusionnées » qui dit alors pourquoi.
+ */
+function signaler(frm) {
+  if (frm.doc.docstatus !== 0) return;
+  const repetes = articles_repetes(frm);
+  (frm.__brs_boutons_fusion || []).forEach(([$btn, neutre]) => {
+    if (!$btn) return;
+    $btn.toggleClass(neutre, !repetes).toggleClass("btn-warning", Boolean(repetes));
+  });
+  retirer_bandeau(frm);
+  if (!repetes) return;
+  frm.dashboard.set_headline(
+    `<div class="${CLASSE_BANDEAU}">`
+      + __("{0} article(s) apparaissent sur plusieurs lignes — ", [repetes])
+      + '<a class="brs-fusionner" style="text-decoration:underline;cursor:pointer;font-weight:bold">'
+      + __("fusionner les lignes en double")
+      + "</a></div>",
+    "orange"
+  );
+  frm.$wrapper.find(`.${CLASSE_BANDEAU} .brs-fusionner`).on("click", () => fusionner(frm));
+}
+
+/** Retire NOTRE bandeau, et lui seul.
+ *
+ * `frm.layout.show_message` empile les blocs sans effacer les précédents — sans ce retrait, chaque
+ * rafraîchissement en ajouterait un de plus. Et `clear_headline()` viderait tout le conteneur, y
+ * compris les messages d'ERPNext : on cible donc notre marqueur.
+ */
+function retirer_bandeau(frm) {
+  const messages = frm.layout && frm.layout.message;
+  if (!messages || !messages.length) return;
+  messages.find(`.${CLASSE_BANDEAU}`).closest(".form-message").remove();
+  if (!messages.children().length) messages.addClass("hidden");
+}
 
 function fusionner(frm) {
   const lignes = (frm.doc.items || []).map((l) => ({
@@ -78,6 +172,8 @@ function appliquer(frm, m) {
       frm.cscript.calculate_taxes_and_totals();
     }
     frm.dirty();
+    // La table a changé sans passer par la grille : c'est à nous d'éteindre le bandeau.
+    signaler(frm);
     frappe.msgprint({
       title: __("Lignes fusionnées"),
       indicator: "green",
