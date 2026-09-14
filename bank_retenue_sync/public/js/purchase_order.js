@@ -18,13 +18,24 @@
 // Frappe replie les boutons de la barre dans « ⋯ » (même parade que encaissement_paiement.js), le
 // bouton du pied de tableau reste là où l'utilisateur regarde ses lignes, et le bandeau orange est
 // le seul des trois à se voir sans rien chercher.
+//
+// ⚠️ LE LIBELLÉ EST CELUI QUE L'UTILISATEUR CHERCHE DES YEUX, PAS CELUI QUI DÉCRIT LE MIEUX LE
+// CALCUL (#26). Il s'appelait « Fusionner les lignes en double » et on le cherchait sous « enlever
+// les doublons » : un bouton qu'on ne reconnaît pas est un bouton absent. « Fusionner » n'a pas
+// disparu pour autant — il est passé dans l'infobulle et dans les messages, là où il explique au
+// lieu de servir d'étiquette, parce que ce geste ADDITIONNE les quantités et ne jette rien.
 
 const API_COMMANDE = "bank_retenue_sync.achat.commande";
 
 // Le libellé fait aussi office de clé : la barre d'outils et la grille indexent leurs boutons
 // dessus et refusent d'en poser un deuxième. Il se relit à chaque appel — la langue peut changer
 // entre deux formulaires.
-const LIBELLE = () => __("Fusionner les lignes en double");
+const LIBELLE = () => __("Enlever les doublons");
+
+// « Enlever » est un raccourci ; l'infobulle dit ce qui se passe vraiment, pour que personne ne
+// craigne d'y perdre des quantités.
+const INFOBULLE = () =>
+  __("Regroupe les lignes qui portent le même article, la même unité et le même prix : les quantités sont additionnées sur la première ligne. Rien n'est enregistré avant que tu enregistres la commande.");
 
 // Marque NOTRE bandeau parmi les messages du formulaire, pour le retirer sans toucher aux autres.
 const CLASSE_BANDEAU = "brs-doublons";
@@ -52,6 +63,7 @@ frappe.ui.form.on("Purchase Order", {
     const barre = frm.add_custom_button(LIBELLE(), () => fusionner(frm));
     const table = grille(frm);
     const pied = table ? table.add_custom_button(LIBELLE(), () => fusionner(frm)) : null;
+    [barre, pied].forEach(($btn) => $btn && $btn.attr("title", INFOBULLE()));
     // `signaler` retravaille ces boutons hors du rafraîchissement du formulaire (ajout ou retrait
     // d'une ligne) : on garde la main dessus au lieu de les redemander, car `add_custom_button`
     // réinscrit au passage une entrée dans le menu « ⋯ » du mode mobile.
@@ -98,13 +110,19 @@ function signaler(frm) {
   });
   retirer_bandeau(frm);
   if (!repetes) return;
-  frm.dashboard.set_headline(
+  // Bandeau PERMANENT (troisième paramètre) : sans lui, Frappe ajoute une croix de fermeture, et
+  // un bandeau qu'on chasse d'un clic distrait redevient un bouton introuvable (#26). Il s'efface
+  // de lui-même dès qu'il n'y a plus de doublon. `show_message` est la méthode de `frm.layout` qui
+  // sait poser un bloc permanent — `frm.dashboard.set_headline` ne transmet pas ce paramètre.
+  frm.layout.show_message(
     `<div class="${CLASSE_BANDEAU}">`
       + __("{0} article(s) apparaissent sur plusieurs lignes — ", [repetes])
-      + '<a class="brs-fusionner" style="text-decoration:underline;cursor:pointer;font-weight:bold">'
-      + __("fusionner les lignes en double")
+      + `<a class="brs-fusionner" title="${frappe.utils.escape_html(INFOBULLE())}"`
+      + ' style="text-decoration:underline;cursor:pointer;font-weight:bold">'
+      + __("enlever les doublons")
       + "</a></div>",
-    "orange"
+    "orange",
+    true
   );
   frm.$wrapper.find(`.${CLASSE_BANDEAU} .brs-fusionner`).on("click", () => fusionner(frm));
 }
@@ -175,7 +193,7 @@ function appliquer(frm, m) {
     // La table a changé sans passer par la grille : c'est à nous d'éteindre le bandeau.
     signaler(frm);
     frappe.msgprint({
-      title: __("Lignes fusionnées"),
+      title: __("Doublons enlevés"),
       indicator: "green",
       message: __("{0} ligne(s) en double supprimée(s), quantités additionnées sur la première ligne de chaque article.", [m.doublons])
         + `<p class="text-muted">${__("La ligne conservée garde l'entrepôt, la date de réception et la description de la première occurrence. <b>Rien n'est enregistré</b> : relis les quantités, puis enregistre la commande.")}</p>`

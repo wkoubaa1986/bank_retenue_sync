@@ -230,9 +230,12 @@ doctype_js = {
     # journal, pas une facture. Le bouton y ouvre la meme emission TEJ, par l'adaptateur de
     # `tej/emis_journal` (demande utilisateur 04/09/2026).
     "Journal Entry": "public/js/journal_entry_retenue.js",
-    # Commande d'achat : bouton « Fusionner les lignes en double ». Le meme article saisi plusieurs
-    # fois sur une commande d'import n'est qu'une seule ligne pour le fournisseur. Le bouton ne
-    # touche QUE le formulaire — la fusion n'existe qu'apres l'enregistrement par l'utilisateur.
+    # Commande d'achat : bouton « Enlever les doublons ». Le meme article saisi plusieurs fois sur
+    # une commande d'import n'est qu'une seule ligne pour le fournisseur. Le bouton ne touche QUE le
+    # formulaire — la fusion n'existe qu'apres l'enregistrement par l'utilisateur.
+    # ⚠️ Un doctype_js est servi depuis le META DE FORMULAIRE MIS EN CACHE : toute evolution de ce
+    # fichier exige un `bench --site <site> clear-cache`, sinon l'ecran garde l'ancienne version et
+    # le bouton parait absent quel que soit le code (#26).
     "Purchase Order": "public/js/purchase_order.js",
 }
 
