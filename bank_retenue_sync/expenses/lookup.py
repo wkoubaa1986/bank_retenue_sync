@@ -73,6 +73,27 @@ def journal_entries_by_bank_reference(references, date_from=None, date_to=None) 
     return index
 
 
+def payment_entries_by_bank_reference(references) -> dict:
+    """{reference bancaire -> [noms de Payment Entry]} citant la reference dans leur libelle,
+    QUEL QUE SOIT le compte. Sert aux flux qui deplacent un paiement HORS de la banque en citant
+    la reference du mouvement (cheque impaye -> « Chèques sans provision ») : le paiement ne
+    touche plus Zitouna, seul son libelle le relie encore au releve."""
+    refs = {str(r).strip().upper() for r in (references or [])
+            if len(str(r or "").strip()) >= MIN_REF_LEN}
+    if not refs:
+        return {}
+    index: dict = {}
+    for r in frappe.db.get_all("Payment Entry", filters={"docstatus": 1},
+                               fields=["name", "reference_no"], limit_page_length=0):
+        blob = str(r.get("reference_no") or "").upper()
+        if not blob:
+            continue
+        for ref in refs:
+            if ref in blob:
+                index.setdefault(ref, []).append(r.name)
+    return index
+
+
 def find_journal_entries_by_bank_line(date, montant: float, sens: str = "credit",
                                       account: str = BANK_ACCOUNT, contrepartie: str = None,
                                       company: str = COMPANY, fenetre: int = 3) -> list:

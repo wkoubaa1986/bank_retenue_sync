@@ -188,6 +188,7 @@ class IdentificationBancaire {
     );
     this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
     this.page.add_menu_item(__("Générer les règlements"), () => this._reglements());
+    this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes());
     this.page.add_menu_item(__("Rafraîchir l'export bancaire"), () => this._rafraichir());
     this.page.add_menu_item(__("Exporter en Excel"), () => this._excel());
     this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
@@ -1224,6 +1225,63 @@ class IdentificationBancaire {
       indicator: "green",
     });
     this.load();
+  }
+
+  // Un débit « Cheque repris » sort le chèque de la banque : son paiement bascule sur
+  // « Chèques sans provision », où la relance client le voit. Le n° ET le montant doivent
+  // concorder ; les cas douteux sont listés sans rien écrire (cf. encaissement/impayes.py).
+  async _impayes() {
+    const apercu = await frappe.call({
+      method: "bank_retenue_sync.orchestrator.run_impayes",
+      args: { insert: 0 },
+      freeze: true,
+      freeze_message: __("Recherche des chèques impayés…"),
+    });
+    const lignes = apercu.message || [];
+    const a_faire = lignes.filter((l) => l.status === "a basculer");
+    const douteux = lignes.filter((l) => l.status !== "a basculer");
+    if (!lignes.length) {
+      frappe.msgprint({ title: __("Chèques impayés"), indicator: "green",
+        message: __("Aucun chèque revenu impayé à traiter.") });
+      return;
+    }
+    const esc = frappe.utils.escape_html;
+    const tableau = (rows, avec_piece) => `
+      <table class="table table-bordered" style="font-size:12px">
+        <thead><tr><th>${__("Date")}</th><th>${__("N° chèque")}</th>
+                   <th style="text-align:right">${__("Montant")}</th>
+                   <th>${avec_piece ? __("Paiement") : __("Motif")}</th></tr></thead>
+        <tbody>${rows.map((l) => `<tr><td>${esc(l.date)}</td><td>${esc(l.numero || "—")}</td>
+            <td style="text-align:right">${format_currency(l.montant, "TND")}</td>
+            <td>${esc(avec_piece ? `${l.ancien} — ${l.party || ""}` : (l.raison || l.error || ""))}</td></tr>`).join("")}
+        </tbody></table>`;
+    const corps = `
+      ${a_faire.length ? `<p>${__("{0} chèque(s) à basculer sur « Chèques sans provision » :", [a_faire.length])}</p>${tableau(a_faire, true)}` : ""}
+      ${douteux.length ? `<p class="text-muted">${__("{0} rejet(s) non tranché(s) — rien ne sera écrit :", [douteux.length])}</p>${tableau(douteux, false)}` : ""}`;
+    const d = new frappe.ui.Dialog({
+      title: __("Chèques revenus impayés"),
+      size: "large",
+      fields: [{ fieldtype: "HTML", fieldname: "corps", options: corps }],
+      primary_action_label: a_faire.length ? __("Basculer {0} chèque(s)", [a_faire.length]) : __("Fermer"),
+      primary_action: async () => {
+        d.hide();
+        if (!a_faire.length) return;
+        const r = await frappe.call({
+          method: "bank_retenue_sync.orchestrator.run_impayes",
+          args: { insert: 1 },
+          freeze: true,
+          freeze_message: __("Bascule des chèques impayés…"),
+        });
+        const faits = (r.message || []).filter((l) => l.status === "bascule");
+        frappe.show_alert({
+          message: __("{0} chèque(s) impayé(s) basculé(s) — visibles dans Relance Paiements Clients.",
+            [faits.length]),
+          indicator: faits.length ? "orange" : "green",
+        }, 8);
+        this.load();
+      },
+    });
+    d.show();
   }
 
   async _reclassifier() {

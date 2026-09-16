@@ -789,6 +789,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
     """
     frappe.only_for("System Manager")
     from bank_retenue_sync.bank import registry, solde as S
+    from bank_retenue_sync.encaissement import impayes
     from bank_retenue_sync.expenses import fees, ordres, reglement
 
     debut_run = frappe.utils.now_datetime()
@@ -851,6 +852,11 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
                         ("cnss", lambda: process_cnss(insert=True)),
                         ("depenses", lambda: run_depenses_recurrentes(insert=True)),
                         ("contrats", lambda: run_contrats(insert=True)),
+                        # CHEQUES IMPAYES (decision utilisateur 16/09/2026) : un debit « Cheque
+                        # repris » bascule le paiement du cheque sur « Chèques sans provision »,
+                        # ou la relance client le voit. N° et montant doivent concorder.
+                        ("impayes", lambda: impayes.process_impayes(
+                            _movements_geres(registry.registry_as_movements()), insert=True)),
                         # CONFIRMATION DES ORDRES DE PAIEMENT (decision utilisateur
                         # 2026-08-31) : des que la charge SORT au releve, l'ordre passe a
                         # « Vire » et son ecriture ANTICIPEE — posee sur le compte d'attente —
@@ -1183,6 +1189,21 @@ def run_ordres():
 
     res = ordres.confirmer_par_banque(registry.registry_as_movements())
     res["alertes"] = [dict(o) for o in ordres.alertes()]
+    frappe.db.commit()
+    return res
+
+
+@frappe.whitelist()
+def run_impayes(insert=True):
+    """Cheques revenus impayes : pour chaque debit « Cheque repris » du registre non rapproche, le
+    paiement du cheque (n° + montant) est bascule de la banque / du portefeuille vers
+    « Chèques sans provision - A&S », a la date du rejet (cf. encaissement/impayes)."""
+    frappe.only_for("Accounts Manager")
+    from bank_retenue_sync.bank import registry
+    from bank_retenue_sync.encaissement import impayes
+
+    res = impayes.process_impayes(_movements_geres(registry.registry_as_movements()),
+                                  insert=frappe.utils.cint(insert))
     frappe.db.commit()
     return res
 

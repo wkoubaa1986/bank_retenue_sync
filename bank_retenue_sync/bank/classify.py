@@ -98,6 +98,11 @@ class LinkContext:
                                                     "aramex": set(), "virement": set()})
     booked: dict = field(default_factory=dict)
     je_par_reference: dict = field(default_factory=dict)
+    # {reference bancaire -> [Payment Entry]} citant la reference, quel que soit le compte :
+    # un cheque impaye bascule sur « Chèques sans provision » cite le rejet et ne touche plus la
+    # banque — sans cet index, le debit « Cheque repris » redeviendrait « a verifier » a chaque
+    # reclassification (cf. encaissement/impayes.py).
+    pe_par_reference: dict = field(default_factory=dict)
     cheque_no_index: dict = field(default_factory=dict)
     # Payment Entry soumises touchant le compte bancaire, dans les deux sens. Sans elles, un
     # reglement fournisseur (Payment Entry `Pay`, 154 sur Zitouna) ressort « orphelin » alors
@@ -173,6 +178,7 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
         je_par_reference=_sans_ecritures_de_frais(
             lookup.journal_entries_by_bank_reference(refs, pieces_from, date_to), cheque_index),
         cheque_no_index=cheque_index,
+        pe_par_reference=lookup.payment_entries_by_bank_reference(refs),
         pe_bancaires=lookup.payment_entries_bancaires(pieces_from, date_to),
         ecritures_bancaires=lookup.ecritures_bancaires_cumulees(pieces_from, date_to),
         pieces=lookup.pieces_bancaires(pieces_from, date_to),
@@ -616,6 +622,14 @@ def _journal_citant(cle: str, context: LinkContext):
     return {"voucher_no": noms[0], "montant": montants.get(noms[0])}
 
 
+def _paiement_citant(reference: str, context: LinkContext):
+    """Le Payment Entry (unique) qui cite cette reference bancaire dans son libelle, ou None."""
+    if not reference:
+        return None
+    noms = (getattr(context, "pe_par_reference", None) or {}).get(str(reference).strip().upper()) or []
+    return noms[0] if len(noms) == 1 else None
+
+
 def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
     debit = round(m.get("debit") or 0.0, 3)
     credit = round(m.get("credit") or 0.0, 3)
@@ -685,6 +699,7 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
             # avec le numero dans la remarque.
             je = (_journal_citant(c.numero, context)
                   or _journal_citant(c.reference, context))
+            pe_cite = _paiement_citant(c.reference, context)
             if je:
                 c.statut = STATUT_IDENTIFIE
                 c.document_type = "Journal Entry"
@@ -692,6 +707,17 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
                 _mesurer_ecart(c, m, je["montant"])
                 c.raison = ("citee par une ecriture de journal, avec un ecart de %s sur le montant"
                             % c.ecart if abs(c.ecart) >= 0.005 else "")
+            elif pe_cite:
+                # Un paiement cite la reference du mouvement sans toucher la banque : c'est un
+                # cheque impaye bascule sur « Chèques sans provision » (encaissement/impayes).
+                c.statut = STATUT_IDENTIFIE
+                c.document_type = "Payment Entry"
+                c.document_name = pe_cite
+                c.raison = "chèque impayé : paiement basculé sur Chèques sans provision"
+            elif rule.key == "cheque_repris":
+                c.statut = STATUT_A_VERIFIER
+                c.raison = ("%s : le flux « impayés » basculera le paiement du chèque sur "
+                            "Chèques sans provision (n° et montant doivent concorder)" % rule.label)
             else:
                 c.statut = STATUT_A_VERIFIER
                 c.raison = "%s : categorise, aucune automatisation prevue" % rule.label
