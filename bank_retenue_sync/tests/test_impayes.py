@@ -114,3 +114,57 @@ class TestContratDuFlux(unittest.TestCase):
         # Aperçu d'abord (insert: 0), bascule seulement sur confirmation.
         self.assertIn("insert: 0", js)
         self.assertIn("insert: 1", js)
+
+
+class TestEcartDeRemiseExpliqueParLImpaye(unittest.TestCase):
+    """La remise dont un chèque est revenu impayé n'affiche plus un manque.
+
+    Cas réel du 16/09/2026 : remise 90028502, créditée 1 788,000 par la banque. Le chèque
+    0001170 de 116,000 est revenu impayé, son paiement a quitté le compte bancaire, et la
+    ligne annonçait « comptabilisé 1 672,000, écart +116,000 » en rouge — alors que la banque
+    a repris ces 116 et que le débit « Cheque repris » les porte, identifié de son côté.
+    """
+
+    def _ctx(self, impayes=None):
+        return C.LinkContext(
+            consumed={"cheque": {"90028502"}, "traite": set(), "aramex": set(),
+                      "virement": set()},
+            encaissements={"docs": {"cheque": {"90028502": "ENC-14-09-2026-00001"}},
+                           "etats": {"ENC-14-09-2026-00001": {"docstatus": 1}}},
+            montants_par_cle={"90028502": 1672.0},
+            banque_par_cle={("cheque", "90028502"): 1788.0},
+            impayes_par_cle=impayes or {})
+
+    def _remise(self):
+        return {"date": date(2026, 9, 14), "date_valeur": date(2026, 9, 14),
+                "operation": "ENC CHEQ TN NUM 90028502", "reference": "FT262571Y318",
+                "debit": 0.0, "credit": 1788.0}
+
+    def test_sans_impaye_l_ecart_reste_signale(self):
+        c = C.classify_one(self._remise(), self._ctx())
+        self.assertEqual(c.montant_document, 1672.0)
+        self.assertEqual(c.ecart, 116.0)
+
+    def test_l_impaye_solde_l_ecart_et_l_explique(self):
+        c = C.classify_one(self._remise(), self._ctx({"90028502": 116.0}))
+        self.assertEqual(c.statut, C.STATUT_IDENTIFIE)
+        self.assertEqual(c.montant_document, 1788.0)
+        self.assertEqual(c.ecart, 0.0)
+        self.assertIn("impayée", c.raison)
+        self.assertIn("116", c.raison)
+
+    def test_une_remise_sans_ecart_n_est_pas_touchee(self):
+        ctx = self._ctx({"90028502": 116.0})
+        ctx.montants_par_cle = {"90028502": 1788.0}
+        c = C.classify_one(self._remise(), ctx)
+        self.assertEqual(c.ecart, 0.0)
+        self.assertEqual(c.montant_document, 1788.0)
+        self.assertEqual(c.raison, "")
+
+    def test_un_impaye_partiel_laisse_le_reste_visible(self):
+        """Deux chèques manquants, un seul revenu impayé : l'autre reste un vrai écart."""
+        ctx = self._ctx({"90028502": 116.0})
+        ctx.banque_par_cle = {("cheque", "90028502"): 1888.0}
+        c = C.classify_one(self._remise(), ctx)
+        self.assertEqual(c.ecart, 100.0)
+        self.assertIn("116", c.raison)

@@ -103,6 +103,9 @@ class LinkContext:
     # banque — sans cet index, le debit « Cheque repris » redeviendrait « a verifier » a chaque
     # reclassification (cf. encaissement/impayes.py).
     pe_par_reference: dict = field(default_factory=dict)
+    # {cle bancaire -> montant repris} : une piece d'une remise revenue impayee a quitte le
+    # compte bancaire, et sans elle le credit de la remise paraitrait incomplet.
+    impayes_par_cle: dict = field(default_factory=dict)
     cheque_no_index: dict = field(default_factory=dict)
     # Payment Entry soumises touchant le compte bancaire, dans les deux sens. Sans elles, un
     # reglement fournisseur (Payment Entry `Pay`, 154 sur Zitouna) ressort « orphelin » alors
@@ -184,6 +187,7 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
         pieces=lookup.pieces_bancaires(pieces_from, date_to),
         je_finder=especes.find_journal_entries,
         montants_par_cle=pending.montants_par_cle_bancaire(),
+        impayes_par_cle=pending.montants_impayes_par_cle_bancaire(),
         encaissements=pending.etat_encaissements_par_cle(),
         je_brouillons=set(frappe.get_all("Journal Entry", filters={"docstatus": 0},
                                          pluck="name")),
@@ -294,6 +298,7 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
             ctx.ecart = round(flt(banque_groupe) - ctx.montant_document, 3)
         else:
             _mesurer_ecart(ctx, m, montant)
+        _expliquer_impaye(ctx, cle, context)
         return
 
     ref = (m.get("reference") or "").strip()
@@ -354,6 +359,27 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
     ctx.statut = STATUT_ORPHELIN
     ctx.raison = "%s non rapproche%s" % (rule.label.lower(),
                                          "" if numero else " (aucun n° dans le libelle)")
+
+
+def _expliquer_impaye(ctx: Classification, cle: str, context: LinkContext) -> bool:
+    """Un ecart du a une piece REVENUE IMPAYEE n'est pas un manque : il s'explique et se solde.
+
+    Le paiement d'un cheque revenu impaye quitte le compte bancaire (cf. encaissement/impayes) :
+    la somme comptabilisee pour sa remise baisse d'autant et le credit paraitrait incomplet, en
+    rouge, alors que la banque a bien reprise cette somme — et que le debit « Cheque repris » qui
+    la porte est identifie de son cote. On remet donc le montant repris dans le comptabilise, ce
+    qui ramene l'ecart a zero, et on le DIT : « … dont X repris (cheque impaye) ».
+
+    N'agit que s'il y a un ecart et un impaye sur cette cle. -> True si l'ecart a ete explique.
+    """
+    repris = flt((getattr(context, "impayes_par_cle", None) or {}).get(cle), 3)
+    if not repris or not flt(ctx.ecart, 3):
+        return False
+    ctx.montant_document = round(flt(ctx.montant_document) + repris, 3)
+    ctx.ecart = round(flt(ctx.ecart) - repris, 3)
+    mention = ("dont %s repris : pièce revenue impayée, sortie de la banque" % repris)
+    ctx.raison = ("%s ; %s" % (ctx.raison, mention)) if ctx.raison else mention.capitalize()
+    return True
 
 
 def _resoudre_journal(rule, m, ctx: Classification, context: LinkContext, absent: str = None):

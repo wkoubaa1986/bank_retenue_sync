@@ -190,6 +190,38 @@ def montants_par_cle_bancaire() -> dict:
     return totaux
 
 
+#: Les comptes ou atterrit une piece REVENUE IMPAYEE, sortie de la banque apres coup.
+COMPTES_IMPAYES = ("Chèques sans provision - A&S", "Traite Bancaire sans provision - A&S")
+
+
+def montants_impayes_par_cle_bancaire() -> dict:
+    """{cle bancaire -> montant REPRIS par la banque, sorti du compte apres coup}.
+
+    LE PENDANT DE `montants_par_cle_bancaire`, ET IL LUI EST INDISPENSABLE. Quand un cheque
+    d'une remise revient impaye, son paiement quitte le compte bancaire pour
+    « Chèques sans provision » (cf. encaissement/impayes.py) : la somme portee au compte pour
+    cette remise baisse d'autant, et le credit de la remise paraissait soudain incomplet.
+    Cas reel du 16/09/2026 : la remise 90028502, creditee 1 788 par la banque, n'affichait plus
+    que 1 672 comptabilises et un ecart de +116 signale en rouge — alors que rien ne manque, les
+    116 ont ete repris par la banque et le debit « Cheque repris » les porte, identifie.
+
+    La cle est citee dans le `reference_no` du paiement bascule, qui conserve celui d'origine
+    (« 0001170-BIAT / BR:90028502 / Impayé FT… »).
+    """
+    rows = frappe.db.sql("""
+        select reference_no, paid_amount
+        from `tabPayment Entry`
+        where docstatus = 1 and ifnull(reference_no, '') != ''
+          and paid_to in %(comptes)s
+    """, {"comptes": COMPTES_IMPAYES}, as_dict=True)
+    totaux: dict = {}
+    for r in rows:
+        ref = r.reference_no or ""
+        for cle in set(_RX_BON.findall(ref)) | set(_RX_REF.findall(ref)):
+            totaux[cle] = round(totaux.get(cle, 0.0) + flt(r.paid_amount, 3), 3)
+    return totaux
+
+
 def paiements_par_cle_bancaire() -> dict:
     """{cle bancaire -> [noms de Payment Entry]}. Le pendant nomme de `montants_par_cle_bancaire`.
 
