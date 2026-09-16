@@ -168,3 +168,4 @@ class TestEcartDeRemiseExpliqueParLImpaye(unittest.TestCase):
         c = C.classify_one(self._remise(), ctx)
         self.assertEqual(c.ecart, 100.0)
         self.assertIn("116", c.raison)
+

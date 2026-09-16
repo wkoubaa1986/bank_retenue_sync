@@ -150,6 +150,16 @@ RULES = (
         categorie="frais_bancaires", sous_categorie="commission",
         patterns=("COMM",),
         action=ACTION_AGREGAT, groupe="jour", priorite=25),
+    # « Cotisation Carte 233428174473 » : la cotisation periodique d'une carte bancaire.
+    # INFORMATIVE et NON agregee, contrairement aux commissions : elle ne tombe pas avec les
+    # frais du jour, elle se saisit en ecriture propre (l'utilisateur l'a fait le 14/09/2026,
+    # ACC-JV-2026-00732, en citant la reference bancaire). L'agreger empecherait justement
+    # cette ecriture d'etre reconnue.
+    BankRule(
+        key="cotisation_carte", label="Cotisation de carte bancaire", sens="debit",
+        categorie="frais_bancaires", sous_categorie="cotisation",
+        patterns=("COTISATION", "CARTE"),
+        action=ACTION_INFORMATIF, priorite=25),
 
     # -- echeances de pret : la banque debite separement le principal et le profit,
     #    ce qui donne la ventilation sans tableau d'amortissement --

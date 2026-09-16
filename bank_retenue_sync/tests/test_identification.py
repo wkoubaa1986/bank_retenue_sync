@@ -1127,3 +1127,63 @@ class TestReclassificationApresLesFrais(unittest.TestCase):
         Reclassifier derriere une erreur n'apporterait rien."""
         self.assertFalse(self.bouge({"erreur": "boom"}))
         self.assertFalse(self.bouge(None))
+
+
+class TestLibelleInconnuMaisReferenceCitee(unittest.TestCase):
+    """Un libellé que nulle règle ne reconnaît n'est pas une opération inexpliquée.
+
+    Cas réel du 16/09/2026 : « Cotisation Carte 233428174473 » (103,063) restait « À vérifier »
+    alors que l'utilisateur avait saisi ACC-JV-2026-00732, dont la remarque porte la référence
+    bancaire FT26257XK8G1. On cherche donc la pièce même sans règle, tout en continuant de
+    réclamer la règle — elle sert à CATÉGORISER, pas à rapprocher.
+    """
+
+    def _mv(self, operation="Cotisation Carte 233428174473"):
+        return {"date": date(2026, 9, 14), "date_valeur": date(2026, 9, 14),
+                "operation": operation, "reference": "FT26257XK8G1",
+                "debit": 103.063, "credit": 0.0}
+
+    def test_sans_piece_la_regle_est_toujours_reclamee(self):
+        m = dict(self._mv(), operation="LIBELLE JAMAIS VU XYZ")
+        c = C.classify_one(m, C.LinkContext())
+        self.assertEqual(c.statut, C.STATUT_A_VERIFIER)
+        self.assertIn("aucune regle", c.raison)
+
+    def test_l_ecriture_citant_la_reference_identifie_le_mouvement(self):
+        ctx = C.LinkContext(
+            je_par_reference={"FT26257XK8G1": ["ACC-JV-2026-00732"]},
+            ecritures_bancaires=[{"voucher_no": "ACC-JV-2026-00732", "montant": 103.063}])
+        c = C.classify_one(dict(self._mv(), operation="LIBELLE JAMAIS VU XYZ"), ctx)
+        self.assertEqual(c.statut, C.STATUT_IDENTIFIE)
+        self.assertEqual(c.document_name, "ACC-JV-2026-00732")
+        self.assertIn("cite la référence bancaire", c.raison)
+        self.assertIn("règle à ajouter", c.raison)
+
+    def test_un_brouillon_reste_non_comptabilise(self):
+        ctx = C.LinkContext(
+            je_par_reference={"FT26257XK8G1": ["ACC-JV-2026-00732"]},
+            ecritures_bancaires=[{"voucher_no": "ACC-JV-2026-00732", "montant": 103.063}],
+            je_brouillons={"ACC-JV-2026-00732"})
+        c = C.classify_one(dict(self._mv(), operation="LIBELLE JAMAIS VU XYZ"), ctx)
+        self.assertEqual(c.statut, C.STATUT_IDENTIFIE_BROUILLON)
+
+    def test_la_cotisation_de_carte_a_desormais_sa_regle(self):
+        regle = R.find_rule(self._mv())
+        self.assertIsNotNone(regle)
+        self.assertEqual(regle.key, "cotisation_carte")
+        self.assertEqual(regle.categorie, "frais_bancaires")
+        # NON agrégée : elle se saisit en écriture propre, l'agrégat l'en empêcherait.
+        self.assertEqual(regle.groupe, "")
+
+    def test_la_cotisation_trouve_son_ecriture(self):
+        ctx = C.LinkContext(
+            je_par_reference={"FT26257XK8G1": ["ACC-JV-2026-00732"]},
+            ecritures_bancaires=[{"voucher_no": "ACC-JV-2026-00732", "montant": 103.063}])
+        c = C.classify_one(self._mv(), ctx)
+        self.assertEqual(c.statut, C.STATUT_IDENTIFIE)
+        self.assertEqual(c.document_name, "ACC-JV-2026-00732")
+
+    def test_une_commission_reste_agregee(self):
+        """La nouvelle règle ne doit pas attraper les commissions du jour."""
+        m = dict(self._mv(), operation="COMM REMISE EFFET")
+        self.assertEqual(R.find_rule(m).key, "com_effet")

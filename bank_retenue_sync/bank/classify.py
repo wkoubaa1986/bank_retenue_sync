@@ -665,8 +665,36 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
 
     rule = R.find_rule(m, rules)
     if rule is None:
+        # ⚠️ UN LIBELLE INCONNU N'EST PAS UNE OPERATION INEXPLIQUEE. Avant le 16/09/2026 on
+        # s'arretait ici : la ligne restait « a verifier » meme quand une piece CITAIT sa
+        # reference bancaire. Cas reel : « Cotisation Carte 233428174473 » (103,063), saisie a
+        # la main en ACC-JV-2026-00732 dont la remarque porte « FT26257XK8G1 » — le lien le
+        # plus fort qui soit, et il etait ignore faute de regle.
+        # On le cherche donc quand meme, et on continue de reclamer la regle : elle sert a
+        # CATEGORISER (donc aux cumuls et aux rapports), pas a rapprocher.
         c.statut = STATUT_A_VERIFIER
         c.raison = "libelle inconnu : aucune regle ne le reconnait (a ajouter dans bank/rules.py)"
+        je = _journal_citant(c.reference, context)
+        pe_cite = _paiement_citant(c.reference, context)
+        if je:
+            c.statut = STATUT_IDENTIFIE
+            c.document_type = "Journal Entry"
+            c.document_name = je["voucher_no"]
+            _mesurer_ecart(c, m, je["montant"])
+            c.raison = ("libellé inconnu (règle à ajouter dans bank/rules.py), mais la pièce "
+                        "cite la référence bancaire")
+            if abs(flt(c.ecart, 3)) >= 0.005:
+                c.raison += " — écart de %s sur le montant" % c.ecart
+        elif pe_cite:
+            c.statut = STATUT_IDENTIFIE
+            c.document_type = "Payment Entry"
+            c.document_name = pe_cite
+            c.raison = ("libellé inconnu (règle à ajouter dans bank/rules.py), mais un paiement "
+                        "cite la référence bancaire")
+        if (c.statut == STATUT_IDENTIFIE and c.document_type == "Journal Entry"
+                and c.document_name in (context.je_brouillons or set())):
+            c.statut = STATUT_IDENTIFIE_BROUILLON
+            c.raison += " — écriture en brouillon, à soumettre"
         return c
 
     c.categorie = rule.categorie
