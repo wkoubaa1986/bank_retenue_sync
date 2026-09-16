@@ -54,6 +54,10 @@ TYPES = {
     "Note d'honoraire comptable": _("Honoraire"),
 }
 
+# Une TRAITE emise depuis la caisse n'est PAS un paiement a faire : le fournisseur est regle, seul
+# le debit bancaire attend son echeance. Elle vit dans le rapport voisin « Paiements a venir »
+# (decision utilisateur 16/09/2026).
+
 
 def execute(filters=None):
     filters = frappe._dict(filters or {})

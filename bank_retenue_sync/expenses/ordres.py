@@ -61,7 +61,7 @@ def ordres_en_attente(date_max=None) -> list:
     return frappe.db.get_all(
         DOCTYPE, filters=filters, limit_page_length=0, order_by="date_prevue asc",
         fields=["name", "libelle", "montant", "date_prevue", "compte_banque", "source_regle",
-                "journal_entry", "periode"])
+                "journal_entry", "periode", "type_depense", "beneficiaire"])
 
 
 def confirmer_par_banque(movements: list, fenetre: int = FENETRE_JOURS,
@@ -114,9 +114,13 @@ def confirmer_par_banque(movements: list, fenetre: int = FENETRE_JOURS,
             if regler_ecritures and o.journal_entry and frappe.db.exists(
                     "Journal Entry", o.journal_entry):
                 try:
+                    # Une traite emise depuis la caisse se recree sous SON moyen de paiement ;
+                    # tout le reste (salaires, loyer, echeances) sous « Virement ».
                     res = reglement.regler(
                         {"name": o.journal_entry, "montant": flt(o.montant, 3)}, m,
-                        insert=True, cle="calendrier")
+                        insert=True,
+                        cle="traite" if (o.get("type_depense") or "") == "Traite bancaire"
+                        else "calendrier")
                     detail["je"] = res.get("je")
                     detail["je_anticipee"] = res.get("je_ancienne")
                     frappe.db.set_value(DOCTYPE, o.name, "journal_entry", res.get("je"))

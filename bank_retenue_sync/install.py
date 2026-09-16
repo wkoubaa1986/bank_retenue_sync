@@ -21,6 +21,15 @@ LABEL = "Paiements à faire"
 
 
 REPORT = "Paiements a faire"
+# Les TRAITES EMISES ne sont pas des virements a faire : le fournisseur est deja regle, seul le
+# debit bancaire attend son echeance (decision utilisateur 16/09/2026). Elles ont leur propre
+# rapport, et donc leur propre raccourci — repose ici pour ne pas dependre du seul import du
+# workspace, que Frappe saute quand la fiche en base est plus recente que le fichier.
+REPORT_A_VENIR = "Paiements a venir"
+# ⚠️ SANS ACCENT, comme dans `banque.json` : `_ajouter_bloc` et `_positionner_apres` reperent le
+# bloc par son `shortcut_name`, qui est le LIBELLE. Un accent de trop et le migrate ajouterait un
+# second bloc pointant un raccourci inexistant.
+LABEL_A_VENIR = REPORT_A_VENIR
 CARTE = "Trésorerie A&S"
 
 # L'espace « Banque » appartient a cette app : c'est la que vivent deja l'identification
@@ -74,6 +83,29 @@ def _ajouter_entete(ws, texte: str) -> bool:
 
 PAGE_RAPPROCHEMENT = "rapprochement-client"
 LABEL_RAPPROCHEMENT = "Rapprochement client"
+
+
+def _ajouter_raccourci_a_venir():
+    """Raccourci « Paiements à venir » (traites émises), juste après « Paiements a faire »."""
+    if not frappe.db.exists("Workspace", WORKSPACE_BANQUE) or not frappe.db.exists(
+            "Report", REPORT_A_VENIR):
+        return None
+    ws = frappe.get_doc("Workspace", WORKSPACE_BANQUE)
+    modifie = False
+    if not any(s.link_to == REPORT_A_VENIR for s in (ws.shortcuts or [])):
+        ws.append("shortcuts", {"type": "Report", "link_to": REPORT_A_VENIR,
+                                "label": LABEL_A_VENIR, "color": "Blue",
+                                "report_ref_doctype": DOCTYPE})
+        modifie = True
+    modifie = _ajouter_bloc(ws, "shortcut", LABEL_A_VENIR, col=4) or modifie
+    # L'ancre est le LIBELLE du bloc voisin, soit « Paiements a faire » (REPORT), pas LABEL.
+    modifie = _positionner_apres(ws, LABEL_A_VENIR, REPORT) or modifie
+    if modifie:
+        ws.flags.ignore_permissions = True
+        ws.flags.ignore_links = True
+        ws.save()
+        frappe.db.commit()
+    return LABEL_A_VENIR
 
 
 def _ajouter_raccourci_partenaire():
@@ -131,6 +163,7 @@ def _ajouter_raccourci_cloture():
 
 def after_migrate():
     _ajouter_raccourci_paiements()
+    _ajouter_raccourci_a_venir()
     _ajouter_carte_tresorerie()
     _ajouter_raccourci_cloture()
     _ajouter_raccourci_partenaire()

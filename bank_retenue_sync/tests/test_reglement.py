@@ -125,7 +125,10 @@ class TestDeuxCycles(unittest.TestCase):
     """Aramex et note d'honoraire suivent le MEME cycle, sur deux comptes d'attente distincts."""
 
     def test_les_deux_cycles_sont_declares(self):
-        self.assertEqual({c["cle"] for c in AR.CYCLES}, {"aramex", "honoraire"})
+        # Seuls les cycles AUTOMATIQUES (apparies par le montant) ; « calendrier » et
+        # « traite » passent par un ordre de paiement (cf. TestCyclesParOrdreDePaiement).
+        self.assertEqual({c["cle"] for c in AR.CYCLES if c.get("auto", True)},
+                         {"aramex", "honoraire"})
 
     def test_chaque_cycle_a_son_compte_d_attente(self):
         self.assertEqual(AR.cycle("aramex")["compte"], "Créditeurs - A&S")
@@ -277,3 +280,32 @@ class TestReconstructionDesLignes(unittest.TestCase):
                      for d in self.HONORAIRE]
         lignes = self._lignes(anciennes, 231.86)
         self.assertEqual(round(sum(l.get("credit") or 0 for l in lignes), 3), 239.0)
+
+
+class TestCyclesParOrdreDePaiement(unittest.TestCase):
+    """Les cycles « calendrier » et « traite » ne sont jamais parcourus par le seul montant
+    (`auto` faux) : un ORDRE DE PAIEMENT les rapproche. Ils disent seulement quelle ligne du
+    compte d'attente la banque remplace, et sous quel moyen de paiement. Avant le 16/09/2026,
+    `ordres.confirmer_par_banque` appelait `regler(cle="calendrier")` sur un cycle inexistant."""
+
+    def test_les_cycles_existent(self):
+        self.assertEqual(AR.cycle("calendrier")["compte"], "Compte de découvert bancaire - A&S")
+        self.assertEqual(AR.cycle("traite")["compte"], "Compte de découvert bancaire - A&S")
+        self.assertEqual(AR.cycle("traite")["mode_paiement"], "Traite bancaire LC")
+        self.assertFalse(AR.cycle("traite").get("auto", True))
+        self.assertFalse(AR.cycle("calendrier").get("auto", True))
+
+    def test_les_cycles_historiques_restent_automatiques(self):
+        self.assertTrue(AR.cycle("aramex").get("auto", True))
+        self.assertTrue(AR.cycle("honoraire").get("auto", True))
+
+    def test_la_traite_remplace_la_ligne_du_decouvert_par_la_banque(self):
+        anciennes = [
+            {"account": "Charges Diverses - A&S", "debit_in_account_currency": 1250.5,
+             "credit_in_account_currency": 0, "cost_center": "Principal - A&S"},
+            {"account": "Compte de découvert bancaire - A&S", "debit_in_account_currency": 0,
+             "credit_in_account_currency": 1250.5, "cost_center": "Principal - A&S"},
+        ]
+        lignes = AR.lignes_de_reglement(anciennes, 1250.5, AR.cycle("traite"))
+        self.assertEqual(lignes[0], {"account": AR.BANK_ACCOUNT, "credit": 1250.5})
+        self.assertEqual([l["account"] for l in lignes[1:]], ["Charges Diverses - A&S"])

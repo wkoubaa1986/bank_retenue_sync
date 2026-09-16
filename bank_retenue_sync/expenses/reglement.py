@@ -50,6 +50,19 @@ CYCLES = (
      "compte": "Créditeurs - A&S", "party": "ARAMEX", "marqueur": None},
     {"cle": "honoraire", "libelle": "note d'honoraire",
      "compte": "Compte de découvert bancaire - A&S", "party": None, "marqueur": "honoraire"},
+    # Les deux cycles suivants ne sont PAS parcourus par `process_reglements` (`auto`: False) :
+    # leur rapprochement est deja fait par un ORDRE DE PAIEMENT (expenses/ordres.py), qui porte
+    # le lien vers l'ecriture ET vers le mouvement. Ils ne servent qu'a `regler` — dire quelle
+    # ligne du compte d'attente la banque remplace, et sous quel moyen de paiement.
+    #   - calendrier : salaires, loyer, echeances anticipees sur le decouvert ;
+    #   - traite     : traite bancaire EMISE depuis la caisse (customization_app, 16/09/2026),
+    #                  posee sur le decouvert a la saisie, debitee a son ECHEANCE.
+    {"cle": "calendrier", "libelle": "écriture anticipée",
+     "compte": "Compte de découvert bancaire - A&S", "party": None, "marqueur": None,
+     "auto": False},
+    {"cle": "traite", "libelle": "traite bancaire émise",
+     "compte": "Compte de découvert bancaire - A&S", "party": None, "marqueur": "Traite N°",
+     "auto": False, "mode_paiement": "Traite bancaire LC"},
 )
 
 
@@ -266,7 +279,7 @@ def regler(facture: dict, mouvement: dict, insert: bool = True,
         remark=_remarque_reglee(ancienne.user_remark, reference),
         cheque_no=ancienne.cheque_no,
         cheque_date=getdate(mouvement["date"]),
-        mode_of_payment="Virement")
+        mode_of_payment=cycle(cle).get("mode_paiement") or "Virement")
 
     if not insert:
         return {"flux": "reglement_%s" % cle, "status": "a regler", "je_ancienne": ancienne.name,
@@ -302,6 +315,8 @@ def process_reglements(movements: list, insert: bool = True, consommes: set = No
     if consommes is None:
         consommes = references_deja_utilisees()
     for cyc in CYCLES:
+        if not cyc.get("auto", True):
+            continue          # rapproche par un ordre de paiement, jamais par le seul montant
         if only and cyc["cle"] not in ({only} if isinstance(only, str) else set(only)):
             continue
         pieces = pieces_en_attente(cyc)
