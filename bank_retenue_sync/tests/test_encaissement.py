@@ -452,3 +452,77 @@ class TestCiblesDelta(unittest.TestCase):
                        self._ref("SO-3", 30.0)]), 120.0, 60.0, "SO-1")
         self.assertEqual([(c["reference_name"], c["montant"]) for c in cibles],
                          [("SO-2", 30.0), ("SO-3", 30.0)])
+
+
+class TestUnEncaissementParBordereau(unittest.TestCase):
+    """Un brouillon par bordereau (decision utilisateur 17/09/2026).
+
+    Le bordereau est l'unite que la banque credite ; c'est lui qu'on relit six mois plus tard
+    quand un cheque revient impaye. ENC-16-09-2026-00001 portait 90028536 et 90028531 ensemble.
+    """
+
+    def _chq(self, bon, num, valeur=100.0, pe=None):
+        return {"ref_paiement": pe or ("PE-" + num), "n_cheque": num, "valeur": valeur,
+                "bon_remise": bon, "statut": "Versé", "emmeteur": "Client " + num}
+
+    def test_deux_bordereaux_donnent_deux_groupes(self):
+        g = builder.grouper_par_bordereau([
+            self._chq("90028536", "4000608"), self._chq("90028531", "0000260"),
+            self._chq("90028536", "4000609")])
+        self.assertEqual(list(g), ["90028536", "90028531"])       # ordre d'apparition
+        self.assertEqual([r["n_cheque"] for r in g["90028536"]], ["4000608", "4000609"])
+        self.assertEqual(len(g["90028531"]), 1)
+
+    def test_un_seul_bordereau_reste_un_seul_groupe(self):
+        g = builder.grouper_par_bordereau([self._chq("90028536", "a"), self._chq("90028536", "b")])
+        self.assertEqual(len(g), 1)
+
+    def test_aucune_ligne_aucun_groupe(self):
+        self.assertEqual(builder.grouper_par_bordereau([]), {})
+        self.assertEqual(builder.grouper_par_bordereau(None), {})
+
+    def test_une_ligne_sans_bon_fait_son_propre_groupe(self):
+        """Chèque préavisé : `bon_remise` porte la référence bancaire, jamais vide en pratique —
+        mais une ligne sans bon ne doit pas se fondre dans le bordereau voisin."""
+        g = builder.grouper_par_bordereau([self._chq("90028536", "a"), self._chq("", "b")])
+        self.assertEqual(sorted(g), ["", "90028536"])
+
+    def test_chaque_groupe_construit_un_brouillon_complet(self):
+        g = builder.grouper_par_bordereau([
+            self._chq("90028536", "4000608", 3800.982), self._chq("90028531", "0000260", 380.0)])
+        docs = {bon: builder.build_encaissement(rows, insert=False) for bon, rows in g.items()}
+        self.assertEqual(docs["90028536"].total_des_chèques, 3800.982)
+        self.assertEqual(docs["90028531"].total_des_chèques, 380.0)
+        self.assertEqual(len(docs["90028536"].chèques_a_encaisser), 1)
+        self.assertEqual(docs["90028536"].chèques_a_encaisser[0].bon_remise, "90028536")
+
+
+class TestRepartitionDesEcarts(unittest.TestCase):
+    """Un ecart de cheque suit SON bordereau ; le reste va au brouillon commun."""
+
+    def setUp(self):
+        from bank_retenue_sync import orchestrator
+        self.o = orchestrator
+        self.diags = [
+            {"type": "ecart", "flux": "cheque", "bon": "90028536", "sous_type": "Sans pièce"},
+            {"type": "ecart", "flux": "cheque", "bon": "90028531", "sous_type": "Toléré"},
+            {"type": "ecart", "flux": "aramex", "suivi": "5133", "sous_type": "Delta paiement"},
+            {"type": "cheque", "bon": "90028536", "reason": "diagnostic, pas un écart"},
+        ]
+
+    def test_un_bordereau_ne_recoit_que_ses_ecarts(self):
+        r = self.o._ecarts_de_bordereaux(self.diags, {"90028536"})
+        self.assertEqual([e["sous_type"] for e in r], ["Sans pièce"])
+
+    def test_les_diagnostics_qui_ne_sont_pas_des_ecarts_sont_ignores(self):
+        r = self.o._ecarts_de_bordereaux(self.diags, {"90028536", "90028531"})
+        self.assertTrue(all(e["type"] == "ecart" for e in r))
+        self.assertEqual(len(r), 2)
+
+    def test_le_reste_recupere_aramex_et_les_bordereaux_sans_brouillon(self):
+        r = self.o._ecarts_hors_bordereaux(self.diags, {"90028536"})
+        self.assertEqual(sorted(e["sous_type"] for e in r), ["Delta paiement", "Toléré"])
+
+    def test_tous_les_bordereaux_traites_ne_laissent_que_les_autres_flux(self):
+        r = self.o._ecarts_hors_bordereaux(self.diags, {"90028536", "90028531"})
+        self.assertEqual([e["flux"] for e in r], ["aramex"])

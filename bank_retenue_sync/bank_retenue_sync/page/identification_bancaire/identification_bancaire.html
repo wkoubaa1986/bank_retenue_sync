@@ -64,6 +64,12 @@
   .ib-tbl .op { max-width: 320px; }
   .ib-tbl .raison { color: var(--text-muted); font-size: 11.5px; max-width: 280px; }
   .ib-ignored td { opacity: .5; }
+  /* Cheque revenu impaye : le detail doit sauter aux yeux (numero du cheque, client, montant),
+     puisque ce detail declenche un appel au client. Pas une seule apostrophe ici : le gabarit
+     de la page casserait le script (garde-fou dans les tests). */
+  .ib-impaye { color: #a93226; font-weight: 600; }
+  .ib-impaye .ib-impaye-chq { display: block; margin-top: 2px; font-weight: 700; }
+  .ib-impaye .ib-impaye-suite { display: block; font-weight: 400; color: #8a5a55; }
 
   .ib-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
               white-space: nowrap; border: 1px solid transparent; }

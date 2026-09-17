@@ -194,6 +194,36 @@ def montants_par_cle_bancaire() -> dict:
 COMPTES_IMPAYES = ("Chèques sans provision - A&S", "Traite Bancaire sans provision - A&S")
 
 
+#: Le n° de la piece impayee ouvre son `reference_no` : « 0001170-BIAT / BR:90028502 / Impayé FT… »
+_RX_NUM_PIECE = re.compile(r"^\s*([^-/\s]+)")
+
+
+def impayes_par_cle_bancaire() -> dict:
+    """{cle bancaire -> {"total": x, "pieces": [{piece, cheque, client, montant}]}}.
+
+    Le DETAIL de `montants_impayes_par_cle_bancaire`. Savoir qu'il manque 3 800,982 sur une
+    remise ne sert a rien si l'on ne sait pas QUEL cheque de QUEL client est revenu : c'est
+    ce qu'il faut lire a l'ecran pour appeler le client (demande utilisateur 17/09/2026).
+    """
+    rows = frappe.db.sql("""
+        select name, reference_no, paid_amount, party
+        from `tabPayment Entry`
+        where docstatus = 1 and ifnull(reference_no, '') != ''
+          and paid_to in %(comptes)s
+    """, {"comptes": COMPTES_IMPAYES}, as_dict=True)
+    index: dict = {}
+    for r in rows:
+        ref = r.reference_no or ""
+        num = _RX_NUM_PIECE.match(ref)
+        piece = {"piece": r.name, "cheque": num.group(1) if num else "",
+                 "client": r.party or "", "montant": flt(r.paid_amount, 3)}
+        for cle in set(_RX_BON.findall(ref)) | set(_RX_REF.findall(ref)):
+            e = index.setdefault(cle, {"total": 0.0, "pieces": []})
+            e["total"] = round(e["total"] + piece["montant"], 3)
+            e["pieces"].append(piece)
+    return index
+
+
 def montants_impayes_par_cle_bancaire() -> dict:
     """{cle bancaire -> montant REPRIS par la banque, sorti du compte apres coup}.
 
@@ -208,18 +238,7 @@ def montants_impayes_par_cle_bancaire() -> dict:
     La cle est citee dans le `reference_no` du paiement bascule, qui conserve celui d'origine
     (« 0001170-BIAT / BR:90028502 / Impayé FT… »).
     """
-    rows = frappe.db.sql("""
-        select reference_no, paid_amount
-        from `tabPayment Entry`
-        where docstatus = 1 and ifnull(reference_no, '') != ''
-          and paid_to in %(comptes)s
-    """, {"comptes": COMPTES_IMPAYES}, as_dict=True)
-    totaux: dict = {}
-    for r in rows:
-        ref = r.reference_no or ""
-        for cle in set(_RX_BON.findall(ref)) | set(_RX_REF.findall(ref)):
-            totaux[cle] = round(totaux.get(cle, 0.0) + flt(r.paid_amount, 3), 3)
-    return totaux
+    return {cle: e["total"] for cle, e in impayes_par_cle_bancaire().items()}
 
 
 def paiements_par_cle_bancaire() -> dict:

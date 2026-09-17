@@ -47,6 +47,25 @@ import frappe
 ENCAISSEMENT_DOCTYPE = "Encaissement Paiement"
 
 
+def grouper_par_bordereau(cheque_rows):
+    """Chèques répartis par bon de remise -> {bon: [lignes]}, dans l'ordre d'apparition.
+
+    UN ENCAISSEMENT PAR BORDEREAU (décision utilisateur du 17/09/2026). Ce que la banque
+    crédite, c'est un bordereau ; c'est lui qu'on relit six mois plus tard quand un chèque
+    revient impayé. Un brouillon qui mélange trois remises oblige à retrouver à la main
+    quel chèque appartenait à laquelle — et c'est exactement ce qui s'est passé sur
+    ENC-16-09-2026-00001, qui portait les bordereaux 90028536 et 90028531 ensemble.
+
+    Une ligne sans bon (cas des chèques préavisés : `bon_remise` porte alors la référence
+    bancaire ou le n° du chèque) fait son propre groupe plutôt que d'être fondue dans le
+    bordereau voisin.
+    """
+    groupes: dict = {}
+    for r in cheque_rows or []:
+        groupes.setdefault((r.get("bon_remise") or "").strip(), []).append(r)
+    return groupes
+
+
 def build_encaissement(cheque_rows=None, traite_rows=None, aramex_rows=None,
                        virement_lots=None, insert: bool = True):
     """Cree un Encaissement Paiement BROUILLON avec les lignes fournies.

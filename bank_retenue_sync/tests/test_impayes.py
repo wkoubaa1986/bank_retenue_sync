@@ -169,3 +169,116 @@ class TestEcartDeRemiseExpliqueParLImpaye(unittest.TestCase):
         self.assertEqual(c.ecart, 100.0)
         self.assertIn("116", c.raison)
 
+
+
+class TestDetailVisibleDeLImpaye(unittest.TestCase):
+    """L'écran doit dire QUEL chèque de QUEL client est revenu, pas seulement combien.
+
+    Le montant seul ne permet pas d'agir : pour rappeler le client il faut son nom et le
+    numéro du chèque (demande utilisateur 17/09/2026).
+    """
+
+    def _ctx(self, detail):
+        return C.LinkContext(
+            consumed={"cheque": {"90028502"}, "traite": set(), "aramex": set(), "virement": set()},
+            encaissements={"docs": {"cheque": {"90028502": "ENC-14-09-2026-00001"}},
+                           "etats": {"ENC-14-09-2026-00001": {"docstatus": 1}}},
+            montants_par_cle={"90028502": 1672.0},
+            banque_par_cle={("cheque", "90028502"): 1788.0},
+            impayes_par_cle={c: e["total"] for c, e in (detail or {}).items()},
+            impayes_detail=detail or {})
+
+    def _remise(self):
+        return {"date": date(2026, 9, 14), "date_valeur": date(2026, 9, 14),
+                "operation": "ENC CHEQ TN NUM 90028502", "reference": "FT262571Y318",
+                "debit": 0.0, "credit": 1788.0}
+
+    def _detail(self, pieces):
+        return {"90028502": {"total": round(sum(p["montant"] for p in pieces), 3),
+                             "pieces": pieces}}
+
+    def test_le_numero_le_client_et_le_montant_sont_dans_la_raison(self):
+        d = self._detail([{"piece": "ACC-PAY-1", "cheque": "0001170",
+                           "client": "Hassin Abellatif", "montant": 116.0}])
+        c = C.classify_one(self._remise(), self._ctx(d))
+        self.assertIn("0001170", c.raison)
+        self.assertIn("Hassin Abellatif", c.raison)
+        self.assertIn("116", c.raison)
+
+    def test_deux_impayes_sur_la_meme_remise_sont_tous_nommes(self):
+        d = self._detail([{"piece": "P1", "cheque": "0001170", "client": "Hassin", "montant": 100.0},
+                          {"piece": "P2", "cheque": "4000608", "client": "CFP", "montant": 16.0}])
+        c = C.classify_one(self._remise(), self._ctx(d))
+        self.assertIn("0001170", c.raison)
+        self.assertIn("4000608", c.raison)
+        self.assertIn("CFP", c.raison)
+
+    def test_au_dela_de_trois_le_reste_est_compte(self):
+        pieces = [{"piece": f"P{i}", "cheque": f"000{i}", "client": f"C{i}", "montant": 29.0}
+                  for i in range(4)]
+        c = C.classify_one(self._remise(), self._ctx(self._detail(pieces)))
+        self.assertIn("+ 1 autre(s)", c.raison)
+
+    def test_sans_detail_la_phrase_generique_reste(self):
+        """Compatibilité : un contexte sans détail (tests, ancien cache) doit continuer à parler."""
+        ctx = self._ctx(None)
+        ctx.impayes_par_cle = {"90028502": 116.0}
+        c = C.classify_one(self._remise(), ctx)
+        self.assertIn("impayée", c.raison)
+        self.assertIn("116", c.raison)
+
+    def test_la_page_met_l_impaye_en_evidence(self):
+        import os
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(base, "bank_retenue_sync", "page", "identification_bancaire",
+                               "identification_bancaire.js"), encoding="utf-8") as f:
+            js = f.read()
+        self.assertIn("_raison_cell", js)
+        self.assertIn("ib-impaye", js)
+        with open(os.path.join(base, "bank_retenue_sync", "page", "identification_bancaire",
+                               "identification_bancaire.html"), encoding="utf-8") as f:
+            self.assertIn(".ib-impaye", f.read())
+
+
+class TestRemiseEntierementImpayee(unittest.TestCase):
+    """Bordereau dont le SEUL chèque est revenu impayé : la ligne restait muette.
+
+    Cas réel du 16/09/2026, bordereau 90028531 crédité 380,000 : le chèque 0000260 de Lotfi
+    Chelly est revenu impayé, son paiement est parti sur « Chèques sans provision », donc
+    AUCUNE pièce ne touche le compte bancaire. `montants_par_cle` ne connaissait pas la clé,
+    aucun écart n'était mesuré, et l'écran n'affichait ni comptabilisé, ni écart, ni raison —
+    alors que la ligne est parfaitement explicable.
+    """
+
+    def _ctx(self, impaye=True):
+        detail = {"90028531": {"total": 380.0, "pieces": [
+            {"piece": "ACC-PAY-2026-07070", "cheque": "0000260",
+             "client": "Lotfi Chelly", "montant": 380.0}]}} if impaye else {}
+        return C.LinkContext(
+            consumed={"cheque": {"90028531"}, "traite": set(), "aramex": set(), "virement": set()},
+            encaissements={"docs": {"cheque": {"90028531": "ENC-16-09-2026-00001"}},
+                           "etats": {"ENC-16-09-2026-00001": {"docstatus": 1}}},
+            montants_par_cle={},                       # aucune pièce sur la banque
+            banque_par_cle={("cheque", "90028531"): 380.0},
+            impayes_par_cle={c: e["total"] for c, e in detail.items()},
+            impayes_detail=detail)
+
+    def _remise(self):
+        return {"date": date(2026, 9, 16), "date_valeur": date(2026, 9, 16),
+                "operation": "ENC CHEQ TN NUM 90028531", "reference": "FT26259CSF9H",
+                "debit": 0.0, "credit": 380.0}
+
+    def test_la_ligne_est_expliquee_et_soldee(self):
+        c = C.classify_one(self._remise(), self._ctx())
+        self.assertEqual(c.statut, C.STATUT_IDENTIFIE)
+        self.assertEqual(c.montant_document, 380.0)
+        self.assertEqual(c.ecart, 0.0)
+        self.assertIn("0000260", c.raison)
+        self.assertIn("Lotfi Chelly", c.raison)
+
+    def test_sans_impaye_la_ligne_reste_comme_avant(self):
+        """Aucune pièce et aucun impayé : on n'invente pas un comptabilisé à zéro."""
+        c = C.classify_one(self._remise(), self._ctx(impaye=False))
+        self.assertEqual(c.montant_document, 0.0)
+        self.assertEqual(c.ecart, 0.0)
+        self.assertEqual(c.raison, "")

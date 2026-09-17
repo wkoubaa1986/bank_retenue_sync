@@ -1142,9 +1142,28 @@ class IdentificationBancaire {
         <td class="raison" style="white-space:pre-line;font-size:11px;max-width:260px">${esc(
       r.reglement || ""
     )}</td>
-        <td class="raison">${esc(r.raison || r.ignore_motif || "")}</td>
+        <td class="raison">${this._raison_cell(r)}</td>
         <td>${this._actions_cell(r)}</td>
       </tr>`;
+  }
+
+  /* Chèque revenu impayé : au lieu d'une phrase noyée dans la colonne, une pastille rouge et le
+     détail en évidence — n° du chèque, client, montant. C'est ce qu'on lit avant d'appeler le
+     client (demande utilisateur 17/09/2026). Le serveur compose déjà la phrase (classify
+     `_texte_impaye`) ; ici on la met en scène. */
+  _raison_cell(r) {
+    const esc = frappe.utils.escape_html;
+    const texte = r.raison || r.ignore_motif || "";
+    if (!/impay/i.test(texte)) return esc(texte);
+    // « … : chèque 4000608 de CFP (3800.982) revenu impayé, … » → tête + détail
+    const coupe = texte.search(/chèque\s|pièce\s/i);
+    const tete = coupe > 0 ? texte.slice(0, coupe).replace(/[\s:;—-]+$/, "") : "";
+    const detail = coupe > 0 ? texte.slice(coupe) : texte;
+    return `<span class="ib-impaye">
+      <span class="indicator-pill red" style="font-size:10px">${__("impayé")}</span>
+      ${tete ? `<span class="ib-impaye-suite">${esc(tete)}</span>` : ""}
+      <span class="ib-impaye-chq">${esc(detail)}</span>
+    </span>`;
   }
 
   /* Écart de paiement. Sous le seuil, il correspond aux frais bancaires prélevés à la source :

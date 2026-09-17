@@ -106,6 +106,9 @@ class LinkContext:
     # {cle bancaire -> montant repris} : une piece d'une remise revenue impayee a quitte le
     # compte bancaire, et sans elle le credit de la remise paraitrait incomplet.
     impayes_par_cle: dict = field(default_factory=dict)
+    # {cle bancaire -> {"total", "pieces": [{piece, cheque, client, montant}]}} : le DETAIL des
+    # impayes, pour que l'ecran dise QUEL cheque de QUEL client est revenu, pas seulement combien.
+    impayes_detail: dict = field(default_factory=dict)
     cheque_no_index: dict = field(default_factory=dict)
     # Payment Entry soumises touchant le compte bancaire, dans les deux sens. Sans elles, un
     # reglement fournisseur (Payment Entry `Pay`, 154 sur Zitouna) ressort « orphelin » alors
@@ -175,6 +178,7 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
     pieces_from = (getdate(date_from) - timedelta(days=45)) if date_from else None
 
     cheque_index = lookup.cheque_no_index(pieces_from, date_to)
+    _impayes = pending.impayes_par_cle_bancaire()
     return LinkContext(
         consumed=pending.consumed_bank_keys(),
         booked=pending.bank_refs_already_booked(refs),
@@ -187,7 +191,8 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
         pieces=lookup.pieces_bancaires(pieces_from, date_to),
         je_finder=especes.find_journal_entries,
         montants_par_cle=pending.montants_par_cle_bancaire(),
-        impayes_par_cle=pending.montants_impayes_par_cle_bancaire(),
+        impayes_par_cle={c: e["total"] for c, e in _impayes.items()},
+        impayes_detail=_impayes,
         encaissements=pending.etat_encaissements_par_cle(),
         je_brouillons=set(frappe.get_all("Journal Entry", filters={"docstatus": 0},
                                          pluck="name")),
@@ -290,6 +295,15 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
                               "soumission bloquée".format(n_ecarts))
             else:
                 ctx.raison = "encaissement en brouillon — à soumettre"
+        # UNE REMISE ENTIEREMENT REVENUE IMPAYEE N'A AUCUNE PIECE SUR LE COMPTE BANCAIRE.
+        # `montant` reste alors None, `_mesurer_ecart` renonce, et la ligne s'affichait muette :
+        # ni comptabilise, ni ecart, ni explication — alors que le credit de la banque a bien ete
+        # repris (cas reel du bordereau 90028531, 380 DT, seul cheque revenu impaye le
+        # 16/09/2026). Zero comptabilise EST une information : l'ecart vaut tout le credit, et
+        # `_expliquer_impaye` le solde juste apres en nommant le cheque et son client.
+        if montant is None and flt((context.impayes_par_cle or {}).get(cle)):
+            montant = 0.0
+
         # Plusieurs credits peuvent partager la cle (bordereau credite en deux fois) : l'ecart
         # se mesure alors somme banque vs somme pieces — le meme pour chaque ligne du groupe.
         banque_groupe = (context.banque_par_cle or {}).get((rule.flux, cle))
@@ -361,6 +375,30 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
                                          "" if numero else " (aucun n° dans le libelle)")
 
 
+def _texte_impaye(context: LinkContext, cle: str) -> str:
+    """« chèque 4000608 de CFP (3 800,982) revenu impayé, sorti de la banque ».
+
+    Le montant seul ne permet pas d'agir : pour rappeler le client il faut son nom et le
+    numero du cheque, et c'est a l'ecran qu'on les lit (demande utilisateur 17/09/2026).
+    """
+    pieces = ((getattr(context, "impayes_detail", None) or {}).get(cle) or {}).get("pieces") or []
+    morceaux = []
+    for p in pieces[:3]:
+        bout = "chèque %s" % p.get("cheque") if p.get("cheque") else "pièce"
+        if p.get("client"):
+            bout += " de %s" % p["client"]
+        if p.get("montant"):
+            bout += " (%s)" % flt(p["montant"], 3)
+        morceaux.append(bout)
+    if len(pieces) > 3:
+        morceaux.append("+ %d autre(s)" % (len(pieces) - 3))
+    if not morceaux:
+        return "pièce revenue impayée, sortie de la banque"
+    return "%s revenu%s impayé%s, sorti%s de la banque" % (
+        " ; ".join(morceaux), "s" if len(pieces) > 1 else "", "s" if len(pieces) > 1 else "",
+        "s" if len(pieces) > 1 else "")
+
+
 def _expliquer_impaye(ctx: Classification, cle: str, context: LinkContext) -> bool:
     """Un ecart du a une piece REVENUE IMPAYEE n'est pas un manque : il s'explique et se solde.
 
@@ -377,8 +415,12 @@ def _expliquer_impaye(ctx: Classification, cle: str, context: LinkContext) -> bo
         return False
     ctx.montant_document = round(flt(ctx.montant_document) + repris, 3)
     ctx.ecart = round(flt(ctx.ecart) - repris, 3)
-    mention = ("dont %s repris : pièce revenue impayée, sortie de la banque" % repris)
-    ctx.raison = ("%s ; %s" % (ctx.raison, mention)) if ctx.raison else mention.capitalize()
+    mention = ("dont %s repris : %s" % (repris, _texte_impaye(context, cle)))
+    # `str.capitalize()` aurait mis TOUT le reste en minuscules : depuis que la mention porte
+    # le nom du client et le n° du chèque, elle rendait « Hassin Abellatif » en « hassin
+    # abellatif ». On ne touche donc que la première lettre.
+    ctx.raison = ("%s ; %s" % (ctx.raison, mention)) if ctx.raison \
+        else (mention[:1].upper() + mention[1:])
     return True
 
 
@@ -767,7 +809,9 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
                 c.statut = STATUT_IDENTIFIE
                 c.document_type = "Payment Entry"
                 c.document_name = pe_cite
-                c.raison = "chèque impayé : paiement basculé sur Chèques sans provision"
+                # le détail dit déjà « revenu impayé » : le répéter en tête n'apporte rien
+                c.raison = ("%s — paiement basculé sur Chèques sans provision"
+                            % _texte_impaye(context, c.reference))
             elif rule.key == "cheque_repris":
                 c.statut = STATUT_A_VERIFIER
                 c.raison = ("%s : le flux « impayés » basculera le paiement du chèque sur "

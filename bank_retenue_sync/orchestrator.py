@@ -509,7 +509,7 @@ def process_encaissements(insert=True, refresh=True, use_ai=True, movements=None
     `use_ai=False` coupe l'appel OpenAI d'identification des payeurs : le flux virement se limite
     alors aux alias appris et au score fuzzy (aucun cout, moins de couverture)."""
     out = {"cheques": 0, "traites": 0, "aramex": 0, "virements": 0, "encaissement": None,
-           "bank_data_asof": None, "bank_stale": True, "diagnostics": []}
+           "brouillons": [], "bank_data_asof": None, "bank_stale": True, "diagnostics": []}
     if refresh:
         _ensure_fresh_bank_data(out["diagnostics"])
     # Source par defaut : le REGISTRE, et non `/export/latest`. Le dernier export ne couvre que sa
@@ -576,19 +576,62 @@ def process_encaissements(insert=True, refresh=True, use_ai=True, movements=None
                                             booked=booked, ai_resolver=resolver, aliases=aliases)
     out["diagnostics"] += d1 + d2 + d3 + d4 + d5
 
-    doc = builder.build_encaissement(chq_rows, tra_rows, ara_rows, vir_lots, insert=insert)
-    if doc:
+    # UN BROUILLON PAR BORDEREAU pour les cheques (decision utilisateur 17/09/2026) : le
+    # bordereau est l'unite que la banque credite et celle qu'on relit quand un cheque revient
+    # impaye. Le reste (traites, Aramex, virements clients) tient dans un seul brouillon : ces
+    # flux n'ont pas de bordereau, leur unite est le virement, deja porte par chaque ligne.
+    docs = []          # [(doc, bons de remise couverts)]
+    for bon, rows in builder.grouper_par_bordereau(chq_rows).items():
+        d = builder.build_encaissement(rows, insert=insert)
+        if d:
+            docs.append((d, {bon}))
+    reste = builder.build_encaissement(None, tra_rows, ara_rows, vir_lots, insert=insert)
+
+    if docs or reste:
+        noms = [(d.name if insert else "(dry-run)") for d, _ in docs]
+        if reste:
+            noms.append(reste.name if insert else "(dry-run)")
         out.update(cheques=len(chq_rows), traites=len(tra_rows), aramex=len(ara_rows),
-                   virements=len(vir_lots),
-                   encaissement=(doc.name if insert else "(dry-run)"))
+                   virements=len(vir_lots), brouillons=noms,
+                   encaissement=noms[0] if noms else None)
         if insert:
-            # Les ecarts Aramex (frais, toleres, deltas, sans piece) emis par match_aramex sont
-            # rattaches au brouillon : les BLOQUANTS empechent sa soumission tant qu'un humain
+            # Les ecarts (frais Aramex, toleres, deltas, lignes sans piece) sont rattaches au
+            # brouillon QUI LES CONCERNE : un ecart de cheque suit son bordereau, les autres
+            # vont au brouillon commun. Les BLOQUANTS empechent la soumission tant qu'un humain
             # n'a pas resolu (cf. encaissement/ecarts.py, decision utilisateur 2026-08-18).
             from bank_retenue_sync.encaissement import ecarts as _ecarts
-            out["ecarts"] = _ecarts.persister(doc.name, out["diagnostics"])
+            out["ecarts"] = []
+            couverts = set()
+            for d, bons in docs:
+                couverts |= bons
+                out["ecarts"] += _ecarts.persister(d.name, _ecarts_de_bordereaux(
+                    out["diagnostics"], bons))
+            restants = _ecarts_hors_bordereaux(out["diagnostics"], couverts)
+            if reste:
+                out["ecarts"] += _ecarts.persister(reste.name, restants)
+            elif restants and docs:
+                # Bordereau dont AUCUNE ligne n'a pu etre appariee : son ecart n'a pas de
+                # brouillon a lui. Le laisser tomber reviendrait a ne bloquer personne, donc
+                # il se rattache au premier brouillon — son champ `bon` dit d'ou il vient.
+                out["ecarts"] += _ecarts.persister(docs[0][0].name, restants)
     frappe.db.commit()
     return out
+
+
+def _est_ecart_cheque(e, bons):
+    return (e.get("type") == "ecart" and e.get("flux") == "cheque"
+            and (e.get("bon") or "") in bons)
+
+
+def _ecarts_de_bordereaux(diagnostics, bons):
+    """Ecarts de cheque appartenant a ces bordereaux."""
+    return [e for e in diagnostics or [] if _est_ecart_cheque(e, bons)]
+
+
+def _ecarts_hors_bordereaux(diagnostics, bons_traites):
+    """Tout le reste : Aramex, virements, et les bordereaux sans brouillon propre."""
+    return [e for e in diagnostics or []
+            if e.get("type") == "ecart" and not _est_ecart_cheque(e, bons_traites)]
 
 
 # ================================ ENTREES ================================
@@ -747,18 +790,32 @@ def _auto_submit_encaissement(resultat):
     2026-08-18) : SEULEMENT si l'option `encaissement_auto_submit` des Settings est cochee ET
     qu'aucun ecart bloquant ne reste a traiter. Sinon le brouillon attend l'humain — et le hook
     before_submit (encaissement/ecarts.py) re-verifie de toute facon au moment de soumettre."""
-    nom = (resultat or {}).get("encaissement")
-    if not nom or nom == "(dry-run)":
+    res = resultat or {}
+    noms = [n for n in (res.get("brouillons") or [res.get("encaissement")])
+            if n and n != "(dry-run)"]
+    if not noms:
         return None
     if not frappe.utils.cint(frappe.db.get_single_value(
             "Bank Retenue Sync Settings", "encaissement_auto_submit")):
         return "option désactivée : soumission manuelle"
-    bloquants = frappe.db.count("BRS Ecart Encaissement",
-                                {"encaissement": nom, "bloquant": 1, "statut": "À traiter"})
-    if bloquants:
-        return "bloquée : {0} écart(s) à résoudre".format(bloquants)
-    frappe.get_doc("Encaissement Paiement", nom).submit()
-    return "soumis automatiquement"
+    # Un brouillon par bordereau : celui qui porte un ecart bloquant attend l'humain, les
+    # autres partent. Bloquer toute la fournee pour un seul bordereau ferait dormir des
+    # encaissements sains.
+    soumis, bloques = [], []
+    for nom in noms:
+        bloquants = frappe.db.count("BRS Ecart Encaissement",
+                                    {"encaissement": nom, "bloquant": 1, "statut": "À traiter"})
+        if bloquants:
+            bloques.append("{0} ({1} écart(s))".format(nom, bloquants))
+            continue
+        frappe.get_doc("Encaissement Paiement", nom).submit()
+        soumis.append(nom)
+    parts = []
+    if soumis:
+        parts.append("{0} soumis automatiquement".format(len(soumis)))
+    if bloques:
+        parts.append("bloqué(s) : {0}".format(", ".join(bloques)))
+    return " · ".join(parts) or "rien à soumettre"
 
 
 def run_verification_bancaire(capture_solde=True, ecritures=True):
