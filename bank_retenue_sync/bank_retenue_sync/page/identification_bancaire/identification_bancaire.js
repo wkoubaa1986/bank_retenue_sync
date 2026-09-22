@@ -189,7 +189,8 @@ class IdentificationBancaire {
     this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
     this.page.add_menu_item(__("Générer les règlements"), () => this._reglements());
     this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes());
-    this.page.add_menu_item(__("Régulariser un chèque impayé"), () => this._regulariser_impaye());
+    // bouton visible dans l'en-tête (pas seulement dans le menu « ··· »)
+    this.page.add_inner_button(__("Régulariser un chèque impayé"), () => this._regulariser_impaye());
     this.page.add_menu_item(__("Rafraîchir l'export bancaire"), () => this._rafraichir());
     this.page.add_menu_item(__("Exporter en Excel"), () => this._excel());
     this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
