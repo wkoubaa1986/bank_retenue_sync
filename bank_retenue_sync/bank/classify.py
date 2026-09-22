@@ -890,12 +890,20 @@ def apparier_restants(classifications: list, context: LinkContext) -> int:
                        piece["montant"])
         return c
 
-    paires = ecarts.apparier_par_montant(restants, dispo)
+    blocs: dict = {}
+    paires = ecarts.apparier_par_montant(restants, dispo, blocs=blocs)
     for cle, piece in paires.items():
         c = _rattacher(cle, piece)
         c.statut = STATUT_IDENTIFIE
-        c.raison = ("apparie par le montant et la date : la piece ne cite aucune reference "
-                    "bancaire (%s)" % (piece.get("texte") or "")[:60])
+        if blocs.get(cle):
+            # k mouvements identiques <-> k pieces identiques : l'ensemble est sans ambiguite,
+            # l'attribution individuelle est conventionnelle (cf. ecarts._apparier_blocs).
+            c.raison = ("apparie en bloc : %d mouvements identiques face a %d pieces identiques "
+                        "par le montant et la date, sans reference bancaire (%s)"
+                        % (blocs[cle], blocs[cle], (piece.get("texte") or "")[:60]))
+        else:
+            c.raison = ("apparie par le montant et la date : la piece ne cite aucune reference "
+                        "bancaire (%s)" % (piece.get("texte") or "")[:60])
 
     # SECONDE PASSE, A LA TOLERANCE : la piece existe mais porte un montant FAUX.
     # Cas reel : la recharge Total du 20/07, prelevee 703,500 et comptabilisee 703,000. Sans

@@ -113,7 +113,7 @@ def piece_cite(piece: dict, cles: set) -> set:
 
 
 def apparier_par_montant(mouvements: list, pieces: list, fenetre: int = FENETRE_JOURS,
-                         marge: float = MARGE_EXACTE) -> dict:
+                         marge: float = MARGE_EXACTE, blocs: dict = None) -> dict:
     """{cle du mouvement -> piece} pour les paires SANS reference commune.
 
     Dernier recours, et le plus fragile : on n'apparie que si le candidat est unique DES DEUX
@@ -144,8 +144,44 @@ def apparier_par_montant(mouvements: list, pieces: list, fenetre: int = FENETRE_
                 continue
             candidats[m["cle"]].append(p)
             inverse[p["voucher_no"]].append(m["cle"])
-    return {cle: ps[0] for cle, ps in candidats.items()
-            if len(ps) == 1 and len(inverse[ps[0]["voucher_no"]]) == 1}
+    paires = {cle: ps[0] for cle, ps in candidats.items()
+              if len(ps) == 1 and len(inverse[ps[0]["voucher_no"]]) == 1}
+    if marge is not None:
+        paires.update(_apparier_blocs(candidats, inverse, paires, blocs))
+    return paires
+
+
+def _apparier_blocs(candidats: dict, inverse: dict, paires: dict, blocs: dict = None) -> dict:
+    """Appariement EN BLOC : k mouvements identiques face a exactement k pieces identiques.
+
+    Cas reel du 22/09/2026 : deux paiements Orange de 145,350 le meme jour (FT2626524KX3 et
+    FT26265D5QSF), deux ecritures de caisse « Réglé par carte bancaire » de 145,350 le meme jour.
+    Pris un a un, chaque mouvement a deux candidates et chaque piece deux pretendants : l'unicite
+    des deux cotes echoue et les quatre lignes restaient « a verifier » — alors que l'ensemble,
+    lui, est sans ambiguite : ces deux pieces SONT ces deux mouvements, et peu importe laquelle
+    porte laquelle (meme montant, meme compte, meme jour).
+
+    Conditions : les mouvements du bloc ont exactement le meme ensemble de candidates, ces
+    candidates n'ont pour pretendants que ces mouvements, et les effectifs sont egaux. Un 2 contre
+    3 reste non tranche. L'ordre d'attribution est deterministe (date puis cle / nom). Reserve au
+    montant EXACT : jamais a la tolerance.
+    """
+    restants = {cle: ps for cle, ps in candidats.items() if cle not in paires}
+    groupes: dict = defaultdict(list)
+    for cle, ps in restants.items():
+        groupes[tuple(sorted(p["voucher_no"] for p in ps))].append(cle)
+    sorties = {}
+    for noms_pieces, cles in groupes.items():
+        if len(cles) < 2 or len(cles) != len(noms_pieces):
+            continue
+        if any(set(inverse[v]) != set(cles) for v in noms_pieces):
+            continue
+        pieces_tri = sorted(restants[cles[0]], key=lambda p: (str(p.get("posting_date") or ""), p["voucher_no"]))
+        for cle, p in zip(sorted(cles), pieces_tri):
+            sorties[cle] = p
+            if blocs is not None:
+                blocs[cle] = len(cles)
+    return sorties
 
 
 def tolerance(montant: float) -> float:

@@ -71,6 +71,37 @@ class TestApparierParMontant(unittest.TestCase):
             [piece("ACC-JV-1", 6, 20000.0), piece("ACC-JV-2", 6, 20000.0)])
         self.assertEqual(paires, {})
 
+    def test_bloc_k_mouvements_identiques_contre_k_pieces_identiques(self):
+        """Cas reel du 22/09/2026 : deux paiements Orange de 145,350 le meme jour, deux ecritures
+        de caisse « par carte » de 145,350 le meme jour. L'ensemble est sans ambiguite."""
+        blocs = {}
+        paires = E.apparier_par_montant(
+            [mvt("m2", 22, 145.35, reference="FT26265D5QSF"), mvt("m1", 22, 145.35, reference="FT2626524KX3")],
+            [piece("ACC-JV-2026-00768", 22, 145.35), piece("ACC-JV-2026-00767", 22, 145.35)], blocs=blocs)
+        self.assertEqual({k: v["voucher_no"] for k, v in paires.items()},
+                         {"m1": "ACC-JV-2026-00767", "m2": "ACC-JV-2026-00768"})
+        self.assertEqual(blocs, {"m1": 2, "m2": 2})
+
+    def test_bloc_refuse_si_les_effectifs_different(self):
+        """Deux mouvements contre trois pieces : lequel des trois est de trop ? Pas a nous de dire."""
+        paires = E.apparier_par_montant(
+            [mvt("m1", 22, 145.35), mvt("m2", 22, 145.35)],
+            [piece("J1", 22, 145.35), piece("J2", 22, 145.35), piece("J3", 22, 145.35)])
+        self.assertEqual(paires, {})
+
+    def test_bloc_refuse_si_une_piece_a_un_autre_pretendant(self):
+        """Un troisieme mouvement du meme montant, hors du bloc, rend l'ensemble ambigu."""
+        paires = E.apparier_par_montant(
+            [mvt("m1", 22, 145.35), mvt("m2", 22, 145.35), mvt("m3", 24, 145.35)],
+            [piece("J1", 22, 145.35), piece("J2", 22, 145.35)])
+        self.assertEqual(paires, {})
+
+    def test_bloc_jamais_a_la_tolerance(self):
+        paires = E.apparier_par_montant(
+            [mvt("m1", 22, 145.35), mvt("m2", 22, 145.35)],
+            [piece("J1", 22, 145.0), piece("J2", 22, 145.0)], marge=None)
+        self.assertEqual(paires, {})
+
     def test_sens_oppose_jamais_apparie(self):
         """Un debit du releve ne peut pas correspondre a une entree d'argent."""
         paires = E.apparier_par_montant([mvt("m1", 4, 33.0, sens="Debit")],
