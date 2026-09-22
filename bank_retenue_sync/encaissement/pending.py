@@ -270,21 +270,34 @@ def _pending_pes(paid_to: str, exclude: set, extractor=None) -> list:
     """PE 'Receive' soumises sur le compte d'attente `paid_to`, non deja encaissees.
     `extractor(reference_no)` derive le n° servant a l'appariement (defaut : suite de chiffres)."""
     extractor = extractor or _extract_number
+    # Un cheque impaye REDEPOSE ou REMPLACE (customization_app.caisse_impayes) est un transfert
+    # interne depuis « Chèques sans provision » vers le portefeuille : il doit partir sur un
+    # bordereau comme n'importe quel cheque. ERPNext lui efface le client : on le lit sur la
+    # piece d'origine (`custom_impaye_origine`).
+    avec_origine = frappe.db.has_column("Payment Entry", "custom_impaye_origine")
     pes = frappe.get_all(
         "Payment Entry",
         filters={
             "company": COMPANY,
-            "payment_type": "Receive",
+            "payment_type": ["in", ["Receive", "Internal Transfer"]],
             "paid_to": paid_to,
             "docstatus": 1,
         },
-        fields=["name", "party", "reference_no", "reference_date", "paid_amount"],
+        fields=["name", "party", "reference_no", "reference_date", "paid_amount", "payment_type", "paid_from"]
+               + (["custom_impaye_origine"] if avec_origine else []),
         order_by="reference_date asc",
     )
     out = []
     for pe in pes:
         if pe["name"] in exclude:
             continue
+        if pe.get("payment_type") == "Internal Transfer":
+            if pe.get("paid_from") not in COMPTES_IMPAYES:
+                continue          # un autre transfert interne n'est pas une piece a remettre
+            origine = pe.get("custom_impaye_origine")
+            if origine:
+                pe["party"] = frappe.db.get_value("Payment Entry", origine, "party")
+            pe["regularisation"] = origine
         pe["numero"] = extractor(pe.get("reference_no"))
         out.append(pe)
     return out

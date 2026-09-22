@@ -82,12 +82,18 @@ def trouver_paiement(numero, montant, candidats) -> tuple:
 
 def candidats_pe() -> list:
     """Les paiements par cheque qui peuvent revenir impayes : en portefeuille ou deja verses."""
-    return frappe.get_all(
+    avec_origine = frappe.db.has_column("Payment Entry", "custom_impaye_origine")
+    pes = frappe.get_all(
         "Payment Entry",
-        filters={"docstatus": 1, "payment_type": "Receive", "mode_of_payment": "Chèque",
-                 "paid_to": ["in", [COMPTE_PORTEFEUILLE, COMPTE_BANQUE]]},
+        filters={"docstatus": 1, "payment_type": ["in", ["Receive", "Internal Transfer"]],
+                 "mode_of_payment": "Chèque", "paid_to": ["in", [COMPTE_PORTEFEUILLE, COMPTE_BANQUE]]},
         fields=["name", "party", "party_name", "paid_amount", "reference_no", "paid_to",
-                "posting_date"], limit_page_length=0)
+                "posting_date", "payment_type", "paid_from"] + (["custom_impaye_origine"] if avec_origine else []),
+        limit_page_length=0)
+    # les transferts retenus sont les regularisations d'impaye (redepot / remplacement) : un cheque
+    # qui revient une seconde fois — cf. customization_app.caisse_impayes.
+    return [p for p in pes if p.get("payment_type") != "Internal Transfer"
+            or p.get("paid_from") == COMPTE_IMPAYES]
 
 
 def _pieces_liees(pe) -> list:
@@ -105,6 +111,39 @@ def _pieces_liees(pe) -> list:
     return out
 
 
+def _annuler_regularisation(pe, reference: str, jour, insert: bool) -> dict:
+    """Un cheque REDEPOSE ou de REMPLACEMENT (transfert interne depuis les impayes, cf.
+    customization_app.caisse_impayes) revient encore impaye : on annule le transfert, l'argent
+    est de nouveau sur « Chèques sans provision », porte par la piece d'origine — qui reste la
+    reference du mouvement de rejet. Rien n'est recree ni supprime : la trace est complete."""
+    origine = getattr(pe, "custom_impaye_origine", None) or ""
+    party = None
+    pieces = []
+    if origine and frappe.db.exists("Payment Entry", origine):
+        doc_origine = frappe.get_doc("Payment Entry", origine)
+        party = doc_origine.party_name or doc_origine.party
+        pieces = _pieces_liees(doc_origine)
+    if not insert:
+        return {"status": "a annuler", "ancien": pe.name, "nouveau": origine or pe.name,
+                "montant": flt(pe.paid_amount, 3), "party": party}
+    pe.flags.ignore_permissions = True
+    pe.flags.ignore_links = True
+    pe.cancel()
+    texte = ("❌ Chèque de régularisation %s (%s DT, %s) revenu IMPAYÉ le %s — rejet bancaire %s. "
+             "Transfert annulé : l'impayé d'origine %s reste sur « %s », à relancer."
+             % (pe.name, flt(pe.paid_amount, 3), pe.reference_no or "", jour, reference,
+                origine or "?", COMPTE_IMPAYES))
+    for doctype, nom in [("Payment Entry", pe.name)] + ([("Payment Entry", origine)] if origine else []) + pieces:
+        try:
+            frappe.get_doc({"doctype": "Comment", "comment_type": "Info",
+                            "reference_doctype": doctype, "reference_name": nom,
+                            "content": texte}).insert(ignore_permissions=True)
+        except Exception:
+            pass
+    return {"status": "bascule", "ancien": pe.name, "nouveau": origine or pe.name,
+            "montant": flt(pe.paid_amount, 3), "party": party}
+
+
 def basculer(pe_name: str, mouvement: dict, insert: bool = True) -> dict:
     """Le paiement du cheque passe sur « Chèques sans provision - A&S » a la date du rejet."""
     pe = frappe.get_doc("Payment Entry", pe_name)
@@ -112,6 +151,8 @@ def basculer(pe_name: str, mouvement: dict, insert: bool = True) -> dict:
         frappe.throw("Le paiement %s n'est pas valide." % pe_name)
     reference = (mouvement.get("reference") or "").strip()
     jour = getdate(mouvement.get("date"))
+    if pe.payment_type == "Internal Transfer":
+        return _annuler_regularisation(pe, reference, jour, insert)
     nouveau = frappe.copy_doc(pe)
     nouveau.paid_to = COMPTE_IMPAYES
     nouveau.paid_to_account_currency = frappe.db.get_value(
