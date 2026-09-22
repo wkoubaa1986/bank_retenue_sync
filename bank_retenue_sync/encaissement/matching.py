@@ -74,10 +74,28 @@ def match_cheques(movements, pending_cheques, remise_loader=None, consumed=None)
         try:
             remise = remise_loader(bon)
         except Exception as e:
-            diag.append({"type": "cheque", "bon": bon, "reason": f"remise illisible: {e}"})
-            continue
-        if not remise or not remise.get("cheques"):
-            diag.append({"type": "cheque", "bon": bon, "reason": "remise vide/introuvable"})
+            remise, motif = None, f"remise illisible: {e}"
+        else:
+            motif = "remise vide/introuvable" if not (remise and remise.get("cheques")) else ""
+        if motif:
+            # REPLI : sans bordereau lisible, un seul cheque en portefeuille au montant exact du
+            # credit suffit a le rapprocher — cas reel du 22/09/2026 : le cheque CFP 4000608
+            # (3 800,982) revenu impaye puis REDEPOSE (remise 00358832, PDF pas encore dans la
+            # liste tej-bank-service) restait « orphelin » alors que sa piece etait en portefeuille.
+            deja = {r["ref_paiement"] for r in rows}
+            pe = repli_par_montant(m.get("credit"), pending_cheques, deja)
+            if pe:
+                rows.append({
+                    "ref_paiement": pe["name"], "n_cheque": pe.get("numero"),
+                    "valeur": round(pe.get("paid_amount") or 0.0, 3), "emmeteur": pe.get("party"),
+                    "bon_remise": bon, "date": m.get("date"), "statut": "Versé",
+                })
+                diag.append({"type": "cheque", "bon": bon, "cheque": pe.get("numero"),
+                             "reason": "%s — rapprochee par le MONTANT a l'unique cheque en portefeuille "
+                                       "n° %s (%s, %s)" % (motif, pe.get("numero"), pe.get("party"),
+                                                          round(pe.get("paid_amount") or 0.0, 3))})
+            else:
+                diag.append({"type": "cheque", "bon": bon, "reason": motif})
             continue
         for c in remise["cheques"]:
             numero = c.get("numero_cheque")
@@ -127,6 +145,19 @@ def match_cheques(movements, pending_cheques, remise_loader=None, consumed=None)
                                  "ref_paiement": pe["name"], "montant_piece": paye,
                                  "montant_advice": montant_bordereau, "ecart": delta})
     return rows, diag
+
+
+def repli_par_montant(credit, pending_cheques, deja=None, tolerance=0.0005):
+    """Le cheque en portefeuille dont le montant est EXACTEMENT celui du credit — s'il est seul.
+    Deux cheques au meme montant ne sont pas tranches (le bordereau dira lequel). Pur."""
+    credit = round(float(credit or 0), 3)
+    if credit <= 0:
+        return None
+    deja = deja or set()
+    exacts = [p for p in pending_cheques or []
+              if p.get("name") not in deja
+              and abs(round(float(p.get("paid_amount") or 0), 3) - credit) <= tolerance]
+    return exacts[0] if len(exacts) == 1 else None
 
 
 def _load_remise(bon: str) -> dict:

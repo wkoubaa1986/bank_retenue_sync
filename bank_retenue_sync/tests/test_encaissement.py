@@ -162,6 +162,40 @@ class TestChequeMatching(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertTrue(any(d["reason"].startswith("aucune PE") for d in diag))
 
+    def test_remise_illisible_rapprochee_par_le_montant_a_l_unique_cheque(self):
+        """Cas reel du 22/09/2026 : le cheque CFP 4000608 (3 800,982) revenu impaye puis REDEPOSE,
+        remise 00358832 pas encore dans la liste tej-bank-service — un seul cheque en
+        portefeuille porte ce montant : le bordereau se construit avec lui."""
+        movements = [{"credit": 3800.982, "debit": 0, "operation": "CREDIT DIVERS ENC CHEQ TN NUM 00358832",
+                      "reference": "DC262646034014002", "date": date(2026, 9, 21)}]
+        pending = [{"name": "ACC-PAY-2026-07214", "numero": "4000608", "paid_amount": 3800.982, "party": "CFP"},
+                   {"name": "ACC-PAY-2026-07001", "numero": "0000260", "paid_amount": 380.0, "party": "Lotfi Chelly"}]
+
+        def loader(bon):
+            raise ValueError("remise %s absente de /banque/remises-cheques" % bon)
+
+        rows, diag = matching.match_cheques(movements, pending, remise_loader=loader, consumed=set())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["ref_paiement"], rows[0]["n_cheque"], rows[0]["bon_remise"], rows[0]["statut"], rows[0]["emmeteur"]),
+                         ("ACC-PAY-2026-07214", "4000608", "00358832", "Versé", "CFP"))
+        self.assertTrue(any("MONTANT" in d["reason"] for d in diag))
+
+    def test_remise_illisible_deux_cheques_au_meme_montant_restent_non_tranches(self):
+        movements = [{"credit": 100.0, "debit": 0, "operation": "ENC CHEQ TN NUM 00358833",
+                      "reference": "DC1", "date": date(2026, 9, 21)}]
+        pending = [{"name": "A", "numero": "1", "paid_amount": 100.0, "party": "X"},
+                   {"name": "B", "numero": "2", "paid_amount": 100.0, "party": "Y"}]
+        rows, diag = matching.match_cheques(movements, pending, remise_loader=lambda b: None, consumed=set())
+        self.assertEqual(rows, [])
+        self.assertTrue(any(d["reason"] == "remise vide/introuvable" for d in diag))
+
+    def test_repli_par_montant_pur(self):
+        pending = [{"name": "A", "paid_amount": 10.0}, {"name": "B", "paid_amount": 20.0}]
+        self.assertEqual(matching.repli_par_montant(20, pending)["name"], "B")
+        self.assertIsNone(matching.repli_par_montant(20, pending, deja={"B"}))
+        self.assertIsNone(matching.repli_par_montant(0, pending))
+        self.assertIsNone(matching.repli_par_montant(15, pending))
+
     def test_consumed_bon_never_reaches_the_extractor(self):
         """Garde-fou de COUT : un bordereau deja encaisse ne doit jamais etre telecharge ni passe
         a OpenAI. Sur donnees reelles, 13 des 15 depots de la fenetre etaient dans ce cas."""
