@@ -189,6 +189,7 @@ class IdentificationBancaire {
     this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
     this.page.add_menu_item(__("Générer les règlements"), () => this._reglements());
     this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes());
+    this.page.add_menu_item(__("Régulariser un chèque impayé"), () => this._regulariser_impaye());
     this.page.add_menu_item(__("Rafraîchir l'export bancaire"), () => this._rafraichir());
     this.page.add_menu_item(__("Exporter en Excel"), () => this._excel());
     this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
@@ -1244,6 +1245,19 @@ class IdentificationBancaire {
       indicator: "green",
     });
     this.load();
+  }
+
+  // Le même dialogue que Relance et la caisse (customization_app, chargé partout dans le Desk) :
+  // le client a repris son chèque impayé en espèces, redépôt, nouveau chèque, traite, virement,
+  // carte… ou la créance est abandonnée. Un redépôt / nouveau chèque / traite apparaît ensuite
+  // ici via « Encaissements » (bordereau) ; virement et carte sont identifiés par leur libellé.
+  _regulariser_impaye() {
+    const dialogue = window.customization_app && customization_app.encaisser_impaye;
+    if (!dialogue) {
+      frappe.msgprint(__("Le dialogue de régularisation (customization_app) n'est pas chargé sur ce site."));
+      return;
+    }
+    dialogue({ on_success: () => this.load() });
   }
 
   // Un débit « Cheque repris » sort le chèque de la banque : son paiement bascule sur
