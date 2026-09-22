@@ -524,6 +524,13 @@ def resoudre_ajustement(ecart: str, pe_source: str = None, note: str = None):
     if not pe_source:
         frappe.throw(_("Choisissez la Payment Entry à reclasser (erreur de saisie)."))
     src = frappe.get_doc("Payment Entry", pe_source)
+    from bank_retenue_sync.encaissement.pending import COMPTES_IMPAYES
+    if src.paid_to in COMPTES_IMPAYES:
+        # Cas prod 22/09 (Hassine 0001173) : l'utilisateur désigne le paiement IMPAYÉ ; l'annuler
+        # crédite « Chèques sans provision » une seconde fois (« doit toujours être Débit »).
+        frappe.throw(_("{0} est un chèque impayé : régularisez-le (« Régulariser un chèque impayé » "
+                       "→ Redépôt / Nouveau chèque) puis « Recalculer les écarts », qui retrouvera "
+                       "la pièce redéposée.").format(pe_source))
     if abs(flt(src.paid_amount, 3) - flt(e.montant_advice, 3)) > 1.0:
         frappe.throw(_("La PE {0} ({1}) ne correspond pas au montant de l'advice ({2}) "
                        "au-delà de la tolérance de 1 DT.")
@@ -740,6 +747,31 @@ def resoudre_regularisation(ecart: str, note: str = None):
 
 # ------------------------------------------------------------------ recalcul
 
+def _norm_num(s) -> str:
+    digits = "".join(c for c in str(s or "") if c.isdigit())
+    return digits.lstrip("0") or "0"
+
+
+def piece_pour_sans_piece(suivi, montant, candidats, tolerance=1.0):
+    """La pièce en attente qui comble un « Sans pièce » chèque/traite : même numéro (chiffres,
+    sans zéros de tête) ET montant à `tolerance` près ; à égalité, la plus proche en montant.
+    Pur — `candidats` = dicts {name, numero, paid_amount}. Cas type : le chèque impayé redéposé
+    APRÈS la création du brouillon (Hassine 0001173, 22/09/2026)."""
+    num = _norm_num(suivi)
+    if num == "0":
+        return None
+    proches = [c for c in candidats if _norm_num(c.get("numero")) == num
+               and abs(flt(c.get("paid_amount"), 3) - flt(montant, 3)) <= tolerance]
+    if not proches:
+        return None
+    return min(proches, key=lambda c: abs(flt(c.get("paid_amount"), 3) - flt(montant, 3)))
+
+
+def _refs_au_brouillon(enc) -> set:
+    return {r.ref_paiement for table, _c in _TABLES.values() for r in (enc.get(table) or [])
+            if r.ref_paiement}
+
+
 @frappe.whitelist()
 def recalculer(encaissement: str):
     """Confronte les écarts ENCORE À TRAITER à l'état ACTUEL de la base.
@@ -769,8 +801,10 @@ def recalculer(encaissement: str):
     for pe in pending.get_pending_aramex(exclude=set()):
         if pe.get("numero"):
             par_suivi.setdefault(pe["numero"], pe)
-    deja_au_brouillon = {r.ref_paiement for r in (enc.get("livraison_aramex_a_encaisser") or [])
-                         if r.ref_paiement}
+    deja_au_brouillon = _refs_au_brouillon(enc)
+    # chèques et traites en portefeuille (dont les impayés redéposés / remplacés), par numéro
+    en_attente = {"cheque": pending.get_pending_cheques(exclude=set()),
+                  "traite": pending.get_pending_traites(exclude=set())}
 
     out = {"fermes": [], "maj": [], "orphelins": [], "inchanges": 0}
     for nom in frappe.get_all(DOCTYPE, filters={"encaissement": encaissement,
@@ -778,13 +812,18 @@ def recalculer(encaissement: str):
         e = frappe.get_doc(DOCTYPE, nom)
 
         if e.type_ecart == "Sans pièce":
-            pe = par_suivi.get(e.suivi)
+            flux = e.flux or "aramex"
+            if flux in en_attente:
+                pe = piece_pour_sans_piece(e.suivi, e.montant_advice,
+                                           [c for c in en_attente[flux] if c["name"] not in deja_au_brouillon])
+            else:
+                pe = par_suivi.get(e.suivi)
             if not pe:
                 out["inchanges"] += 1
                 continue
             if pe["name"] not in deja_au_brouillon:
                 _ajouter_ligne_brouillon(encaissement, frappe.get_doc("Payment Entry", pe["name"]),
-                                         e.suivi, e.reference_bancaire, e.flux or "aramex")
+                                         e.suivi, e.reference_bancaire, flux, bon=e.bon or "")
                 deja_au_brouillon.add(pe["name"])
             e.db_set("ref_paiement", pe["name"])
             e.db_set("montant_piece", flt(pe["paid_amount"], 3))

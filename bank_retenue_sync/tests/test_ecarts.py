@@ -450,3 +450,23 @@ class TestTotaux(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPiecePourSansPiece(unittest.TestCase):
+    """Recalcul : un « Sans pièce » chèque retrouve la pièce redéposée par numéro et montant."""
+
+    def test_numero_et_montant(self):
+        from bank_retenue_sync.encaissement.ecarts import piece_pour_sans_piece as P
+        cands = [{"name": "PE-1", "numero": "1173", "paid_amount": 116.0},
+                 {"name": "PE-2", "numero": "0001173", "paid_amount": 500.0},
+                 {"name": "PE-3", "numero": "927", "paid_amount": 116.0}]
+        self.assertEqual(P("0001173", 116, cands)["name"], "PE-1")
+        self.assertIsNone(P("0001173", 300, cands))          # montant trop loin
+        self.assertIsNone(P("", 116, cands))                 # pas de numéro
+        self.assertEqual(P("1173", 116.5, cands)["name"], "PE-1")   # tolérance 1 DT
+
+    def test_plus_proche_en_montant(self):
+        from bank_retenue_sync.encaissement.ecarts import piece_pour_sans_piece as P
+        cands = [{"name": "A", "numero": "12", "paid_amount": 100.9},
+                 {"name": "B", "numero": "012", "paid_amount": 100.1}]
+        self.assertEqual(P("12", 100, cands)["name"], "B")
