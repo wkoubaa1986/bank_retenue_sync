@@ -111,8 +111,10 @@ class RapprochementClient {
                   `dont journal ${this._m(t.journal)}`)}
       ${this._kpi("Reprise d-historique", this._m(t.reprise),
                   "soldes d-avant la migration, hors comparaison")}
+      ${this._kpi("Retour colis", this._m(t.retour_colis),
+                  `${this._nbRetours(d)} commande(s) fermee(s), colis revenu, hors comparaison`)}
       ${this._kpi("Ecart de reglement", this._m(t.delta_paiement),
-                  "regle moins reprise moins commandes",
+                  "regle moins reprise moins commandes nettes du retour colis",
                   Math.abs(t.delta_paiement) > this.seuils.montant)}
       ${this._kpi("Avances non affectees", this._m(t.avance_non_affectee),
                   "argent recu qui ne pointe sur rien",
@@ -137,7 +139,9 @@ class RapprochementClient {
        defaut le timbre fiscal). Ils se reglent dans
        <a href="/app/bank-retenue-sync-settings">Reglages</a>, section « Rapprochement client ».
        « Regle » additionne les encaissements et le net des ecritures de journal du client
-       (avoirs, regularisations, pertes).</p>`;
+       (avoirs, regularisations, pertes). Une commande marquee « Retour colis » (bouton
+       « Retour reçu » des livraisons Aramex) sort des deux ecarts : le colis est revenu, le
+       stock est rentre et le paiement Aramex a ete supprime — le client ne doit plus rien.</p>`;
   }
 
   _sousBl(d, t) {
@@ -147,6 +151,11 @@ class RapprochementClient {
     return [b ? `${this._m(b.total)} en brouillon (${b.nb})` : `${this._m(t.delta_bl)} vs commandes`,
             r ? `${this._m(r.total)} de retours` : sans]
       .filter(Boolean).join(" · ");
+  }
+
+  _nbRetours(d) {
+    return (d.lignes || []).reduce((n, l) => n + (l.nb_retour_colis || 0), 0)
+      + (d.tronque ? "+" : "");
   }
 
   _kpi(libelle, valeur, sous, alerte) {
@@ -196,7 +205,10 @@ class RapprochementClient {
         <div class="rc-meta">${this._esc(l.telephone || "sans telephone")} ·
           ${this._esc(l.groupe || "sans groupe")} ·
           ${l.type === "Company" ? "Societe" : "Particulier"}</div></td>
-      <td class="num">${this._m(l.commandes)}<div class="rc-meta">${l.nb_commandes}</div></td>
+      <td class="num">${this._m(l.commandes)}<div class="rc-meta">${l.nb_commandes}</div>
+        ${l.retour_colis
+          ? `<div class="rc-jaune-txt" title="Colis revenu : commande fermee, BL de retour, paiement Aramex supprime. Ne doit plus rien.">
+               ${this._m(-l.retour_colis)} retour colis (${l.nb_retour_colis})</div>` : ""}</td>
       <td class="num">${this._m(l.bl)}<div class="rc-meta">${l.nb_bl}</div></td>
       <td class="num">${this._m(l.paiements)}<div class="rc-meta">${l.nb_paiements}</div></td>
       <td class="num">${l.journal ? this._m(l.journal) : "—"}
@@ -229,7 +241,10 @@ class RapprochementClient {
       annules: ["Bons annules", "rc-gris", "ne compte pas"],
     };
     const net = (etats.livres ? etats.livres.total : 0) + (etats.retours ? etats.retours.total : 0);
-    const ecart = net - (l.commandes || 0);
+    // ⚠️ ON COMPARE AUX COMMANDES NETTES DU RETOUR COLIS, comme la colonne « Ecart livraison » :
+    // un depliage qui contredit sa colonne ne se croit pas.
+    const attendu = l.commandes_nettes != null ? l.commandes_nettes : (l.commandes || 0);
+    const ecart = net - attendu;
     const lignes = ["livres", "retours", "brouillons", "annules"].filter((k) => etats[k])
       .map((k) => {
         const [lib, cls, note] = libelles[k];
@@ -241,13 +256,21 @@ class RapprochementClient {
           <span class="num">${this._m(e.total)}</span>
           <span class="rc-meta num">${e.nb} bon(s)</span>
         </div>`;
-      }).join("");
+      }).join("") + (l.retour_colis
+        ? `<div class="rc-vent">
+          <span class="rc-pastille rc-gris">hors comparaison</span>
+          <span>Retour colis Aramex — commande fermee, colis revenu, paiement supprime</span>
+          <span class="rc-meta"></span>
+          <span class="num">${this._m(-l.retour_colis)}</span>
+          <span class="rc-meta num">${l.nb_retour_colis} commande(s)</span>
+        </div>` : "");
     const compte = Math.abs(ecart) > (this.seuils ? this.seuils.bl : 1);
     return `<tr class="rc-detail" data-livr-de="${this._esc(l.client)}" hidden>
       <td colspan="10">
         <div class="rc-vents">
           <div class="rc-vent-tete">Livraisons —
-            net livre <b>${this._m(net)}</b> contre <b>${this._m(l.commandes)}</b> de commandes
+            net livre <b>${this._m(net)}</b> contre <b>${this._m(attendu)}</b> de commandes${
+              l.retour_colis ? ` (${this._m(l.commandes)} moins ${this._m(l.retour_colis)} de retour colis)` : ""}
             · <b class="${compte ? "rc-rouge" : "rc-vert"}">ecart ${this._m(ecart)}</b>
             ${etats.brouillons
               ? ` · <b class="rc-rouge">${this._m(etats.brouillons.total)} en brouillon,
@@ -323,7 +346,8 @@ class RapprochementClient {
         ["Commande", (r) => lien("Sales Order", r.name)],
         ["Date", (r) => frappe.datetime.str_to_user(r.transaction_date)],
         ["Total TTC", (r) => this._m(r.grand_total), "num"],
-        ["Statut", (r) => this._esc(r.status || "")],
+        ["Statut", (r) => this._esc(r.status || "") + (r.retour_colis
+          ? ` <span class="rc-badge rc-jaune">retour colis</span>` : "")],
         ["Livraison", (r) => this._esc(r.delivery_status || "")]]) +
       bloc("Bons de livraison", d.bl, [
         ["Bon", (r) => lien("Delivery Note", r.name)],
@@ -438,10 +462,12 @@ class RapprochementClient {
     const l = (this.data && this.data.lignes) || [];
     if (!l.length) return frappe.msgprint(__("Rien a exporter."));
     const entetes = ["Client", "Nom", "Telephone", "Groupe", "Type", "Commandes", "Nb commandes",
+                     "Retour colis", "Nb retours colis", "Commandes nettes",
                      "BL", "Nb BL", "Reglements", "Journal", "Regle", "Ecart reglement",
                      "Ecart livraison", "Avance non affectee", "Avance sur commande", "Ignore"];
     const csv = [entetes.join(";")].concat(l.map((r) => [
-      r.client, r.nom, r.telephone, r.groupe, r.type, r.commandes, r.nb_commandes, r.bl, r.nb_bl,
+      r.client, r.nom, r.telephone, r.groupe, r.type, r.commandes, r.nb_commandes,
+      r.retour_colis, r.nb_retour_colis, r.commandes_nettes, r.bl, r.nb_bl,
       r.paiements, r.journal, r.regle, r.delta_paiement, r.delta_bl, r.avance_non_affectee,
       r.avance_sur_commande, r.ignore ? "oui" : "",
     ].map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(";"))).join("\n");

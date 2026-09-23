@@ -8,7 +8,9 @@ Quand ils divergent, c'est l'un de ces trois cas, et l'écran doit permettre de 
 sans ouvrir une seule fiche :
   - livré sans être payé          -> BL == commandes, règlements en dessous ;
   - payé sans être livré          -> règlements == commandes, BL en dessous (avance, ou BL oublié) ;
-  - commande jamais honorée       -> BL et règlements tous deux en dessous.
+  - commande jamais honorée       -> BL et règlements tous deux en dessous ;
+  - colis revenu (retour Aramex)  -> commande fermée, BL net à zéro, AUCUN règlement — et c'est
+                                     normal : la vente n'a pas eu lieu. Elle sort de la comparaison.
 
 ⚠️ CE MODULE NE LIT QUE DES AGRÉGATS. 5 220 clients pour ~10 000 commandes, autant de BL et de
 paiements : une requête par client mettrait la page à genoux. Tout passe par des GROUP BY, un par
@@ -69,6 +71,33 @@ def _somme(table, champ_client, condition, champ_montant="grand_total", params=(
 def commandes() -> dict:
     """Commandes VALIDÉES, TTC. Les annulées et les brouillons ne doivent rien à personne."""
     return _somme("Sales Order", "customer", "docstatus = 1")
+
+
+#: Le drapeau que pose le bouton « 📦 Retour reçu » (customization_app.retour_aramex) : la
+#: commande est FERMÉE, le stock est rentré par un BL de retour, le paiement « Dette non payée »
+#: Aramex est supprimé. Le champ vit dans customization_app ; un bench sans cette app n'a pas la
+#: colonne, et l'écran doit s'ouvrir quand même.
+CHAMP_RETOUR_COLIS = "custom_retour_colis"
+
+
+def retours_colis() -> dict:
+    """{client: (total, nb)} — les commandes dont le colis est REVENU (retour Aramex).
+
+    ⚠️ CES COMMANDES N'ONT, PAR CONSTRUCTION, AUCUN RÈGLEMENT EN FACE. Le flux « Retour reçu »
+    laisse la commande validée à son montant, ramène les BL à zéro par un retour, et SUPPRIME le
+    paiement Aramex : la vente n'a pas eu lieu. Les laisser dans la comparaison faisait paraître
+    impayés douze clients pour 2 895,600 DT — 54 % de l'« écart de règlement » annoncé le
+    23/09/2026 — et chacun d'eux ressortait DEUX fois, en règlement et en livraison.
+
+    Le drapeau, pas le BL de retour : un retour suivi d'un échange (deuxième BL sur la même
+    commande) laisse le client devoir la commande entière, et déduire tout BL négatif l'aurait
+    fait paraître trop payé. Seule la commande marquée « Retour colis » ne doit plus rien.
+    Miroir de la reprise d'historique : celle-ci est un règlement sans commande, ceci une
+    commande sans règlement. Les deux sortent du delta et s'affichent sur leur propre ligne.
+    """
+    if not frappe.db.has_column("Sales Order", CHAMP_RETOUR_COLIS):
+        return {}
+    return _somme("Sales Order", "customer", "docstatus = 1 AND `%s` = 1" % CHAMP_RETOUR_COLIS)
 
 
 def bons_de_livraison() -> dict:
@@ -213,6 +242,7 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
     """Une ligne par client, avec ses trois totaux et ses deux deltas."""
     cdes, bls, regl, jrn = commandes(), bons_de_livraison(), reglements(), journal()
     av, ign = avances(), ignores()
+    ret = retours_colis()
     # Lus UNE fois : `lignes` boucle sur des milliers de clients, et un get_single_value par
     # ligne rechargerait le réglage autant de fois.
     seuils = tolerances()
@@ -229,6 +259,10 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
         jrn_net, jrn_nb = jrn.get(c.name, (0.0, 0))
         avance = av.get(c.name, {})
 
+        ret_total, ret_nb = ret.get(c.name, (0.0, 0))
+        # ⚠️ LE RETOUR COLIS SORT DES DEUX DELTAS. La commande reste validée à son montant, mais
+        # le colis est revenu et le paiement Aramex supprimé : le client ne doit plus rien.
+        cde_nette = flt(cde_total - ret_total, PRECISION)
         rep_p_total, rep_p_nb = rep_pay.get(c.name, (0.0, 0))
         rep_j_total, rep_j_nb = rep_jrn.get(c.name, (0.0, 0))
         reprise = flt(rep_p_total + rep_j_total, PRECISION)
@@ -244,6 +278,8 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             "type": c.customer_type or "",
             "telephone": c.telephone or "",
             "commandes": cde_total, "nb_commandes": cde_nb,
+            "retour_colis": ret_total, "nb_retour_colis": ret_nb,
+            "commandes_nettes": cde_nette,
             "bl": bl_total, "nb_bl": bl_nb,
             "a_des_bl": bool(bl_nb),
             "livraisons": livr.get(c.name, {}),
@@ -256,8 +292,8 @@ def lignes(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
             # ⚠️ LA REPRISE SORT DU DELTA. Ces règlements soldent des factures d'ouverture, pas
             # des commandes de cet ERP : les compter ferait paraître surpayés des clients
             # parfaitement à jour.
-            "delta_paiement": flt(regle - reprise - cde_total, PRECISION),
-            "delta_bl": flt(bl_total - cde_total, PRECISION),
+            "delta_paiement": flt(regle - reprise - cde_nette, PRECISION),
+            "delta_bl": flt(bl_total - cde_nette, PRECISION),
             "ignore": False,
             "motif": "",
         }

@@ -56,7 +56,7 @@ def get_data(groupe=None, type_client=None, recherche=None, seulement_ecarts=0,
               for k in ("commandes", "bl", "paiements", "journal", "regle",
                         "delta_paiement", "delta_bl", "avance_non_affectee",
                         "avance_sur_commande", "encaisse_reel", "non_encaisse",
-                        "reprise")}
+                        "reprise", "retour_colis", "commandes_nettes")}
     # Les états de livraison, cumulés sur la sélection entière — comme les autres totaux, ils se
     # calculent AVANT la coupe à 300 lignes.
     totaux_livraison = {}
@@ -85,12 +85,15 @@ def detail(client) -> dict:
     _guard()
     if not frappe.db.exists("Customer", client):
         frappe.throw(_("Client introuvable"))
+    champs_cde = ["name", "transaction_date", "grand_total", "status", "delivery_status"]
+    # Le drapeau « Retour colis » vit dans customization_app : on ne le lit que s'il existe.
+    if frappe.db.has_column("Sales Order", R.CHAMP_RETOUR_COLIS):
+        champs_cde.append("%s as retour_colis" % R.CHAMP_RETOUR_COLIS)
     return {
         "client": client,
         "commandes": frappe.get_all(
             "Sales Order", filters={"customer": client, "docstatus": 1},
-            fields=["name", "transaction_date", "grand_total", "status", "delivery_status"],
-            order_by="transaction_date desc", limit_page_length=200),
+            fields=champs_cde, order_by="transaction_date desc", limit_page_length=200),
         "bl": frappe.get_all(
             "Delivery Note", filters={"customer": client, "docstatus": 1},
             fields=["name", "posting_date", "grand_total", "status"],

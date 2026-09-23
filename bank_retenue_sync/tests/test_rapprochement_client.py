@@ -343,7 +343,7 @@ class TestRepriseDHistorique(unittest.TestCase):
 
     def test_la_reprise_sort_du_delta(self):
         """C'est tout l'objet du cas spécial."""
-        self.assertIn("regle - reprise - cde_total", self.source(R.lignes))
+        self.assertIn("regle - reprise - cde_nette", self.source(R.lignes))
 
     def test_la_reprise_n_est_ventilee_qu_une_fois(self):
         """Elle a sa propre catégorie : la laisser aussi dans la ventilation par mode la
@@ -354,6 +354,66 @@ class TestRepriseDHistorique(unittest.TestCase):
 
     def test_la_ventilation_sait_exclure_des_pieces(self):
         self.assertIn("NOT IN", self.source(R.ventilation))
+
+
+class TestRetourColis(unittest.TestCase):
+    """Un colis revenu n'est pas un impayé.
+
+    Le bouton « 📦 Retour reçu » (customization_app.retour_aramex) laisse la commande VALIDÉE
+    à son montant, fermée et marquée « Retour colis » ; le stock rentre par un BL de retour qui
+    ramène le net livré à zéro ; le paiement « Dette non payée » Aramex est SUPPRIMÉ. L'écran
+    lisait alors : commandé 706, livré 0, réglé 0 — et peignait le client en rouge DEUX fois,
+    en règlement et en livraison. Douze clients, 2 895,600 DT, 54 % de l'écart de règlement
+    annoncé le 23/09/2026, tous sans le moindre autre écart.
+    """
+
+    def source(self, fn):
+        import inspect
+
+        return inspect.getsource(fn)
+
+    def test_le_retour_se_lit_sur_le_drapeau_de_la_commande(self):
+        """⚠️ PAS SUR LE BL DE RETOUR. Un retour suivi d'un échange (deuxième BL sur la même
+        commande) laisse le client devoir la commande entière : déduire tout BL négatif l'aurait
+        fait paraître trop payé. Seule la commande marquée « Retour colis » ne doit plus rien."""
+        src = self.source(R.retours_colis)
+        self.assertEqual(R.CHAMP_RETOUR_COLIS, "custom_retour_colis")
+        self.assertIn("= 1\" % CHAMP_RETOUR_COLIS", src)
+        self.assertIn("docstatus = 1", src)
+        self.assertIn('"Sales Order"', src)
+        self.assertNotIn("is_return", src)
+
+    def test_le_retour_sort_des_DEUX_deltas(self):
+        """Règlement ET livraison : le même client ressortait sur les deux colonnes."""
+        src = self.source(R.lignes)
+        self.assertIn("cde_nette = flt(cde_total - ret_total", src)
+        self.assertIn("regle - reprise - cde_nette", src)
+        self.assertIn("bl_total - cde_nette", src)
+
+    def test_la_commande_brute_reste_visible(self):
+        """On sort le retour de la comparaison, on ne le cache pas : la ligne porte le brut, le
+        retour et le net, pour que l'utilisateur voie d'où vient le zéro."""
+        src = self.source(R.lignes)
+        for champ in ('"commandes": cde_total', '"retour_colis": ret_total',
+                      '"nb_retour_colis": ret_nb', '"commandes_nettes": cde_nette'):
+            self.assertIn(champ, src)
+
+    def test_un_bench_sans_le_champ_ouvre_quand_meme_l_ecran(self):
+        """Le drapeau vit dans customization_app. Sans cette app, pas de colonne — et un écran
+        de constat n'a pas le droit de tomber pour autant."""
+        from unittest import mock
+
+        db = mock.Mock()
+        db.has_column.return_value = False
+        with mock.patch.object(R.frappe, "db", db):
+            self.assertEqual(R.retours_colis(), {})
+        db.has_column.assert_called_once_with("Sales Order", "custom_retour_colis")
+        db.sql.assert_not_called()
+
+    def test_le_retour_est_lu_une_seule_fois_par_page(self):
+        """Comme les autres agrégats : un GROUP BY, jamais une requête par client."""
+        src = self.source(R.lignes)
+        self.assertEqual(src.count("retours_colis()"), 1)
 
 
 class TestTotalQuiSAdditionne(unittest.TestCase):
