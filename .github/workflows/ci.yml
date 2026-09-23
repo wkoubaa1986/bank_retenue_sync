@@ -50,6 +50,8 @@ jobs:
             bank_retenue_sync.tests.test_facturation
             bank_retenue_sync.tests.test_especes
             bank_retenue_sync.tests.test_rapport
+            bank_retenue_sync.tests.test_rapprochement_client
+            bank_retenue_sync.tests.test_onglet_banque
         run: python -m unittest -v $MODULES
 
   lint:

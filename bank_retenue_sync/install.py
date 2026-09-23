@@ -161,7 +161,38 @@ def _ajouter_raccourci_cloture():
     return _poser_raccourci(PAGE_CLOTURE, LABEL_CLOTURE, ENTETE_CLOTURE, "Green")
 
 
+# L'onglet « Banque » ne regarde pas tout le monde : releves, soldes, retenues, paiements a
+# faire. Il n'est visible que des porteurs du role « Banque » (demande utilisateur 23/09/2026).
+# ⚠️ FRAPPE MONTRE UN ESPACE A TOUS TANT QU'IL N'A AUCUN ROLE, et « Workspace Manager » voit
+# tout quoi qu'il arrive (desktop.get_workspace_sidebar_items). Le role est pose ici, a chaque
+# migrate, parce que l'import de `banque.json` est SAUTE des que la fiche en base est plus
+# recente que le fichier — ce qui est le cas partout ou ce hook a deja ajoute un raccourci.
+# Les utilisateurs qui le portent sont une DONNEE : attribues une fois par le patch
+# `restreindre_onglet_banque`, puis geres dans la fiche User, jamais re-imposes ici.
+ROLE_BANQUE = "Banque"
+
+
+def _restreindre_onglet_banque() -> bool:
+    """Cree le role « Banque » s'il manque et l'attache a l'espace du meme nom. Idempotent."""
+    if not frappe.db.exists("Role", ROLE_BANQUE):
+        frappe.get_doc({"doctype": "Role", "role_name": ROLE_BANQUE, "desk_access": 1}).insert(
+            ignore_permissions=True)
+    if not frappe.db.exists("Workspace", WORKSPACE_BANQUE):
+        return False
+    ws = frappe.get_doc("Workspace", WORKSPACE_BANQUE)
+    if any(r.role == ROLE_BANQUE for r in ws.roles):
+        return False
+    ws.append("roles", {"role": ROLE_BANQUE})
+    ws.flags.ignore_permissions = True
+    ws.save()
+    # La liste des espaces est mise en cache PAR UTILISATEUR : sans ce vidage, l'onglet
+    # resterait visible jusqu'a la prochaine connexion.
+    frappe.clear_cache()
+    return True
+
+
 def after_migrate():
+    _restreindre_onglet_banque()
     _ajouter_raccourci_paiements()
     _ajouter_raccourci_a_venir()
     _ajouter_carte_tresorerie()
