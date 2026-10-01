@@ -205,11 +205,25 @@ def process_rule(row: dict, movements: list, context=None, insert: bool = True) 
     Contrat de retour identique aux `process_*` de l'orchestrateur : [{flux, ref, status, ...}]
     avec status parmi created | skipped | regle_ambigue | error.
     """
+    from bank_retenue_sync.expenses import ordres as O
+
     out = []
     toutes = load_rules()
+    # Les ordres de paiement en attente, lus une fois : un debit qu'un ordre attend n'est
+    # jamais comptabilise ici (cf. ordres.ordre_en_attente_pour — doublon du 01/10/2026).
+    en_attente = O.ordres_en_attente() if context is None or not hasattr(context, "ordres_en_attente") \
+        else context.ordres_en_attente
     for m in movements or []:
         ok, _ = rule_matches(row, m)
         if not ok:
+            continue
+
+        reserve = O.ordre_en_attente_pour(m, ordres=en_attente)
+        if reserve:
+            out.append({"flux": row["cle"], "ref": (m.get("reference") or ""),
+                        "status": "skipped", "ordre": reserve.get("name"),
+                        "raison": "debit attendu par l'ordre de paiement %s (%s)"
+                                  % (reserve.get("name"), reserve.get("libelle"))})
             continue
 
         concurrentes = [r for r in toutes if r.get("cle") != row.get("cle")

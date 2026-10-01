@@ -907,6 +907,24 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
                             insert=True, annotate=True, refresh=False)),
                         ("declarations", lambda: process_declarations(insert=True)),
                         ("cnss", lambda: process_cnss(insert=True)),
+                        # CONFIRMATION DES ORDRES DE PAIEMENT (decision utilisateur
+                        # 2026-08-31) : des que la charge SORT au releve, l'ordre passe a
+                        # « Vire » et son ecriture ANTICIPEE — posee sur le compte d'attente —
+                        # est recreee sur la BANQUE avec la reference du virement. Attendre
+                        # 17h30 laissait les salaires « orphelins » toute la journee alors que
+                        # l'ecriture existait depuis le 29.
+                        # ⚠️ AVANT « depenses » (doublon du 01/10/2026) : un salaire debite le
+                        # 1er du mois suivant etait d'abord comptabilise par le moteur sous le
+                        # mois du debit (« 10-2026 »), puis rattache a l'ordre de septembre —
+                        # deux ecritures pour un virement. Confirme en premier, le mouvement
+                        # est deja lie quand le moteur le voit (et le moteur l'ignore de toute
+                        # facon tant qu'un ordre l'attend, cf. engine.process_rule).
+                        # ⚠️ AVANT « reglements » : ici l'ordre porte le lien vers l'ecriture ET
+                        # vers le mouvement, la ou `reglement` n'apparie que par le MONTANT. Le
+                        # laisser passer en premier eviterait qu'un debit de salaire solde par
+                        # erreur une dette fournisseur du meme montant.
+                        ("ordres", lambda: ordres.confirmer_par_banque(
+                            _movements_geres(registry.registry_as_movements()))),
                         ("depenses", lambda: run_depenses_recurrentes(insert=True)),
                         ("contrats", lambda: run_contrats(insert=True)),
                         # CHEQUES IMPAYES (decision utilisateur 16/09/2026) : un debit « Cheque
@@ -914,18 +932,6 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
                         # ou la relance client le voit. N° et montant doivent concorder.
                         ("impayes", lambda: impayes.process_impayes(
                             _movements_geres(registry.registry_as_movements()), insert=True)),
-                        # CONFIRMATION DES ORDRES DE PAIEMENT (decision utilisateur
-                        # 2026-08-31) : des que la charge SORT au releve, l'ordre passe a
-                        # « Vire » et son ecriture ANTICIPEE — posee sur le compte d'attente —
-                        # est recreee sur la BANQUE avec la reference du virement. Attendre
-                        # 17h30 laissait les salaires « orphelins » toute la journee alors que
-                        # l'ecriture existait depuis le 29.
-                        # ⚠️ AVANT « reglements » : ici l'ordre porte le lien vers l'ecriture ET
-                        # vers le mouvement, la ou `reglement` n'apparie que par le MONTANT. Le
-                        # laisser passer en premier eviterait qu'un debit de salaire solde par
-                        # erreur une dette fournisseur du meme montant.
-                        ("ordres", lambda: ordres.confirmer_par_banque(
-                            _movements_geres(registry.registry_as_movements()))),
                         # Reglement des dettes Aramex / honoraire (decision utilisateur
                         # 2026-08-19) : quand le virement emis parait au releve, l'ecriture
                         # d'attente est remplacee par son equivalent sur la banque. En DERNIER :

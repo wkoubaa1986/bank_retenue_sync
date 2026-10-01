@@ -64,6 +64,33 @@ def ordres_en_attente(date_max=None) -> list:
                 "journal_entry", "periode", "type_depense", "beneficiaire"])
 
 
+def ordre_en_attente_pour(m: dict, ordres: list = None, fenetre: int = FENETRE_JOURS):
+    """L'ordre « En attente » que ce debit viendra confirmer, ou None.
+
+    Meme critere que `confirmer_par_banque` (montant exact, date dans la fenetre autour de la
+    date prevue) : c'est ce qui permet au moteur des depenses recurrentes de LAISSER ce mouvement
+    a la confirmation des ordres au lieu de le comptabiliser une seconde fois.
+
+    ⚠️ Pourquoi : le 01/10/2026, trois salaires de septembre debites par la banque le 1er
+    octobre ont ete comptabilises deux fois. Le moteur nomme l'ecriture d'apres la date du
+    mouvement (« Salaire X 10-2026 »), ne retrouve donc pas l'ecriture anticipee « 09-2026 »,
+    et cree une ecriture d'octobre ; une seconde plus tard la confirmation rattache le meme
+    virement a l'ordre de septembre. Les virements du 30/09 (Sadok, Akram), eux, portaient le
+    bon mois et avaient ete reconnus. `ordres` est injectable (tests) ; sans lui, lecture en base.
+    """
+    debit = flt((m or {}).get("debit"), 3)
+    if not debit or not (m or {}).get("date"):
+        return None
+    jour = getdate(m["date"])
+    for o in (ordres if ordres is not None else ordres_en_attente()):
+        if abs(flt(o.get("montant"), 3) - debit) > TOLERANCE_MONTANT:
+            continue
+        prevue = getdate(o.get("date_prevue"))
+        if prevue - timedelta(days=fenetre) <= jour <= prevue + timedelta(days=fenetre):
+            return o
+    return None
+
+
 def confirmer_par_banque(movements: list, fenetre: int = FENETRE_JOURS,
                          regler_ecritures: bool = True) -> dict:
     """Confronte les ordres en attente aux debits du releve.
