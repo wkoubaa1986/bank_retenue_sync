@@ -11,6 +11,8 @@
 //   Delta paiement : Perte / Ajustement toujours ; Avoir SEULEMENT si le client a encore un
 //                    avoir flottant suffisant (`avoir_disponible` >= delta).
 //   Sans pièce     : Ajustement (reclasser une PE) ; Ignorer si montant <= 1 DT.
+//   Bordereau en double : aucun bouton, la note nomme les paiements (décision 02/10/2026) —
+//                    supprimer la commande en double puis « Recalculer les écarts ».
 // Chaque action ouvre un champ « Note » libre, posé dans les références des pièces créées.
 
 frappe.ui.form.on("Encaissement Paiement", {
@@ -95,6 +97,14 @@ function brs_show_ecarts(frm, ecarts) {
 							`<button class="btn btn-xs btn-secondary brs-act" data-action="ignorer" data-ecart="${e.name}">${__("Ignorer")}</button>`
 						);
 					}
+				} else if (e.type_ecart === "Bordereau en double") {
+					// Aucun bouton : la seule issue est de supprimer la commande en double et son
+					// paiement, puis « Recalculer les écarts ». La note nomme les paiements.
+					b.push(
+						`<span style="color:var(--red-600);font-size:11px">${frappe.utils.escape_html(
+							e.note || ""
+						)}</span>`
+					);
 				}
 				actions = b.join(" ");
 			} else {

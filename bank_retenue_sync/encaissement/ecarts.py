@@ -772,6 +772,20 @@ def _refs_au_brouillon(enc) -> set:
             if r.ref_paiement}
 
 
+def _vers_bordereau_en_double(e, candidates):
+    """L'écart devient (ou reste) un avertissement « Bordereau en double », note à jour."""
+    from bank_retenue_sync.encaissement.matching import ecart_bordereau_en_double
+
+    a_jour = ecart_bordereau_en_double(e.suivi, e.montant_advice, candidates)
+    e.db_set("type_ecart", "Bordereau en double")
+    e.db_set("bloquant", 1)
+    e.db_set("ref_paiement", "")
+    e.db_set("montant_piece", 0.0)
+    e.db_set("ecart", a_jour["ecart"])
+    e.db_set("client", a_jour["client"])
+    e.db_set("note", a_jour["note"])
+
+
 @frappe.whitelist()
 def recalculer(encaissement: str):
     """Confronte les écarts ENCORE À TRAITER à l'état ACTUEL de la base.
@@ -784,6 +798,10 @@ def recalculer(encaissement: str):
         ligne est ajoutée au brouillon et l'écart se ferme ;
       - « Delta paiement » dont la PE a changé de montant : l'écart est mis à
         jour, et il se ferme si l'écart est retombé sous la tolérance ;
+      - « Bordereau en double » (plusieurs PE sur un même suivi) : tant qu'il en reste
+        plusieurs, l'avertissement reste ; s'il n'en reste qu'une, la ligne entre au
+        brouillon et l'écart se ferme (ou devient un « Delta paiement » si le montant
+        diffère de l'advice) ;
       - écart dont la PE a disparu : signalé, jamais fermé en silence.
     Les écarts DÉJÀ RÉSOLUS ne sont pas touchés — l'arbitrage humain prime.
     """
@@ -796,11 +814,13 @@ def recalculer(encaissement: str):
         frappe.throw(_("{0} n'est plus un brouillon.").format(encaissement))
 
     # PE Aramex disponibles, indexées par numéro de suivi (une PE peut avoir été
-    # corrigée après coup : c'est tout l'objet de ce recalcul).
+    # corrigée après coup : c'est tout l'objet de ce recalcul). TOUTES les PE d'un numéro :
+    # deux pièces sur un même bordereau ne se départagent jamais au hasard (cf.
+    # matching.ecart_bordereau_en_double).
     par_suivi = {}
     for pe in pending.get_pending_aramex(exclude=set()):
         if pe.get("numero"):
-            par_suivi.setdefault(pe["numero"], pe)
+            par_suivi.setdefault(pe["numero"], []).append(pe)
     deja_au_brouillon = _refs_au_brouillon(enc)
     # chèques et traites en portefeuille (dont les impayés redéposés / remplacés), par numéro
     en_attente = {"cheque": pending.get_pending_cheques(exclude=set()),
@@ -817,7 +837,12 @@ def recalculer(encaissement: str):
                 pe = piece_pour_sans_piece(e.suivi, e.montant_advice,
                                            [c for c in en_attente[flux] if c["name"] not in deja_au_brouillon])
             else:
-                pe = par_suivi.get(e.suivi)
+                candidates = [c for c in par_suivi.get(e.suivi, []) if c["name"] not in deja_au_brouillon]
+                if len(candidates) > 1:
+                    _vers_bordereau_en_double(e, candidates)
+                    out["maj"].append({"ecart": nom, "piece": ", ".join(c["name"] for c in candidates)})
+                    continue
+                pe = candidates[0] if candidates else None
             if not pe:
                 out["inchanges"] += 1
                 continue
@@ -832,6 +857,37 @@ def recalculer(encaissement: str):
                       note=_("Recalcul : pièce {0} retrouvée sur le suivi {1}.")
                       .format(pe["name"], e.suivi))
             out["fermes"].append({"ecart": nom, "piece": pe["name"]})
+            continue
+
+        if e.type_ecart == "Bordereau en double":
+            candidates = [c for c in par_suivi.get(e.suivi, []) if c["name"] not in deja_au_brouillon]
+            if len(candidates) != 1:
+                # encore plusieurs pièces (rien n'a été nettoyé), ou plus aucune : on attend l'humain
+                if len(candidates) > 1:
+                    _vers_bordereau_en_double(e, candidates)
+                out["inchanges"] += 1
+                continue
+            pe = candidates[0]
+            paye = flt(pe["paid_amount"], 3)
+            delta = flt(paye - flt(e.montant_advice, 3), 3)
+            _ajouter_ligne_brouillon(encaissement, frappe.get_doc("Payment Entry", pe["name"]),
+                                     e.suivi, e.reference_bancaire, e.flux or "aramex", bon=e.bon or "")
+            deja_au_brouillon.add(pe["name"])
+            e.db_set("ref_paiement", pe["name"])
+            e.db_set("montant_piece", paye)
+            e.db_set("ecart", delta)
+            if abs(delta) <= TOLERANCE_PAIEMENT:
+                _resoudre(e, "Ajustement", [pe["name"]],
+                          note=_("Recalcul : une seule pièce reste sur le bordereau {0} ({1}).")
+                          .format(e.suivi, pe["name"]))
+                out["fermes"].append({"ecart": nom, "piece": pe["name"]})
+            else:
+                # la pièce restante ne vaut pas ce qu'Aramex a versé : c'est désormais un
+                # « Delta paiement » ordinaire, avec ses résolutions habituelles.
+                e.db_set("type_ecart", "Delta paiement")
+                e.db_set("note", ((e.note + " | ") if e.note else "")
+                         + _("Recalcul : une seule pièce reste ({0}), écart {1}.").format(pe["name"], delta))
+                out["maj"].append({"ecart": nom, "piece": pe["name"], "ecart_recalcule": delta})
             continue
 
         if e.type_ecart == "Delta paiement":

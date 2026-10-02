@@ -240,7 +240,7 @@ doctype_js = {
 # Le parametre ?v= force le navigateur a recharger le fichier a chaque evolution (les assets
 # bruts n'ont pas le hash de build des bundles) — INCREMENTER a chaque modification du JS.
 app_include_js = [
-    "/assets/bank_retenue_sync/js/encaissement_paiement.js?v=4",
+    "/assets/bank_retenue_sync/js/encaissement_paiement.js?v=5",
     # Badge « nombre de virements a faire » sur le raccourci Rapport de l'espace Comptabilite
     # (le compteur natif des raccourcis ne couvre que les DocTypes).
     "/assets/bank_retenue_sync/js/paiements_a_faire_compteur.js?v=1",

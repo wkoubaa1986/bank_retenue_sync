@@ -310,6 +310,22 @@ def _lignes_advice(adv):
     return lignes, frais, frais_desc
 
 
+def ecart_bordereau_en_double(suivi, montant_advice, pes) -> dict:
+    """Avertissement BLOQUANT : un bordereau payé par Aramex porté par PLUSIEURS paiements en attente.
+
+    Rien n'est encaissé pour cette ligne (`montant_piece` = 0) : choisir une des pièces, c'est
+    laisser l'autre en dette fantôme sur le compte Aramex. La note nomme chaque paiement et son
+    montant pour que l'humain retrouve la commande en double."""
+    parties = {pe.get("party") for pe in pes if pe.get("party")}
+    detail = ", ".join("%s (%s)" % (pe["name"], round(pe.get("paid_amount") or 0.0, 3)) for pe in pes)
+    return {"sous_type": "Bordereau en double", "bloquant": 1, "suivi": suivi,
+            "client": parties.pop() if len(parties) == 1 else "",
+            "montant_advice": montant_advice, "montant_piece": 0.0,
+            "ecart": -round(montant_advice or 0.0, 3),
+            "note": "Bordereau sur %d paiements : %s — rien n'est encaissé. Supprimer la commande en "
+                    "double et son paiement, puis « Recalculer les écarts »." % (len(pes), detail)}
+
+
 def match_aramex(movements, pending_aramex, advices, consumed=None):
     """Flux BANK-FIRST (ordre demande par l'utilisateur) :
       1. detecter un NOUVEAU credit Aramex sur le compte bancaire,
@@ -380,6 +396,17 @@ def match_aramex(movements, pending_aramex, advices, consumed=None):
                 diag.append({"type": "aramex", "credit": amt, "ref": m.get("reference"),
                              "reason": "advice trouve mais aucune PE Aramex en attente appariee"})
                 continue
+            # Meme regle qu'au chemin nominal : deux PE sur un meme bordereau, on ne choisit pas.
+            vus, doublons = set(), set()
+            for pe in matched:
+                n = _norm_num(pe.get("numero"))
+                (doublons if n in vus else vus).add(n)
+            if doublons:
+                diag.append({"type": "aramex", "credit": amt, "ref": m.get("reference"),
+                             "pe_appariees": [pe["name"] for pe in matched],
+                             "reason": "bordereau en double (%s) : plusieurs paiements Aramex portent "
+                                       "le meme numero, lot non apparie" % ", ".join(sorted(doublons))})
+                continue
             if abs(round(total, 3) - amt) >= 0.01:
                 manquants = sorted(adv_nums - {_norm_num(pe.get("numero")) for pe in matched})
                 diag.append({"type": "aramex", "credit": amt, "total_pe": round(total, 3),
@@ -401,18 +428,29 @@ def match_aramex(movements, pending_aramex, advices, consumed=None):
             continue
 
         # ---- CHEMIN NOMINAL : appariement LIGNE PAR LIGNE de l'advice ----
+        # ⚠️ UN BORDEREAU SUR PLUSIEURS PIÈCES : ON NE CHOISIT JAMAIS. Garder la première PE
+        # trouvée (l'ancienne indexation) a imputé le virement du colis 51330112551 à la
+        # commande web en double (81 DT) au lieu de la vraie (85 DT), et laissé 85 DT fantômes
+        # sur le compte Aramex (cas Mehdi jedidi, corrigé à la main le 02/10/2026). La ligne
+        # n'est alors PAS encaissée : avertissement bloquant, un humain supprime la pièce en
+        # trop puis « Recalculer les écarts ».
         pe_by_num = {}
         for pe in pending_aramex:
             n = _norm_num(pe.get("numero"))
             if n != "0":
-                pe_by_num.setdefault(n, pe)
-        lot_rows, ecarts = [], []
+                pe_by_num.setdefault(n, []).append(pe)
+        lot_rows, ecarts, doublons = [], [], []
         for lg in lignes:
-            pe = None
+            candidates = None
             for n in lg["nums"]:
                 if n in pe_by_num:
-                    pe = pe_by_num.pop(n)   # une PE ne sert qu'une fois dans le lot
+                    candidates = pe_by_num.pop(n)   # une PE ne sert qu'une fois dans le lot
                     break
+            if candidates and len(candidates) > 1:
+                ecarts.append(ecart_bordereau_en_double(lg["suivi"], lg["montant"], candidates))
+                doublons.append(lg["suivi"])
+                continue
+            pe = candidates[0] if candidates else None
             if pe is None:
                 # livraison payee par Aramex mais AUCUNE PE en attente : erreur de saisie,
                 # paiement par avoir, ou piece jamais saisie -> l'humain tranche.
@@ -457,9 +495,13 @@ def match_aramex(movements, pending_aramex, advices, consumed=None):
                            "ecart": -frais, "note": " / ".join(frais_desc)[:140]})
         if not lot_rows:
             # rien d'encaissable : pas de brouillon, donc pas de persistance d'ecarts — on garde
-            # le diagnostic historique pour que le lot reste visible.
-            diag.append({"type": "aramex", "credit": amt, "ref": m.get("reference"),
-                         "reason": "advice trouve mais aucune PE Aramex en attente appariee"})
+            # le diagnostic historique pour que le lot reste visible. Un bordereau en double y est
+            # NOMME : c'est la seule trace de l'avertissement quand le lot n'a que cette ligne.
+            raison = "advice trouve mais aucune PE Aramex en attente appariee"
+            if doublons:
+                raison = "bordereau en double (%s) : plusieurs paiements Aramex portent le meme numero, " \
+                         "rien n'est encaisse" % ", ".join(doublons)
+            diag.append({"type": "aramex", "credit": amt, "ref": m.get("reference"), "reason": raison})
             continue
         rows.extend(lot_rows)
         for e in ecarts:
