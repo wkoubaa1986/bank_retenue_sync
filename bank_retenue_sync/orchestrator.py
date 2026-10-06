@@ -25,7 +25,7 @@ from bank_retenue_sync.expenses import journal
 from bank_retenue_sync.expenses.dates import period_end_date
 from bank_retenue_sync.mail.aramex_advice import parse_advice
 from bank_retenue_sync.mail import config as mail_config
-from bank_retenue_sync.mail.total_invoice import extract_invoice_files, parse_invoice_xlsx
+from bank_retenue_sync.mail.total_invoice import extract_invoice_files, parse_invoice_pdf, parse_invoice_xlsx
 
 # Plus aucun expediteur ni sujet en dur ici : tout vient de la table « Sources email » des
 # Settings (cf. mail/config.py). C'etait la double verite a supprimer — `mail/sources.py`
@@ -63,7 +63,8 @@ def _periodes_du_libelle(texte: str) -> set:
 
 
 def _deja_comptabilise(periode: str, compte: str, sens: str = "credit",
-                       marqueur: str = None) -> str:
+                       marqueur: str = None, periode_au_libelle: bool = False,
+                       autre_facture=None) -> str:
     """Nom d'une ecriture couvrant DEJA `periode` ('YYYY-MM') sur `compte`, sinon None.
 
     POURQUOI L'EGALITE SUR `cheque_no` NE SUFFIT PAS
@@ -107,6 +108,10 @@ def _deja_comptabilise(periode: str, compte: str, sens: str = "credit",
         libelle = "%s %s" % (r.cheque_no or "", r.user_remark or "")
         if marqueur and marqueur.upper() not in libelle.upper():
             continue
+        # Une ecriture qui cite un numero de facture est CETTE facture-la : si c'etait la notre,
+        # `_facture_deja_citee` l'aurait trouvee. Deux factures dans le mois ne s'excluent pas.
+        if autre_facture is not None and autre_facture.search(libelle):
+            continue
         vues = _periodes_du_libelle(libelle)
         if vues:
             # Le libelle porte une periode : elle FAIT FOI. S'y fier evite de prendre l'ecriture
@@ -114,9 +119,58 @@ def _deja_comptabilise(periode: str, compte: str, sens: str = "credit",
             if cible in vues:
                 return r.voucher_no
             continue
-        if getdate(r.posting_date).strftime("%m-%Y") == cible:
+        # Repli sur la date de comptabilisation : refuse quand `periode_au_libelle` — c'est ainsi
+        # qu'une depense de CAISSE « Frais d'expedition Aramex » de 10 DT (21/09/2026) a fait passer
+        # la facture Aramex de septembre pour deja saisie.
+        if not periode_au_libelle and getdate(r.posting_date).strftime("%m-%Y") == cible:
             return r.voucher_no
     return None
+
+
+#: Numeros de facture : Aramex « E-INV NO: 1900540919 », Total « FP261248663 » / « FP26/716122 ».
+_E_INV_ARAMEX = re.compile(r"\b19\d{8}\b")
+_FACTURE_TOTAL = re.compile(r"\bFP\d{2}/?\d{6,}\b", re.IGNORECASE)
+
+
+def _numero_e_inv(sujet: str) -> str:
+    m = re.search(r"E-INV\s*NO\s*:?\s*(\d{8,})", sujet or "", re.IGNORECASE)
+    return m.group(1) if m else ""
+
+
+def _facture_deja_citee(numero: str) -> str:
+    """Ecriture (brouillon ou validee) qui cite DEJA ce numero de facture, sinon None.
+
+    La cle sure (06/10/2026) : la periode seule ne distingue ni deux factures du meme mois (deux
+    E-INV Aramex pour septembre, deux factures Total pour aout au changement de systeme) ni une
+    facture d'une autre ecriture du meme compte. L'app ecrit toujours le numero dans le libelle
+    (« Facture Aramex 1900536117 (2026-08) »), et il survit au cycle de reglement."""
+    n = (numero or "").strip()
+    if len(n) < 6:
+        return None
+    r = frappe.db.sql("""select name from `tabJournal Entry`
+        where docstatus < 2 and (cheque_no like %(n)s or user_remark like %(n)s)
+        order by creation limit 1""", {"n": "%" + n + "%"})
+    return r[0][0] if r else None
+
+
+def _cle_libre(cheque: str, numero: str) -> str:
+    """« Facture Aramex 09-2026 », ou « … (1900541394) » si le mois a deja sa facture."""
+    return f"{cheque} ({numero})" if numero and _exists(cheque) else cheque
+
+
+def _signaler(flux: str, msg: dict, raison: str) -> None:
+    """Une facture recue par e-mail et NON saisie laisse une trace (Error Log), une fois par
+    semaine et par e-mail : la tache passe cinq fois par jour. Avant le 06/10/2026, une facture
+    ecartee disparaissait sans un mot (Total en PDF, Aramex pris pour deja saisi)."""
+    cle = "brs:facture_ecartee:%s:%s:%s" % (flux, msg.get("uid"), re.sub(r"\W+", "", raison)[:40])
+    try:
+        if frappe.cache().get_value(cle):
+            return
+        frappe.cache().set_value(cle, 1, expires_in_sec=7 * 24 * 3600)
+    except Exception:
+        pass
+    frappe.log_error(title="BRS : facture %s non saisie" % flux,
+                     message="%s\nE-mail : %s (%s)" % (raison, (msg.get("subject") or "")[:200], msg.get("date")))
 
 
 def _periode_debut_gestion() -> str:
@@ -278,51 +332,79 @@ def _prev_month(period_or_date):
 def process_total(limit=None, insert: bool = True, depuis: str = None):
     """`insert=False` : essai a blanc, aucune ecriture creee (meme contrat que les autres flux).
 
-    Utile avant un premier vrai run : les libelles historiques varient (« Fac TOTAL au »,
-    « Facture TOTAL au ») alors que la cle d'idempotence est une egalite stricte, donc l'essai a
-    blanc est le seul moyen de voir ce qui serait recree en double avant de l'ecrire.
+    Deux formats : l'ancien ZIP + XLSX (« TotalEnergies Tunisie »), et depuis 09/2026 le PDF de
+    « TotalEnergies Marketing Tunisie » (`parse_invoice_pdf` ; les factures de RECHARGE y sont
+    ignorees, la recharge etant passee depuis la banque). Idempotence par NUMERO de facture : en
+    aout 2026, les deux systemes ont chacun facture une partie du mois (205,000 et 1 314,000).
     """
+    from bank_retenue_sync.mail.mailbox import attachment
+
     out = []
     depuis = depuis or _periode_debut_gestion()
-    for msg in mail_config.fetch("total_invoice", limit=limit):
+    # Les factures de recharge (2 a 3 par mois) passent avant la facture mensuelle : 8 e-mails.
+    for msg in mail_config.fetch("total_invoice", limit=limit or 8):
         zip_att = mail_config.attachment_of("total_invoice", msg)
-        if not zip_att:
+        pdf_att = None if zip_att else attachment(msg, ext=".pdf")
+        if not zip_att and not pdf_att:
+            _signaler("Total", msg, "aucune piece jointe ZIP ni PDF")
             continue
         try:
-            files = extract_invoice_files(zip_att[1])
-            if not files["xlsx"]:
-                continue
-            inv = parse_invoice_xlsx(files["xlsx"][1])
+            if zip_att:
+                files = extract_invoice_files(zip_att[1])
+                if not files["xlsx"]:
+                    _signaler("Total", msg, "ZIP sans fichier Excel")
+                    continue
+                inv = parse_invoice_xlsx(files["xlsx"][1])
+                piece = files["pdf"]
+            else:
+                inv = parse_invoice_pdf(pdf_att[1])
+                piece = pdf_att
+                if inv is None:
+                    if "recharge" not in (msg.get("subject") or "").lower():
+                        _signaler("Total", msg, "PDF illisible (ni facture mensuelle ni recharge)")
+                    out.append({"flux": "total", "subject": (msg.get("subject") or "")[:40], "status": "ignore (recharge)"})
+                    continue
             if not inv.period:
+                _signaler("Total", msg, "facture sans date")
                 continue
             if _hors_perimetre(inv.period, depuis):
                 out.append({"flux": "total", "periode": inv.period, "status": "hors perimetre"})
                 continue
             cheque = f"Facture Total {_mmyyyy(inv.period)}"
-            deja = _exists(cheque) and cheque or _deja_comptabilise(
-                inv.period, journal.TOTAL_PAYMENT_ACCOUNT, "credit", marqueur="TOTAL")
+            deja = _facture_deja_citee(inv.invoice_no) or (
+                None if inv.invoice_no else (_exists(cheque) and cheque)) or _deja_comptabilise(
+                inv.period, journal.TOTAL_PAYMENT_ACCOUNT, "credit", marqueur="TOTAL",
+                periode_au_libelle=True, autre_facture=_FACTURE_TOTAL)
             if deja:
-                out.append({"flux": "total", "ref": cheque, "status": "skipped", "je": deja})
+                out.append({"flux": "total", "ref": cheque, "facture": inv.invoice_no, "status": "skipped", "je": deja})
                 continue
             je = journal.create_total_journal_entry(
-                inv, pdf=files["pdf"], insert=insert,
-                email_date=mail_config.message_date(msg))
-            out.append({"flux": "total", "ref": cheque, "status": "created",
+                inv, pdf=piece, insert=insert, email_date=mail_config.message_date(msg),
+                cheque_no=_cle_libre(cheque, inv.invoice_no))
+            out.append({"flux": "total", "ref": je.cheque_no, "facture": inv.invoice_no, "status": "created",
                         "je": je.name if insert else "(dry-run)",
                         "montant": _total_de(je), "date": str(je.posting_date)})
         except Exception as e:
+            _signaler("Total", msg, "erreur : %s" % str(e)[:200])
             out.append({"flux": "total", "subject": msg["subject"][:40], "status": "error", "error": str(e)[:120]})
     return out
 
 
 def process_aramex(limit=None, insert: bool = True, depuis: str = None):
     """`insert=False` : essai a blanc. Attention, l'extraction OpenAI du PDF a lieu QUAND MEME —
-    elle precede la decision de creer, donc un essai a blanc coute autant qu'un vrai run."""
+    elle precede la decision de creer, donc un essai a blanc coute autant qu'un vrai run.
+
+    Idempotence par NUMERO E-INV (lu dans le sujet, avant l'extraction : une facture deja saisie
+    ne coute plus d'appel OpenAI). Avant le 06/10/2026 elle se faisait par mois, sur « une
+    ecriture du compte de fret qui mentionne Aramex » : une depense de caisse « Frais
+    d'expedition Aramex » suffisait a faire sauter la facture du mois, et une deuxieme facture
+    dans le meme mois (septembre 2026 : 1900540919 et 1900541394) n'aurait jamais ete saisie."""
     out = []
     depuis = depuis or _periode_debut_gestion()
-    for msg in mail_config.fetch("aramex_invoice", limit=limit):
+    for msg in mail_config.fetch("aramex_invoice", limit=limit or 6):
         pdf = mail_config.attachment_of("aramex_invoice", msg)
         if not pdf:
+            _signaler("Aramex", msg, "pas de PDF joint")
             continue
         # Filtre AVANT l'extraction : c'est elle qui coute un appel OpenAI par facture. La periode
         # n'est connue qu'apres extraction, mais la date de RECEPTION suffit a ecarter le vieux
@@ -331,26 +413,37 @@ def process_aramex(limit=None, insert: bool = True, depuis: str = None):
         if depuis and recu and str(recu)[:7] < depuis:
             out.append({"flux": "aramex", "recu": str(recu), "status": "hors perimetre"})
             continue
+        numero = _numero_e_inv(msg.get("subject"))
+        deja = _facture_deja_citee(numero)
+        if deja:
+            out.append({"flux": "aramex", "facture": numero, "status": "skipped", "je": deja})
+            continue
         try:
             data = extract_invoice(pdf[1], extra_hint="Facture transport Aramex Tunisie, TND, TVA 7%, timbre.")
             period = (data.get("invoice_date") or "")[:7]
             if not re.match(r"\d{4}-\d{2}", period or ""):
+                _signaler("Aramex", msg, "date de facture illisible")
                 continue
             if _hors_perimetre(period, depuis):
                 out.append({"flux": "aramex", "periode": period, "status": "hors perimetre"})
                 continue
+            numero = numero or str(data.get("invoice_no") or "").strip()
             cheque = f"Facture Aramex {_mmyyyy(period)}"
-            deja = _exists(cheque) and cheque or _deja_comptabilise(
-                period, journal.ARAMEX_CHARGE_ACCOUNT, "debit", marqueur="ARAMEX")
+            deja = _facture_deja_citee(numero) or (
+                None if numero else (_exists(cheque) and cheque)) or _deja_comptabilise(
+                period, journal.ARAMEX_CHARGE_ACCOUNT, "debit", marqueur="ARAMEX",
+                periode_au_libelle=True, autre_facture=_E_INV_ARAMEX)
             if deja:
-                out.append({"flux": "aramex", "ref": cheque, "status": "skipped", "je": deja})
+                out.append({"flux": "aramex", "ref": cheque, "facture": numero, "status": "skipped", "je": deja})
                 continue
             je = journal.create_aramex_journal_entry(
-                data, pdf=pdf, insert=insert, email_date=mail_config.message_date(msg))
-            out.append({"flux": "aramex", "ref": cheque, "status": "created",
+                data, pdf=pdf, insert=insert, email_date=mail_config.message_date(msg),
+                cheque_no=_cle_libre(cheque, numero))
+            out.append({"flux": "aramex", "ref": je.cheque_no, "facture": numero, "status": "created",
                         "je": je.name if insert else "(dry-run)",
                         "montant": _total_de(je), "date": str(je.posting_date)})
         except Exception as e:
+            _signaler("Aramex", msg, "erreur : %s" % str(e)[:200])
             out.append({"flux": "aramex", "subject": msg["subject"][:40], "status": "error", "error": str(e)[:120]})
     return out
 

@@ -9,6 +9,8 @@ Module pur : bytes du ZIP -> fichiers. Testable hors Frappe.
 """
 from __future__ import annotations
 
+import re
+
 import io
 import zipfile
 from dataclasses import dataclass, field
@@ -126,3 +128,46 @@ def parse_invoice_xlsx(xlsx_bytes: bytes) -> TotalInvoice:
         client_no=str(cell(first, "Numéro_Client") or "").strip(),
         lines_count=count,
     )
+
+
+# --------------------------------------------------------------------------- facture PDF (09/2026)
+# Depuis septembre 2026, « TotalEnergies Marketing Tunisie » envoie la facture mensuelle des cartes
+# prepayees en PDF (« Invoice_10022026.pdf »), plus en ZIP + XLSX : le flux ZIP l'ignorait sans rien
+# dire (facture de septembre jamais saisie, constate le 06/10/2026). Lecture DETERMINISTE du texte :
+# numero (FP…), date du document, ligne « Total general » (HT, TVA, TTC — timbre compris dans le HT).
+# Les « factures de recharge » (numero PM…, « Operations de credit ») ne sont pas des depenses : la
+# recharge est passee depuis la banque (« Recharge Carte Total FT… »). -> None.
+
+_NB = r"(-?[\d,]+\.\d+|-?\d+)"
+
+
+def _nombre_pdf(v: str) -> float:
+    return float(v.replace(",", ""))
+
+
+def parse_invoice_pdf_text(texte: str):
+    """Texte (PyMuPDF) d'une facture PDF Total -> TotalInvoice, ou None si ce n'est pas une facture
+    mensuelle de consommation (facture de recharge, document inconnu). Pur."""
+    t = texte or ""
+    numero = re.search(r"Num[ée]ro\s+Facture\s+([A-Z]{2}\d{2}/\d+)", t)
+    if not numero or numero.group(1).upper().startswith("PM") or re.search(r"Op[ée]rations\s+de\s+cr[ée]dit", t):
+        return None
+    emise = re.search(r"Date\s+du\s+Document\s+(\d{2})/(\d{2})/(\d{4})", t)
+    total = re.search(r"Total\s+g[ée]n[ée]ral\s+(?:TND\s+)?" + _NB + r"\s+" + _NB + r"\s+" + _NB, t)
+    if not emise or not total:
+        return None
+    jour, mois, an = (int(x) for x in emise.groups())
+    client = re.search(r"Num[ée]ro\s+Client\s+(\d+)", t)
+    return TotalInvoice(
+        invoice_no=numero.group(1), invoice_date=date(an, mois, jour), currency="TND",
+        total_ht=_nombre_pdf(total.group(1)), total_tva=_nombre_pdf(total.group(2)),
+        total_ttc=_nombre_pdf(total.group(3)), client_no=client.group(1) if client else "")
+
+
+def parse_invoice_pdf(pdf_bytes: bytes):
+    """PDF de la facture Total -> TotalInvoice | None (voir `parse_invoice_pdf_text`)."""
+    import pymupdf
+
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        return parse_invoice_pdf_text("\n".join(page.get_text() for page in doc))
+

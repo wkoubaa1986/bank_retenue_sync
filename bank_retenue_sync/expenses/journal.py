@@ -118,7 +118,7 @@ def _attach(je, attachments):
 
 
 def create_total_journal_entry(invoice: TotalInvoice, pdf=None, submit=None, insert=True,
-                               email_date=None):
+                               email_date=None, cheque_no=None):
     """Ecriture de la facture Total.
 
     Dr Frais de Deplacement (HT) + Dr TVA 19% (toute la TVA) / Cr Carte Total (TTC).
@@ -143,7 +143,8 @@ def create_total_journal_entry(invoice: TotalInvoice, pdf=None, submit=None, ins
     remark = f"Facture Total {invoice.invoice_no} ({invoice.period})"
     je = build_journal_entry(
         company, posting_date, lines, remark=remark,
-        cheque_no=f"Facture Total {_period_mm_yyyy(invoice.invoice_date)}",   # ex. 'Facture Total 06-2026'
+        # `cheque_no` impose : deuxieme facture du meme mois (« Facture Total 08-2026 (FP26/709869) »).
+        cheque_no=cheque_no or f"Facture Total {_period_mm_yyyy(invoice.invoice_date)}",   # ex. 'Facture Total 06-2026'
         cheque_date=invoice.invoice_date,
         mode_of_payment=TOTAL_MODE_OF_PAYMENT,
     )
@@ -461,7 +462,7 @@ def create_honoraire_journal_entry(extract: dict, pdf=None, submit=None, insert=
 
 
 def create_aramex_journal_entry(extract: dict, pdf=None, submit=None, insert=True,
-                                email_date=None):
+                                email_date=None, cheque_no=None):
     """Ecriture de la facture Aramex a partir de l'extraction OpenAI (`extract`).
 
     Cr Crediteurs (tiers ARAMEX, TTC) / Dr TVA 7% / Dr Timbre Fiscal / Dr charge (HT, en dernier).
@@ -495,7 +496,8 @@ def create_aramex_journal_entry(extract: dict, pdf=None, submit=None, insert=Tru
         inv_date or period_end_date(period))
     je = build_journal_entry(
         company, posting_date, lines, remark=remark,
-        cheque_no=f"Facture Aramex {_period_mm_yyyy(inv_date)}",
+        # `cheque_no` impose : deuxieme facture du meme mois (« Facture Aramex 09-2026 (1900541394) »).
+        cheque_no=cheque_no or f"Facture Aramex {_period_mm_yyyy(inv_date)}",
         cheque_date=inv_date,
         # pas de mode_of_payment : reglee plus tard depuis Zitouna
     )
