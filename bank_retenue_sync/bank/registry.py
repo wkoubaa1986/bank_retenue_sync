@@ -40,7 +40,11 @@ CLASSIFICATION_FIELDS = (
 )
 
 # Champs qu'un humain renseigne et que la machine ne touche jamais.
-HUMAN_FIELDS = ("ignore_manuel", "ignore_motif", "note")
+HUMAN_FIELDS = ("ignore_manuel", "ignore_motif", "note",
+                "lien_manuel", "lien_pieces", "lien_motif", "lien_par", "lien_le")
+
+# Ce qu'un rattachement manuel peut designer : les deux natures de piece qui touchent la banque.
+DOCTYPES_RATTACHABLES = ("Journal Entry", "Payment Entry")
 
 
 def movement_key(m: dict) -> str:
@@ -229,6 +233,50 @@ def import_from_bank_transactions(bank_account: str = None) -> dict:
         for r in rows
     ]
     return upsert_movements(movements, origine="bank_transaction")
+
+
+def pieces_du_lien(valeur) -> list:
+    """Le champ `lien_pieces` (JSON) -> [{"doctype", "name"}], tolerant : vide ou illisible -> [].
+    Fonction pure."""
+    if not valeur:
+        return []
+    try:
+        brut = json.loads(valeur) if isinstance(valeur, str) else valeur
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for p in brut or []:
+        if isinstance(p, dict) and p.get("doctype") in DOCTYPES_RATTACHABLES and p.get("name"):
+            out.append({"doctype": p["doctype"], "name": str(p["name"]).strip()})
+    return out
+
+
+def liens_manuels() -> dict:
+    """{cle: {"pieces": [{doctype, name}], "motif", "par"}} des mouvements rattaches a la main."""
+    rows = frappe.db.get_all(DOCTYPE, filters={"lien_manuel": 1}, limit_page_length=0,
+                             fields=["name", "lien_pieces", "lien_motif", "lien_par"])
+    return {r.name: {"pieces": pieces_du_lien(r.lien_pieces), "motif": r.lien_motif or "",
+                     "par": r.lien_par or ""}
+            for r in rows if pieces_du_lien(r.lien_pieces)}
+
+
+def marquer_lien(cle: str, pieces: list, motif: str, par: str) -> None:
+    """Arbitrage humain : ce mouvement correspond a ces pieces (une ou plusieurs). Leve une
+    eventuelle mise a l'ecart : rattacher, c'est dire que le mouvement EST rapproche."""
+    frappe.db.set_value(DOCTYPE, cle, {
+        "lien_manuel": 1,
+        "lien_pieces": json.dumps(pieces_du_lien(pieces), ensure_ascii=False),
+        "lien_motif": motif,
+        "lien_par": par,
+        "lien_le": now_datetime(),
+        "ignore_manuel": 0,
+        "ignore_motif": None,
+    })
+
+
+def retirer_lien(cle: str) -> None:
+    frappe.db.set_value(DOCTYPE, cle, {"lien_manuel": 0, "lien_pieces": None, "lien_motif": None,
+                                       "lien_par": None, "lien_le": None})
 
 
 def marquer_ignore(cles, motif: str = None, ignore: bool = True) -> int:

@@ -22,7 +22,8 @@ SETTINGS = "Bank Retenue Sync Settings"
 
 _FIELDS = ["name as cle", "date", "operation", "reference", "debit", "credit", "montant", "sens",
            "categorie", "regle", "groupe", "statut", "raison", "document_type", "document_name",
-           "montant_document", "ecart", "ignore_manuel", "ignore_motif", "note", "reglement"]
+           "montant_document", "ecart", "ignore_manuel", "ignore_motif", "note", "reglement",
+           "lien_manuel", "lien_pieces", "lien_motif"]
 
 # En deca de ce seuil, un ecart est repute correspondre aux frais bancaires preleves a la source.
 SEUIL_ECART_DEFAUT = 5.0
@@ -204,6 +205,125 @@ def reactiver(cles) -> dict:
     n = registry.marquer_ignore(cles, ignore=False)
     C.run(persist=True)
     return {"maj": n}
+
+
+# ------------------------------------------------------------ rattachement manuel (06/10/2026)
+# Quand aucune cle ne relie le mouvement a ses pieces (ou que plusieurs pieces le couvrent sans
+# que la machine puisse le prouver), l'utilisateur les designe lui-meme. Comme « Ignorer », c'est
+# un ARBITRAGE HUMAIN : la reclassification le respecte (classify.resoudre_lien_manuel).
+
+def _cle_normalisee(v) -> str:
+    return "".join(ch for ch in str(v or "").upper() if ch.isalnum())
+
+
+def _qui_porte(exclure: str) -> dict:
+    """{piece -> « 05/10 · LIBELLE »} : les pieces deja rattachees a un AUTRE mouvement."""
+    out = {}
+    for r in frappe.db.get_all(DOCTYPE, filters={"name": ["!=", exclure]}, limit_page_length=0,
+                               fields=["name", "date", "operation", "document_name", "lien_pieces"]):
+        noms = [p["name"] for p in registry.pieces_du_lien(r.lien_pieces)]
+        if r.document_name:
+            noms.append(r.document_name)
+        for n in noms:
+            out.setdefault(n, "%s · %s" % (frappe.utils.formatdate(r.date, "dd/MM"),
+                                           (r.operation or "")[:40]))
+    return out
+
+
+@frappe.whitelist()
+def candidats_rattachement(cle: str, jours: int = 10) -> dict:
+    """Les pieces bancaires du meme sens a ± `jours` du mouvement, pour le dialogue « Rattacher » :
+    celles qui CITENT la reference du mouvement d'abord, puis par montant et par date proches."""
+    _guard()
+    from bank_retenue_sync.bank import ecarts as E
+    from bank_retenue_sync.expenses import lookup
+
+    doc = frappe.get_doc(DOCTYPE, cle)
+    jours = frappe.utils.cint(jours) or 10
+    montant = flt(doc.montant, 3)
+    ref = _cle_normalisee(doc.reference)
+    deja = registry.pieces_du_lien(doc.lien_pieces)
+    deja_noms = {p["name"] for p in deja}
+    porte = _qui_porte(cle)
+    pieces = lookup.pieces_bancaires(frappe.utils.add_days(doc.date, -jours),
+                                     frappe.utils.add_days(doc.date, jours), marge=0)
+    out = []
+    for p in pieces:
+        if p["sens"] != doc.sens and p["voucher_no"] not in deja_noms:
+            continue
+        cite = bool(ref) and len(ref) >= E.MIN_CLE_LEN and ref in _cle_normalisee(p.get("texte"))
+        out.append({
+            "doctype": p["voucher_type"], "name": p["voucher_no"], "date": p["posting_date"],
+            "montant": flt(p["montant"], 3), "texte": (p.get("texte") or "")[:140],
+            "party": p.get("party"), "cite": cite, "lie_a": porte.get(p["voucher_no"]),
+            "coche": p["voucher_no"] in deja_noms,
+            "jours": abs(frappe.utils.date_diff(p["posting_date"], doc.date)),
+        })
+    vus = {c["name"] for c in out}
+    for p in deja:                       # une piece deja rattachee reste visible hors fenetre
+        if p["name"] not in vus:
+            info = piece_info(p["doctype"], p["name"])
+            out.append(dict(info, coche=True, cite=False, lie_a=porte.get(p["name"]), jours=None))
+    out.sort(key=lambda c: (not c["coche"], not c["cite"], bool(c["lie_a"]),
+                            abs(c["montant"] - montant) > E.tolerance(montant),
+                            c["jours"] if c["jours"] is not None else 99,
+                            abs(c["montant"] - montant)))
+    return {"mouvement": {"cle": doc.name, "date": doc.date, "operation": doc.operation,
+                          "reference": doc.reference, "montant": montant, "sens": doc.sens,
+                          "statut": doc.statut, "lien_motif": doc.lien_motif},
+            "candidats": out[:60], "tolerance": E.tolerance(montant), "jours": jours}
+
+
+@frappe.whitelist()
+def piece_info(doctype: str, name: str) -> dict:
+    """Une piece choisie a la main (hors suggestions) : son montant bancaire, sa date, son texte."""
+    _guard()
+    if doctype not in registry.DOCTYPES_RATTACHABLES:
+        frappe.throw(_("Seules une écriture de journal ou un paiement se rattachent."))
+    if not frappe.db.exists(doctype, name):
+        frappe.throw(_("{0} {1} introuvable.").format(doctype, name))
+    champs = (["posting_date", "docstatus", "cheque_no", "user_remark"] if doctype == "Journal Entry"
+              else ["posting_date", "docstatus", "reference_no", "remarks", "party"])
+    d = frappe.db.get_value(doctype, name, champs, as_dict=True)
+    return {"doctype": doctype, "name": name, "date": d.posting_date, "docstatus": d.docstatus,
+            "montant": C._montant_bancaire(doctype, name), "party": d.get("party"),
+            "texte": " ".join(str(d.get(f) or "") for f in champs[2:4]).strip()[:140]}
+
+
+@frappe.whitelist()
+def rattacher(cle: str, pieces, motif: str) -> dict:
+    """Rattache le mouvement a une ou plusieurs pieces, avec un motif. Reclasse ensuite."""
+    _guard(write=True)
+    pieces = registry.pieces_du_lien(pieces)
+    motif = " ".join(str(motif or "").split())
+    if not frappe.db.exists(DOCTYPE, cle):
+        frappe.throw(_("Mouvement introuvable."))
+    if not pieces:
+        frappe.throw(_("Choisissez au moins une pièce."))
+    if len(motif) < 5:
+        frappe.throw(_("Dites en quelques mots pourquoi ces pièces correspondent au mouvement."))
+    for p in pieces:
+        etat = frappe.db.get_value(p["doctype"], p["name"], "docstatus")
+        if etat is None:
+            frappe.throw(_("{0} {1} introuvable.").format(p["doctype"], p["name"]))
+        if etat == 2:
+            frappe.throw(_("{0} est annulée : elle ne peut pas être rattachée.").format(p["name"]))
+    porte = _qui_porte(cle)
+    registry.marquer_lien(cle, pieces, motif, frappe.session.user)
+    C.run(persist=True)
+    row = frappe.db.get_value(DOCTYPE, cle, ["statut", "raison", "ecart"], as_dict=True)
+    return {"statut": row.statut, "raison": row.raison, "ecart": flt(row.ecart, 3),
+            # Une piece peut legitimement couvrir plusieurs prelevements : on previent, sans bloquer.
+            "deja_ailleurs": {p["name"]: porte[p["name"]] for p in pieces if p["name"] in porte}}
+
+
+@frappe.whitelist()
+def detacher(cle: str) -> dict:
+    """Retire le rattachement manuel : la machine reprend la main sur ce mouvement."""
+    _guard(write=True)
+    registry.retirer_lien(cle)
+    C.run(persist=True)
+    return {"statut": frappe.db.get_value(DOCTYPE, cle, "statut")}
 
 
 @frappe.whitelist()

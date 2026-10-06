@@ -278,7 +278,7 @@ def rapprochement(date_from=None, date_to=None, compte: str = None) -> dict:
     compte = compte or BANK_ACCOUNT
     champs = ["name as cle", "date", "operation", "reference", "debit", "credit", "montant",
               "sens", "statut", "categorie", "raison", "document_type", "document_name",
-              "ignore_manuel"]
+              "ignore_manuel", "lien_pieces"]
     # LE LIEN NE S'ARRETE PAS AU BORD DE LA PERIODE. Les cles et les documents se lisent sur TOUT
     # le registre : une piece du 02/06 rattachee a un mouvement du 30/05 est rapprochee, et la
     # declarer « sans mouvement » parce que le filtre commence au 01/06 serait faux. Filtrer les
@@ -301,6 +301,9 @@ def rapprochement(date_from=None, date_to=None, compte: str = None) -> dict:
 
     cles = cles_du_releve(tous)
     cites = {m["document_name"] for m in tous if m.get("document_name")}
+    # Un rattachement manuel peut couvrir plusieurs pieces : toutes sont reliees au releve.
+    for m in tous:
+        cites.update(p["name"] for p in registry.pieces_du_lien(m.get("lien_pieces")))
 
     # L'ecriture d'ALIGNEMENT du residu (Reglages) est un constat : elle n'attend aucun
     # mouvement bancaire, la compter « en attente de credit » projetterait un ecart fictif.
@@ -469,6 +472,10 @@ def _groupes_de_rapprochement(movements: list, pieces: list) -> list:
         cible = noms_pieces.get(m.get("document_name"))
         if cible:
             unir(("M", m["cle"]), cible)
+        # Rattachement manuel : chaque piece designee rejoint le mouvement, pas seulement la 1re.
+        for p in registry.pieces_du_lien(m.get("lien_pieces")):
+            if p["name"] in noms_pieces:
+                unir(("M", m["cle"]), noms_pieces[p["name"]])
     for p in pieces or []:
         for k in piece_cite(p, set(par_cle)):
             for noeud in par_cle[k]:
@@ -513,7 +520,7 @@ def explication_ecart(date_from=None, date_to=None, compte: str = None) -> dict:
     movements = frappe.db.get_all(
         registry.DOCTYPE, limit_page_length=0, order_by="date asc",
         fields=["name as cle", "date", "operation", "reference", "debit", "credit", "montant",
-                "sens", "statut", "groupe", "document_name"])
+                "sens", "statut", "groupe", "document_name", "lien_pieces"])
     pieces = lookup.pieces_bancaires(compte=compte)
 
     # LES FRAIS SORTENT DU GRAPHE, ET CE N'EST PAS UN DETAIL.

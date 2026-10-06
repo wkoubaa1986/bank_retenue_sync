@@ -163,6 +163,13 @@ class IdentificationBancaire {
     this.$root.on("click", "[data-reactiver]", (e) =>
       this._reactiver($(e.currentTarget).attr("data-reactiver"))
     );
+    // Rattachement manuel (06/10/2026) : désigner soi-même la ou les pièces d'un mouvement.
+    this.$root.on("click", "[data-rattacher]", (e) =>
+      this._rattacher($(e.currentTarget).attr("data-rattacher"))
+    );
+    this.$root.on("click", "[data-detacher]", (e) =>
+      this._detacher($(e.currentTarget).attr("data-detacher"))
+    );
     this.$root.on("click", "[data-creer]", (e) =>
       this._creer($(e.currentTarget).attr("data-creer"))
     );
@@ -1111,12 +1118,19 @@ class IdentificationBancaire {
         probleme ? __("écarts à résoudre") : __("brouillon")
       }</span>`;
     }
-    const doc = r.document_name
-      ? `<a href="/app/${frappe.router.slug(r.document_type)}/${encodeURIComponent(
-          r.document_name
-        )}" data-preview data-doctype="${esc(r.document_type)}" data-name="${esc(
-          r.document_name
-        )}">${esc(r.document_name)}</a>${doc_badge}`
+    const lien = (dt, nom) =>
+      `<a href="/app/${frappe.router.slug(dt)}/${encodeURIComponent(nom)}" data-preview data-doctype="${esc(
+        dt
+      )}" data-name="${esc(nom)}">${esc(nom)}</a>`;
+    // Rattaché à la main : toutes les pièces désignées, pas seulement la première.
+    const pieces_manuelles = r.lien_manuel ? this._pieces_du_lien(r.lien_pieces) : [];
+    const doc = pieces_manuelles.length
+      ? `${pieces_manuelles.map((p) => lien(p.doctype, p.name)).join("<br>")}
+         <div><span class="indicator-pill blue" style="font-size:10px" title="${esc(
+           r.lien_motif || ""
+         )}">🔗 ${__("à la main")}</span></div>${doc_badge}`
+      : r.document_name
+      ? `${lien(r.document_type, r.document_name)}${doc_badge}`
       : r.document_type
       ? `<span style="color:var(--text-muted)">${esc(r.document_type)}</span>${doc_badge}`
       : "";
@@ -1195,9 +1209,17 @@ class IdentificationBancaire {
     const b = [];
     if (r.ignore_manuel) {
       b.push(`<button data-reactiver="${esc(r.cle)}">Réactiver</button>`);
+    } else if (r.lien_manuel) {
+      b.push(`<button data-rattacher="${esc(r.cle)}">🔗 Modifier</button>`);
+      b.push(`<button data-detacher="${esc(r.cle)}">Détacher</button>`);
     } else {
       if (r.statut === "Orphelin" && r.categorie !== "frais_bancaires") {
         b.push(`<button data-creer="${esc(r.cle)}">Créer l'écriture</button>`);
+      }
+      if (r.statut !== "Identifie" && r.statut !== "Ignore") {
+        b.push(`<button data-rattacher="${esc(r.cle)}" title="${esc(
+          __("Désigner vous-même la ou les pièces ERPNext de ce mouvement")
+        )}">🔗 Rattacher</button>`);
       }
       b.push(`<button data-ignorer="${esc(r.cle)}">Ignorer</button>`);
     }
@@ -1395,6 +1417,161 @@ class IdentificationBancaire {
       },
     });
     d.show();
+  }
+
+  _pieces_du_lien(valeur) {
+    try {
+      const l = typeof valeur === "string" ? JSON.parse(valeur || "[]") : valeur || [];
+      return Array.isArray(l) ? l.filter((p) => p && p.doctype && p.name) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** Rattacher un mouvement à une ou plusieurs pièces (écritures, paiements) : suggestions du
+      même sens à ± 10 jours — celles qui citent la référence d'abord —, ou toute autre pièce
+      choisie à la main ; le total est comparé au mouvement en direct. Comme « Ignorer », c'est
+      un arbitrage humain que la reclassification respecte. */
+  async _rattacher(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = await frappe.call({
+      method: this._m("candidats_rattachement"),
+      args: { cle },
+      freeze: true,
+      freeze_message: __("Recherche des pièces…"),
+    });
+    const m = r.message || {};
+    const mv = m.mouvement || {};
+    const candidats = m.candidats || [];
+    const choisies = new Map(candidats.filter((c) => c.coche).map((c) => [c.name, c]));
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const d = new frappe.ui.Dialog({
+      title: __("Rattacher le mouvement à ses pièces"),
+      size: "extra-large",
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        { fieldtype: "HTML", fieldname: "liste" },
+        { fieldtype: "Section Break", label: __("Une pièce absente de la liste ?"), collapsible: 1 },
+        {
+          fieldtype: "Select", fieldname: "autre_type", label: __("Type de pièce"),
+          options: "Journal Entry\nPayment Entry", default: "Journal Entry",
+        },
+        { fieldtype: "Column Break" },
+        {
+          fieldtype: "Dynamic Link", fieldname: "autre_nom", label: __("Pièce"),
+          get_options: () => d.get_value("autre_type"),
+        },
+        { fieldtype: "Column Break" },
+        { fieldtype: "Button", fieldname: "ajouter", label: __("Ajouter à la sélection") },
+        { fieldtype: "Section Break" },
+        { fieldtype: "HTML", fieldname: "total" },
+        {
+          fieldtype: "Small Text", fieldname: "motif", label: __("Motif"), reqd: 1,
+          default: mv.lien_motif || "",
+          description: __("Pourquoi ces pièces correspondent à ce mouvement (ex. : un seul paiement Orange pour deux factures)."),
+        },
+        { fieldtype: "HTML", fieldname: "erreur" },
+      ],
+      primary_action_label: __("Rattacher"),
+      primary_action: async (v) => {
+        const err = (t) => d.fields_dict.erreur.$wrapper.html(
+          `<div style="color:var(--red-600);font-weight:600">${esc(t)}</div>`);
+        if (!choisies.size) return err(__("Cochez au moins une pièce."));
+        if (!(v.motif || "").trim() || v.motif.trim().length < 5) return err(__("Indiquez le motif."));
+        const res = await frappe.call({
+          method: this._m("rattacher"),
+          args: {
+            cle,
+            pieces: JSON.stringify([...choisies.values()].map((p) => ({ doctype: p.doctype, name: p.name }))),
+            motif: v.motif,
+          },
+          freeze: true,
+          freeze_message: __("Rattachement et reclassement…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        const ailleurs = Object.keys(x.deja_ailleurs || {});
+        frappe.show_alert({
+          message: __("Mouvement rattaché : {0}", [IB_STATUT_LABEL[x.statut] || x.statut]) + (ailleurs.length
+            ? " — " + __("déjà rattachée(s) à un autre mouvement : {0}", [ailleurs.join(", ")]) : ""),
+          indicator: x.statut === "Identifie" ? "green" : "orange",
+        }, 8);
+        this.load();
+      },
+    });
+
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt">
+        <b>${esc(frappe.datetime.str_to_user(mv.date))}</b> · ${esc(mv.operation || "")}
+        · <span class="text-muted">${esc(mv.reference || "")}</span>
+        · <b>${money(mv.montant)}</b> (${esc(mv.sens === "Debit" ? __("débit") : __("crédit"))})
+      </div>
+      <div class="text-muted" style="font-size:12px;margin:4px 0 8px">${__(
+        "Pièces du même sens à ± {0} jours. 🔖 = la pièce cite la référence bancaire du mouvement.", [m.jours || 10])}</div>`);
+
+    const rendre_liste = () => {
+      const lignes = [...candidats];
+      choisies.forEach((p) => { if (!lignes.find((c) => c.name === p.name)) lignes.unshift(p); });
+      d.fields_dict.liste.$wrapper.html(lignes.length ? `
+        <div class="ib-rat-wrap"><table class="ib-rat">
+          <thead><tr><th></th><th>${__("Date")}</th><th>${__("Pièce")}</th><th class="num">${__("Montant")}</th><th>${__("Libellé")}</th><th></th></tr></thead>
+          <tbody>${lignes.map((c) => `<tr class="${choisies.has(c.name) ? "ib-rat-on" : ""}">
+            <td><input type="checkbox" data-piece="${esc(c.name)}" ${choisies.has(c.name) ? "checked" : ""}></td>
+            <td>${c.date ? esc(frappe.datetime.str_to_user(c.date)) : ""}</td>
+            <td><a href="/app/${frappe.router.slug(c.doctype)}/${encodeURIComponent(c.name)}" target="_blank">${esc(c.name)}</a></td>
+            <td class="num">${money(c.montant)}</td>
+            <td class="ib-rat-txt">${esc(c.party ? c.party + " — " : "")}${esc(c.texte || "")}</td>
+            <td>${c.cite ? `<span class="indicator-pill green" style="font-size:10px">🔖 ${__("cite la référence")}</span>` : ""}${
+              c.lie_a ? ` <span class="indicator-pill orange" style="font-size:10px" title="${esc(c.lie_a)}">${__("déjà rattachée")}</span>` : ""}${
+              c.docstatus === 0 ? ` <span class="indicator-pill gray" style="font-size:10px">${__("brouillon")}</span>` : ""}</td>
+          </tr>`).join("")}</tbody></table></div>`
+        : `<div class="text-muted">${__("Aucune pièce bancaire du même sens à ± {0} jours : ajoutez-la ci-dessous.", [m.jours || 10])}</div>`);
+      d.fields_dict.liste.$wrapper.find("[data-piece]").on("change", (e) => {
+        const nom = $(e.currentTarget).attr("data-piece");
+        const c = lignes.find((x) => x.name === nom);
+        if (e.currentTarget.checked) choisies.set(nom, c); else choisies.delete(nom);
+        $(e.currentTarget).closest("tr").toggleClass("ib-rat-on", e.currentTarget.checked);
+        rendre_total();
+      });
+    };
+    const rendre_total = () => {
+      const total = [...choisies.values()].reduce((a, p) => a + flt(p.montant || 0, 3), 0);
+      const ecart = flt(flt(mv.montant, 3) - total, 3);
+      const couleur = !choisies.size ? "var(--text-muted)" : Math.abs(ecart) < 0.0005 ? "var(--green-600)"
+        : Math.abs(ecart) <= flt(m.tolerance || 1, 3) ? "var(--orange-600)" : "var(--red-600)";
+      d.fields_dict.total.$wrapper.html(`<div class="ib-rat-total" style="color:${couleur}">
+        ${__("Sélection")} : ${choisies.size} ${__("pièce(s)")} = <b>${money(total)}</b>
+        · ${__("mouvement")} <b>${money(mv.montant)}</b>
+        · ${__("écart")} <b>${money(ecart)}</b>${choisies.size && Math.abs(ecart) < 0.0005 ? " ✅" : ""}</div>`);
+    };
+    d.fields_dict.ajouter.$input.on("click", async () => {
+      const doctype = d.get_value("autre_type"), name = d.get_value("autre_nom");
+      if (!name) return;
+      const info = await frappe.call({ method: this._m("piece_info"), args: { doctype, name } });
+      const p = info.message;
+      if (!p) return;
+      if (p.docstatus === 2) {
+        frappe.show_alert({ message: __("{0} est annulée.", [name]), indicator: "red" });
+        return;
+      }
+      choisies.set(p.name, p);
+      d.set_value("autre_nom", "");
+      rendre_liste();
+      rendre_total();
+    });
+    rendre_liste();
+    rendre_total();
+    d.show();
+  }
+
+  _detacher(cle) {
+    frappe.confirm(
+      __("Retirer le rattachement manuel ? Le mouvement sera reclassé automatiquement."),
+      async () => {
+        await frappe.call({ method: this._m("detacher"), args: { cle }, freeze: true });
+        this.load();
+      }
+    );
   }
 
   async _reactiver(cle) {

@@ -141,6 +141,10 @@ class LinkContext:
     # mesurer sur le GROUPE (somme banque vs somme pieces), pas ligne contre total — sinon la
     # page affichait -68 et -136 la ou l'ecart reel du bordereau est -1.
     banque_par_cle: dict = field(default_factory=dict)
+    # {cle du mouvement -> {"pieces": [{doctype, name, docstatus, montant}], "motif", "par"}} :
+    # les RATTACHEMENTS MANUELS (bouton « Rattacher » de la page, 06/10/2026). Ils priment sur
+    # toute resolution automatique et leurs pieces sont retirees de l'appariement par montant.
+    liens_manuels: dict = field(default_factory=dict)
 
 
 def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
@@ -197,7 +201,39 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
         je_brouillons=set(frappe.get_all("Journal Entry", filters={"docstatus": 0},
                                          pluck="name")),
         banque_par_cle=banque_par_cle,
+        liens_manuels=liens_manuels_enrichis(registry.liens_manuels()),
     )
+
+
+def _montant_bancaire(doctype: str, name: str):
+    """Ce que la piece fait passer par la banque : cumul de ses lignes sur le compte bancaire
+    (une ecriture), montant paye (un paiement). Une ecriture qui ne touche pas la banque rend
+    son total : le rattachement est un choix humain, on mesure quand meme l'ecart."""
+    from bank_retenue_sync.encaissement.pending import BANK_ACCOUNT
+
+    if doctype == "Payment Entry":
+        return flt(frappe.db.get_value(doctype, name, "paid_amount"), 3)
+    r = frappe.db.sql("""select sum(debit_in_account_currency), sum(credit_in_account_currency)
+                         from `tabJournal Entry Account` where parent = %s and account = %s""",
+                      (name, BANK_ACCOUNT))
+    debit, credit = (flt(r[0][0], 3), flt(r[0][1], 3)) if r else (0.0, 0.0)
+    if debit or credit:
+        return round(abs(debit - credit), 3)
+    return flt(frappe.db.get_value(doctype, name, "total_debit"), 3)
+
+
+def liens_manuels_enrichis(liens: dict) -> dict:
+    """Ajoute a chaque piece rattachee son etat (docstatus, None = supprimee) et son montant."""
+    out = {}
+    for cle, lien in (liens or {}).items():
+        pieces = []
+        for p in lien.get("pieces") or []:
+            docstatus = frappe.db.get_value(p["doctype"], p["name"], "docstatus")
+            pieces.append(dict(p, docstatus=docstatus,
+                               montant=(_montant_bancaire(p["doctype"], p["name"])
+                                        if docstatus is not None else None)))
+        out[cle] = dict(lien, pieces=pieces)
+    return out
 
 
 def _sans_ecritures_de_frais(index: dict, cheque_no_index: dict) -> dict:
@@ -443,8 +479,16 @@ def _resoudre_journal(rule, m, ctx: Classification, context: LinkContext, absent
         ctx.document_type = "Journal Entry"
         ctx.document_name = noms[0]
         if len(noms) > 1:
-            ctx.statut = STATUT_A_VERIFIER
-            ctx.raison = "%s : %s" % (RAISON_REFS_MULTIPLES, ", ".join(noms[:4]))
+            # Plusieurs ecritures pour un prelevement : valables si elles font ensemble le montant.
+            montants = {e["voucher_no"]: e["montant"] for e in (context.ecritures_bancaires or [])}
+            groupe = ecritures_complementaires(
+                noms, montants, round(flt(m.get("debit"), 3) or flt(m.get("credit"), 3), 3))
+            if groupe:
+                _mesurer_ecart(ctx, m, groupe["montant"])
+                ctx.raison = _texte_pieces(groupe)
+            else:
+                ctx.statut = STATUT_A_VERIFIER
+                ctx.raison = "%s : %s" % (RAISON_REFS_MULTIPLES, ", ".join(noms[:4]))
         return
 
     pe, mode, ecart = lookup.apparier_payment_entry(m, context.pe_bancaires or [])
@@ -668,7 +712,7 @@ def _absorber_ecart(c: Classification, m: dict, context: LinkContext, ecart: flo
     return True
 
 
-def _journal_citant(cle: str, context: LinkContext):
+def _journal_citant(cle: str, context: LinkContext, montant=None):
     """Ecriture de journal citant cette cle, avec le montant qu'elle sort de la banque.
 
     `cle` est soit un n° de cheque extrait du libelle, soit la REFERENCE BANCAIRE du mouvement.
@@ -676,18 +720,49 @@ def _journal_citant(cle: str, context: LinkContext):
     Orange ou une recharge saisis a la main citent la reference `FT…` dans leur remarque, et
     rien d'autre ne les relie au releve.
 
-    -> {voucher_no, montant} | None. On exige UNE seule ecriture : une cle citee par deux
-    pieces n'identifie plus rien. Le montant vient de `ecritures_bancaires` (cumul des lignes
-    bancaires de l'ecriture), ce qui permet de mesurer l'ecart avec le releve au lieu de
-    l'ignorer — cas reel : cheque 4001008, 231,821 preleves pour 232,136 comptabilises.
+    -> {voucher_no, montant, pieces} | None. UNE seule ecriture suffit ; PLUSIEURS ne valent que
+    si, ensemble, elles font le montant du mouvement (`ecritures_complementaires`). Le montant
+    vient de `ecritures_bancaires` (cumul des lignes bancaires de l'ecriture), ce qui permet de
+    mesurer l'ecart avec le releve au lieu de l'ignorer — cas reel : cheque 4001008, 231,821
+    preleves pour 232,136 comptabilises.
     """
     if not cle:
         return None
     noms = (context.je_par_reference or {}).get(str(cle).strip().upper()) or []
-    if len(noms) != 1:
-        return None
     montants = {e["voucher_no"]: e["montant"] for e in (context.ecritures_bancaires or [])}
-    return {"voucher_no": noms[0], "montant": montants.get(noms[0])}
+    if len(noms) == 1:
+        return {"voucher_no": noms[0], "montant": montants.get(noms[0]), "pieces": list(noms)}
+    return ecritures_complementaires(noms, montants, montant)
+
+
+def ecritures_complementaires(noms: list, montants: dict, montant) -> dict:
+    """Plusieurs ecritures citent la MEME reference bancaire : un seul prelevement regle
+    plusieurs factures. Cas reel du 05/10/2026 : « PAIEMENT INTERNET 0510ORANGE » 51,856 =
+    ACC-JV-2026-00845 + ACC-JV-2026-00846 (deux factures Orange de 25,928, saisies chacune avec
+    la reference FT262780LGWS). Elles identifient le mouvement si leur TOTAL bancaire egale son
+    montant, a la tolerance des ecarts pres.
+
+    La garde d'origine (« une cle citee par deux pieces n'identifie plus rien ») visait les
+    references de contrat citees par des dizaines d'echeances : leur total ne fait jamais le
+    montant d'UN mouvement, elles restent donc ecartees. Montant d'une piece inconnu -> rien.
+    -> {voucher_no (la premiere), montant (le total), pieces} | None. Fonction pure."""
+    from bank_retenue_sync.bank import ecarts as E
+
+    if len(noms or []) < 2 or not montant or any(montants.get(n) is None for n in noms):
+        return None
+    total = round(sum(flt(montants[n], 3) for n in noms), 3)
+    if abs(total - round(flt(montant), 3)) > E.tolerance(montant):
+        return None
+    return {"voucher_no": noms[0], "montant": total, "pieces": list(noms)}
+
+
+def _texte_pieces(je: dict) -> str:
+    """« ; 2 ecritures citent la reference et font ensemble le montant : A + B » ou ""."""
+    pieces = (je or {}).get("pieces") or []
+    if len(pieces) < 2:
+        return ""
+    return "%d écritures citent la référence et font ensemble le montant : %s" % (
+        len(pieces), " + ".join(pieces))
 
 
 def _paiement_citant(reference: str, context: LinkContext):
@@ -706,6 +781,15 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
         reference=(m.get("reference") or "").strip(), debit=debit, credit=credit)
 
     rule = R.find_rule(m, rules)
+    lien = (context.liens_manuels or {}).get(c.cle)
+    if lien:
+        # Rattachement MANUEL : la decision humaine prime sur toute resolution automatique. La
+        # regle sert encore a categoriser (cumuls, rapports), rien d'autre.
+        if rule is not None:
+            c.categorie, c.sous_categorie, c.regle, c.action = (
+                rule.categorie, rule.sous_categorie, rule.key, rule.action)
+        resoudre_lien_manuel(c, m, lien)
+        return c
     if rule is None:
         # ⚠️ UN LIBELLE INCONNU N'EST PAS UNE OPERATION INEXPLIQUEE. Avant le 16/09/2026 on
         # s'arretait ici : la ligne restait « a verifier » meme quand une piece CITAIT sa
@@ -716,7 +800,7 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
         # CATEGORISER (donc aux cumuls et aux rapports), pas a rapprocher.
         c.statut = STATUT_A_VERIFIER
         c.raison = "libelle inconnu : aucune regle ne le reconnait (a ajouter dans bank/rules.py)"
-        je = _journal_citant(c.reference, context)
+        je = _journal_citant(c.reference, context, montant=debit or credit)
         pe_cite = _paiement_citant(c.reference, context)
         if je:
             c.statut = STATUT_IDENTIFIE
@@ -725,6 +809,8 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
             _mesurer_ecart(c, m, je["montant"])
             c.raison = ("libellé inconnu (règle à ajouter dans bank/rules.py), mais la pièce "
                         "cite la référence bancaire")
+            if _texte_pieces(je):
+                c.raison += " — " + _texte_pieces(je)
             if abs(flt(c.ecart, 3)) >= 0.005:
                 c.raison += " — écart de %s sur le montant" % c.ecart
         elif pe_cite:
@@ -793,16 +879,18 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
             # Dernier recours : une ECRITURE DE JOURNAL citant le n° de cheque. Tous les
             # reglements ne passent pas par une Payment Entry — certains sont saisis en direct,
             # avec le numero dans la remarque.
-            je = (_journal_citant(c.numero, context)
-                  or _journal_citant(c.reference, context))
+            je = (_journal_citant(c.numero, context, montant=debit or credit)
+                  or _journal_citant(c.reference, context, montant=debit or credit))
             pe_cite = _paiement_citant(c.reference, context)
             if je:
                 c.statut = STATUT_IDENTIFIE
                 c.document_type = "Journal Entry"
                 c.document_name = je["voucher_no"]
                 _mesurer_ecart(c, m, je["montant"])
-                c.raison = ("citee par une ecriture de journal, avec un ecart de %s sur le montant"
-                            % c.ecart if abs(c.ecart) >= 0.005 else "")
+                c.raison = " — ".join(x for x in (
+                    _texte_pieces(je),
+                    ("citee par une ecriture de journal, avec un ecart de %s sur le montant" % c.ecart
+                     if abs(c.ecart) >= 0.005 else "")) if x)
             elif pe_cite:
                 # Un paiement cite la reference du mouvement sans toucher la banque : c'est un
                 # cheque impaye bascule sur « Chèques sans provision » (encaissement/impayes).
@@ -836,6 +924,42 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
     return c
 
 
+def resoudre_lien_manuel(c: Classification, m: dict, lien: dict) -> Classification:
+    """Statut d'un mouvement rattache a la main. Identifie (ou « non comptabilise » si une piece
+    est en brouillon) ; A VERIFIER si une piece rattachee a ete annulee ou supprimee depuis — le
+    rattachement doit alors etre refait. L'ecart (banque − total des pieces) reste mesure et
+    affiche : un humain a tranche le lien, pas le montant. Fonction pure."""
+    pieces = lien.get("pieces") or []
+    vivantes = [p for p in pieces if p.get("docstatus") in (0, 1)]
+    mortes = [p["name"] for p in pieces if p.get("docstatus") not in (0, 1)]
+    qui = ("par %s" % lien["par"]) if lien.get("par") else ""
+    tete = "rattaché à la main %s%s" % (qui, (" : %s" % lien["motif"]) if lien.get("motif") else "")
+    if not vivantes:
+        c.statut = STATUT_A_VERIFIER
+        c.raison = "%s — pièce(s) annulée(s) ou supprimée(s) : %s, à rattacher de nouveau" % (
+            tete, ", ".join(mortes))
+        return c
+    c.document_type = vivantes[0]["doctype"]
+    c.document_name = vivantes[0]["name"]
+    if all(p.get("montant") is not None for p in vivantes):
+        _mesurer_ecart(c, m, round(sum(flt(p["montant"], 3) for p in vivantes), 3))
+    bouts = [tete]
+    if len(vivantes) > 1:
+        bouts.append(" + ".join(p["name"] for p in vivantes))
+    if abs(flt(c.ecart, 3)) >= 0.005:
+        bouts.append("écart de %s sur le montant" % c.ecart)
+    if mortes:
+        c.statut = STATUT_A_VERIFIER
+        bouts.append("pièce(s) annulée(s) ou supprimée(s) : %s" % ", ".join(mortes))
+    elif any(p.get("docstatus") == 0 for p in vivantes):
+        c.statut = STATUT_IDENTIFIE_BROUILLON
+        bouts.append("écriture en brouillon, à soumettre")
+    else:
+        c.statut = STATUT_IDENTIFIE
+    c.raison = " — ".join(bouts)
+    return c
+
+
 def apparier_restants(classifications: list, context: LinkContext) -> int:
     """Dernier recours SYMETRIQUE : apparier ce qui reste, des deux cotes, par montant et date.
 
@@ -864,6 +988,9 @@ def apparier_restants(classifications: list, context: LinkContext) -> int:
         return 0
 
     cites = {c.document_name for c in classifications if c.document_name}
+    # Une piece rattachee a la main appartient a son mouvement, meme si ce n'est pas la premiere.
+    for lien in (context.liens_manuels or {}).values():
+        cites.update(p["name"] for p in lien.get("pieces") or [])
     cles = set()
     for c in classifications:
         for v in (c.reference, c.numero):

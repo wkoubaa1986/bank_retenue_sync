@@ -88,6 +88,16 @@
   .ib-tbl th.num       { text-align: right; }
 
   .ib-act { display: flex; gap: 4px; flex-wrap: wrap; }
+  /* Rattachement manuel : le mouvement, les pieces candidates, le total en direct */
+  .ib-rat-mvt { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--subtle-fg, #f4f5f6); }
+  .ib-rat-wrap { max-height: 340px; overflow: auto; border: 1px solid var(--border-color, #e2e6e9); border-radius: 8px; }
+  table.ib-rat { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.ib-rat th, table.ib-rat td { padding: 5px 8px; border-bottom: 1px solid var(--border-color, #eef0f2); vertical-align: top; }
+  table.ib-rat th { position: sticky; top: 0; background: var(--fg-color, #fff); font-weight: 600; color: var(--text-muted); }
+  table.ib-rat .num { text-align: right; white-space: nowrap; }
+  table.ib-rat tr.ib-rat-on td { background: rgba(46, 158, 91, .08); }
+  .ib-rat-txt { max-width: 420px; color: var(--text-muted); }
+  .ib-rat-total { font-size: 14px; margin: 4px 0 8px; }
   .ib-act button { font-size: 11px; padding: 1px 7px; border-radius: 5px; cursor: pointer;
                    border: 1px solid var(--border-color); background: var(--control-bg);
                    color: var(--text-color); white-space: nowrap; }
