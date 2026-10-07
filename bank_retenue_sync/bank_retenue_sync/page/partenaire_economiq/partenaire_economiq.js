@@ -85,6 +85,7 @@ class PartenaireEconomiq {
       return;
     }
     this.cache = {};
+    this.controle_bl = null;    // le périmètre des ventes Economiq suit la règle du bilan
     this._charger();
   }
 
@@ -109,6 +110,7 @@ class PartenaireEconomiq {
       $c.html(this._rendre(this.cache[this.mois]));
       this._recalculer_apercu();
       this._charger_consolide();
+      this._charger_controle_bl();
       return;
     }
     $c.html('<div class="pe-chargement">Chargement…</div>');
@@ -123,6 +125,7 @@ class PartenaireEconomiq {
       $c.html(this._rendre(d));
       this._recalculer_apercu();
       this._charger_consolide();
+      this._charger_controle_bl();
     } catch (e) {
       $c.html(this._erreur(e));
     }
@@ -251,6 +254,8 @@ class PartenaireEconomiq {
       : '<div class="pe-vide">Aucune commande du partenaire sur ce mois.</div>';
 
     return kpis + avert + etat + trou
+      + this._sous("Contrôle des BL — ventes faites par Economiq")
+      + `<div data-role="controle-bl"><div class="pe-chargement">Chargement…</div></div>`
       + this._sous("Bilan d’activité") + this._regle(d) + bilan
       + this._sous("Écriture de bilan") + ecriture
       + this._sous("Charges libres du mois") + charges
@@ -741,6 +746,63 @@ class PartenaireEconomiq {
       });
       c.show();
     });
+  }
+
+  /** Toute vente faite PAR Economiq doit porter un BL de main d’œuvre seulement.
+   *
+   * Les produits posés par le partenaire ne sortent pas de notre stock : un article de stock sur
+   * le BL du client final ferait sortir du magasin un produit qui n’en est jamais parti. Le
+   * contrôle couvre tous les mois depuis juillet 2026, pas le seul mois affiché : une anomalie
+   * d’un mois déjà passé n’en est pas moins à corriger. Lu une fois, gardé tant que la règle du
+   * bilan ne change pas.
+   */
+  async _charger_controle_bl() {
+    const $c = this.$root.find('[data-role="controle-bl"]');
+    if (!$c.length) return;
+    if (!this.controle_bl) {
+      try {
+        this.controle_bl = (await frappe.call({
+          method: "bank_retenue_sync.api.partenaire.get_controle_bl" })).message || {};
+      } catch (e) {
+        $c.html(this._erreur(e));
+        return;
+      }
+    }
+    const k = this.controle_bl;
+    if (!k.disponible) {
+      $c.html(`<div class="pe-note alerte">${this._esc(k.message || "Contrôle indisponible.")}</div>`);
+      return;
+    }
+    const nb = (k.anomalies || []).length;
+    const mois = (k.mois || []).map((m) => {
+      const cls = m.conformes < m.ventes ? "bad" : (m.ventes ? "ok" : "neutre");
+      return `<span class="pe-badge ${cls}">${this._esc(m.libelle)} : ${m.conformes}/${m.ventes}</span>`;
+    }).join(" ");
+    const tete = nb
+      ? `<div class="pe-note alerte">✗ <b>${nb} vente${nb > 1 ? "s" : ""} sur ${k.ventes}</b>
+           faite${nb > 1 ? "s" : ""} par Economiq depuis ${this._esc(k.depuis_libelle)}
+           ${nb > 1 ? "n’ont" : "n’a"} pas un BL de main d’œuvre seulement. Un article de stock
+           sur ce BL sort du magasin un produit que le partenaire a fourni lui-même.</div>`
+      : `<div class="pe-note">✓ <b>${k.ventes} vente${k.ventes > 1 ? "s" : ""}</b> faite${
+           k.ventes > 1 ? "s" : ""} par Economiq depuis ${this._esc(k.depuis_libelle)} :
+           ${k.ventes ? "toutes ont un BL validé ne portant que de la main d’œuvre" : "rien à contrôler"}
+           (groupe « ${this._esc(k.groupe)} »).</div>`;
+    const table = nb
+      ? `<div class="pe-scroll"><table class="pe-tbl"><thead><tr>
+          <th>Mois</th><th>Commande</th><th>Client</th><th class="num">Vente</th>
+          <th>Problème</th><th>BL</th><th>Détail</th></tr></thead><tbody>
+          ${k.anomalies.map((a) => `<tr>
+            <td class="muted">${this._esc(a.mois)}</td>
+            <td>${this._lien("Sales Order", a.sales_order)}</td>
+            <td>${this._esc(a.customer || "")}</td>
+            <td class="num">${this._m(a.vente)}</td>
+            <td><span class="pe-badge bad">${a.type === "sans_bl"
+              ? "Sans BL validé" : "Articles hors main d’œuvre"}</span></td>
+            <td>${(a.bons || []).map((b) => this._lien("Delivery Note", b)).join("<br>") || "—"}</td>
+            <td class="muted" style="font-size:11.5px;">${this._esc(a.detail || "")}</td>
+          </tr>`).join("")}</tbody></table></div>`
+      : "";
+    $c.html(tete + `<div class="pe-act" style="margin-top:0;">${mois}</div>` + table);
   }
 
   async _charger_consolide() {

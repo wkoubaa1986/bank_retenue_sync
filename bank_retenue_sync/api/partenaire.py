@@ -36,6 +36,15 @@ def get_tableau(mois=None) -> dict:
     return M_economiq.tableau(mois)
 
 
+@frappe.whitelist()
+def get_controle_bl() -> dict:
+    """Ventes realisees par Economiq depuis juillet 2026 : BL de main d'oeuvre seulement ?"""
+    _guard()
+    from bank_retenue_sync.partenaire import controle_bl
+
+    return controle_bl.controle()
+
+
 ROLES_ECRITURE = ["System Manager", "Accounts Manager"]
 
 
