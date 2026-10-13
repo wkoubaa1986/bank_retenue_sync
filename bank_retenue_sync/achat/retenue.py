@@ -160,6 +160,25 @@ def corriger_ligne(doc) -> dict:
     return res
 
 
+def retirer_lignes(doc) -> dict:
+    """Retire toutes les lignes de retenue de la table des taxes. -> dict.
+
+    Le geste inverse de `poser_ligne`, reserve a la facture deja payee integralement sans retenue
+    (cf. `facture.sans_retenue`) : il n'y a plus rien sur quoi la prelever.
+    """
+    lignes = [l for l in (doc.get("taxes") or [])
+              if l.add_deduct_tax == "Deduct" and regles.MOT_RETENUE in (l.account_head or "")]
+    if not lignes:
+        return {"statut": "aucune ligne"}
+    montant = round(sum(flt(l.tax_amount) for l in lignes), 3)
+    for ligne in lignes:
+        doc.remove(ligne)
+    for i, ligne in enumerate(doc.get("taxes") or [], start=1):
+        ligne.idx = i
+    doc.calculate_taxes_and_totals()
+    return {"statut": "retiree", "montant": montant, "lignes": len(lignes)}
+
+
 def completer_centre(doc) -> dict:
     """Pose le centre de couts manquant sur la ligne de retenue. -> dict.
 
@@ -200,6 +219,10 @@ def poser_maintenant(facture):
     doc = frappe.get_doc("Purchase Invoice", facture)
     if doc.docstatus != 0:
         frappe.throw(_("La facture est validée : sa table des taxes ne peut plus changer."))
+    # Meme reponse que l'enregistrement : case cochee, rien a poser.
+    from bank_retenue_sync.achat.facture import CHAMP_SANS_RETENUE
+    if frappe.utils.cint(doc.get(CHAMP_SANS_RETENUE)):
+        return {"statut": "sans retenue", **controle(doc), "centre": {}}
     res = poser_ligne(doc)
     if res["statut"] != "posee":
         res = corriger_ligne(doc)
@@ -224,7 +247,8 @@ def inventaire(annee=None, seuil=None) -> dict:
     # entierement anterieure au plancher rend un inventaire vide — c'est voulu, l'exercice est clos.
     from bank_retenue_sync.achat.facture import _plancher as _plancher_achat
     plancher = _plancher_achat()
-    rows = frappe.db.sql("""select p.name, p.supplier, p.posting_date, p.grand_total
+    rows = frappe.db.sql("""select p.name, p.supplier, p.posting_date, p.grand_total,
+                                   p.custom_sans_retenue
                             from `tabPurchase Invoice` p
                             join `tabSupplier` s on s.name = p.supplier
                             where p.docstatus = 1 and s.country = %(pays)s
@@ -240,7 +264,8 @@ def inventaire(annee=None, seuil=None) -> dict:
                                    fields=["account_head", "tax_amount", "add_deduct_tax"],
                                    order_by="idx")
         c = regles.controle_retenue(r.grand_total, [dict(l) for l in lignes], seuil, _taux())
-        if not c["due"]:
+        # Deja payee integralement a la validation : rien n'a pu etre retenu, rien n'est du.
+        if not c["due"] or (r.custom_sans_retenue and not c["saisie"]):
             continue
         out["factures"] += 1
         if c["verdict"] == "conforme":
@@ -547,7 +572,7 @@ def recapitulatif_retenues(depuis=None):
 
     rows = frappe.db.sql("""select p.name, p.supplier, s.supplier_name, s.tax_id,
                                    p.posting_date, p.bill_no, p.grand_total,
-                                   p.status, p.outstanding_amount
+                                   p.status, p.outstanding_amount, p.custom_sans_retenue
                             from `tabPurchase Invoice` p
                             join `tabSupplier` s on s.name = p.supplier
                             where p.docstatus = 1 and s.country = %(pays)s
@@ -557,13 +582,18 @@ def recapitulatif_retenues(depuis=None):
 
     lignes, totaux = [], {"due": 0.0, "saisie": 0.0, "manque": 0.0, "restant": 0.0}
     compte = {"factures": 0, "conformes": 0, "manquantes": 0, "fausses": 0,
-              "tej_emis": 0, "tej_en_cours": 0, "tej_manquants": 0, "impayees": 0}
+              "tej_emis": 0, "tej_en_cours": 0, "tej_manquants": 0, "impayees": 0,
+              "sans_retenue": 0}
     for r in rows:
         taxes = frappe.db.get_all("Purchase Taxes and Charges", filters={"parent": r.name},
                                   fields=["account_head", "tax_amount", "add_deduct_tax"],
                                   order_by="idx")
         c = regles.controle_retenue(r.grand_total, [dict(t) for t in taxes], seuil, taux)
         if not c["due"] and not c["saisie"]:
+            continue
+        if r.custom_sans_retenue and not c["saisie"]:
+            # Deja payee integralement a la validation : ni retenue, ni certificat a attendre.
+            compte["sans_retenue"] += 1
             continue
 
         # La verite TEJ, par force de preuve decroissante : le PDF attache (module ou manuel),

@@ -184,6 +184,8 @@ function ouvrir_recap_retenues(dialog_existante) {
       const kpis = [
         tuile(__("Factures concernées"), c.factures || 0),
         tuile(__("Comptabilité conforme"), c.conformes || 0),
+        // Payées intégralement sans retenue (case cochée) : hors du compte, mais pas oubliées.
+        ...(c.sans_retenue ? [tuile(__("Sans retenue (payées)"), c.sans_retenue)] : []),
         tuile(__("Retenue manquante"), c.manquantes || 0, c.manquantes),
         tuile(__("Montant faux"), c.fausses || 0, c.fausses),
         tuile(__("Certificat TEJ ✓"), c.tej_emis || 0),

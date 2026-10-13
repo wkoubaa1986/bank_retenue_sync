@@ -571,9 +571,17 @@ function verifier(frm) {
       return;
     }
     const ras = m.retenue || {};
+    const sans = m.sans_retenue || {};
     const dev = frm.doc.currency || "TND";
+    const paiements = frappe.utils.escape_html((sans.detail || []).join(", "));
     const retenue = !ras.due
       ? __("Sous le seuil : aucune retenue à la source.")
+      : sans.coche && sans.payee
+        ? __("Sans retenue à la source : la facture est déjà payée intégralement ({0}).", [paiements])
+      : sans.payee && !ras.saisie
+        ? __("Déjà payée intégralement ({0}) : cochez « Sans retenue à la source » et enregistrez.", [paiements])
+      : sans.payee
+        ? `<b>${__("Déjà payée intégralement ({0}), mais une retenue de {1} est saisie : cochez « Sans retenue à la source » et enregistrez pour la retirer.", [paiements, format_currency(ras.saisie, dev)])}</b>`
       : ras.verdict === "conforme"
         ? __("Retenue à la source conforme : {0} (1 % de {1}, timbre exclu)",
              [format_currency(ras.saisie, dev), format_currency(ras.assiette, dev)])
@@ -618,7 +626,9 @@ function poser(frm) {
         : m.statut === "corrigee"
           ? __("Ligne ramenée à {0} : {1} était saisi. Une retenue à la source se calcule, elle ne se négocie pas.",
                [format_currency(m.apres), format_currency(m.avant)])
-          : __("Rien à faire ({0}).", [m.statut])) + note,
+          : m.statut === "sans retenue"
+            ? __("« Sans retenue à la source » est cochée : la facture est déjà payée intégralement. Décochez-la et enregistrez pour poser la retenue.")
+            : __("Rien à faire ({0}).", [m.statut])) + note,
     });
   });
 }

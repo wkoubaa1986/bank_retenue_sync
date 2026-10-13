@@ -192,6 +192,7 @@ def _restreindre_onglet_banque() -> bool:
 
 
 def after_migrate():
+    _champ_sans_retenue()
     _restreindre_onglet_banque()
     _ajouter_raccourci_paiements()
     _ajouter_raccourci_a_venir()
@@ -199,6 +200,29 @@ def after_migrate():
     _ajouter_raccourci_cloture()
     _ajouter_raccourci_partenaire()
     _ajouter_raccourci_rapprochement()
+
+
+def _champ_sans_retenue():
+    """La case « Sans retenue a la source » de la facture d'achat (cf. `achat.facture.sans_retenue`).
+
+    Creee ici plutot qu'en fixture, pour la raison donnee dans hooks.py : les Custom Field de
+    customization_app passent deja par ses fixtures, et ce champ-ci appartient a ce module.
+    `no_copy` : une facture dupliquee ou amendee doit refaire la preuve du paiement.
+    """
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
+    create_custom_fields({"Purchase Invoice": [{
+        "fieldname": "custom_sans_retenue",
+        "label": "Sans retenue à la source (déjà payée intégralement)",
+        "fieldtype": "Check",
+        "insert_after": "taxes_and_charges",
+        "no_copy": 1,
+        "print_hide": 1,
+        "module": "Bank Retenue Sync",
+        "description": "Le fournisseur a déjà reçu tout le TTC (caisse, avance) : rien n'a été "
+                       "retenu, la retenue n'est donc ni posée ni exigée. Refusée tant qu'il "
+                       "reste de quoi la prélever.",
+    }]}, update=True)
 
 
 def _ajouter_carte_tresorerie():

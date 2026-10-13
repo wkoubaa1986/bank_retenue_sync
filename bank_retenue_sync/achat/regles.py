@@ -269,6 +269,24 @@ def controle_retenue(grand_total, lignes, seuil: float = SEUIL_RETENUE,
             "due": due, "saisie": saisie, "ecart": ecart, "verdict": verdict}
 
 
+def deja_payee_sans_retenue(ttc, deja_regle, due, tolerance: float = TOLERANCE_RETENUE) -> bool:
+    """Le fournisseur a-t-il deja recu assez pour que la retenue ne puisse plus etre prelevee ?
+
+    ⚠️ UNE RETENUE SE PRELEVE SUR UN PAIEMENT. C'est la part du TTC qu'on NE verse PAS au
+    fournisseur : quand la caisse a deja remis la totalite (ACC-PINV-2026-00109, cheque de
+    1 200 DT sur 1 200 DT), il ne reste rien sur quoi la prelever. La poser quand meme declarerait
+    au fisc une somme jamais retenue, et laisserait 12 DT d'avance non allouee chez le fournisseur.
+
+    Vrai des que ce qui reste a payer ne peut plus porter la retenue entiere. Faux sous le seuil
+    (rien n'est du) et quand la caisse a deja retenu (1 188 verses sur 1 200 : il reste 12, la
+    retenue se pose normalement).
+    """
+    if not due:
+        return False
+    reste = round(float(ttc or 0) - float(deja_regle or 0), 3)
+    return reste < float(due) - float(tolerance)
+
+
 # ⚠️ PLANCHER DU PERIMETRE (decision utilisateur du 26/08/2026) : seules les factures dont la date
 # de comptabilisation est au 01/01/2026 ou apres sont controlees. Les exercices anterieurs sont
 # clos : y poser une retenue ou y deplacer une date au moment d'un enregistrement tardif ferait

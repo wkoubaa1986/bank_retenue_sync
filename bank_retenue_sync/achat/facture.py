@@ -29,6 +29,10 @@ from frappe.utils import flt, getdate
 from bank_retenue_sync.achat import regles
 
 DOCTYPE_EXTRACTION = "Extraction Facture Achat"
+#: La case « Sans retenue a la source » (creee par install._champ_sans_retenue).
+CHAMP_SANS_RETENUE = "custom_sans_retenue"
+#: Les fiches de la caisse (customization_app) : la ou vit l'avance d'une facture deja payee.
+DOCTYPE_FICHE_CAISSE = "Facture Achat a Saisir"
 
 
 def _reglage(champ, defaut=None):
@@ -326,6 +330,153 @@ def aligner_dates(doc) -> dict:
     return {"statut": "aligne", "avant": avant, "apres": str(doc.bill_date)}
 
 
+# ------------------------------------------------------------------ deja payee
+
+
+def _fiches_caisse(doc) -> list:
+    """Les fiches de caisse dont l'avance paiera cette facture a sa validation.
+
+    Le meme perimetre que `customization_app.caisse_depenses.pi_lier_fiche_caisse`, mais lu AVANT
+    le rattachement : a la creation, le lien `purchase_invoice` n'est pas encore pose, seuls le
+    fournisseur et le n° de facture (ou les recus / commandes des lignes) designent la fiche.
+    """
+    if not frappe.db.exists("DocType", DOCTYPE_FICHE_CAISSE):
+        return []
+    champs = ["name", "mode_paiement", "journal_entry", "journal_entries"]
+    a_saisir = {"statut": "À saisir", "purchase_invoice": ["is", "not set"]}
+    fiches = {}
+    if doc.name and not doc.is_new():
+        for f in frappe.get_all(DOCTYPE_FICHE_CAISSE, filters={"purchase_invoice": doc.name},
+                                fields=champs):
+            fiches[f.name] = f
+    numero = (doc.get("bill_no") or "").strip()
+    if doc.supplier and numero:
+        for f in frappe.get_all(DOCTYPE_FICHE_CAISSE, fields=champs,
+                                filters={"supplier": doc.supplier, "numero_facture": numero,
+                                         "est_bl": 0, **a_saisir}):
+            fiches.setdefault(f.name, f)
+    for champ, cle in (("purchase_receipt", "purchase_receipt"), ("purchase_order", "purchase_order")):
+        refs = sorted({l.get(cle) for l in (doc.get("items") or []) if l.get(cle)})
+        if refs:
+            for f in frappe.get_all(DOCTYPE_FICHE_CAISSE, fields=champs,
+                                    filters={champ: ["in", refs], **a_saisir}):
+                fiches.setdefault(f.name, f)
+    return list(fiches.values())
+
+
+def _verse_par_la_caisse(fiche) -> float:
+    """Ce que les ecritures d'avance de la fiche ont verse au fournisseur.
+
+    La somme des CREDITS (banque, especes...), sauf la ligne de retenue : quand la caisse a retenu,
+    l'ecriture credite aussi le compte de retenue, et cette part-la n'a pas ete versee.
+    """
+    from bank_retenue_sync.achat import retenue
+
+    jes = [fiche.journal_entry] if fiche.journal_entry else []
+    try:
+        jes += [j for j in (json.loads(fiche.journal_entries or "[]") or []) if j not in jes]
+    except Exception:
+        pass
+    if not jes:
+        return 0.0
+    verse = frappe.db.sql("""select sum(a.credit_in_account_currency)
+                             from `tabJournal Entry Account` a
+                             join `tabJournal Entry` j on j.name = a.parent
+                             where j.name in %(jes)s and j.docstatus = 1
+                               and a.account <> %(retenue)s""",
+                          {"jes": jes, "retenue": retenue.compte_retenue()})[0][0]
+    return flt(verse, 3)
+
+
+def deja_regle(doc) -> dict:
+    """Ce que le fournisseur a DEJA recu pour cette facture, avant sa validation. -> dict.
+
+    Trois sources : l'avance de la caisse (fiche « À saisir »), les avances imputees dans la
+    facture (paiements d'une commande d'achat), et le paiement immediat (`is_paid`).
+    """
+    montant, detail = 0.0, []
+    for f in _fiches_caisse(doc):
+        verse = _verse_par_la_caisse(f)
+        if verse > 0:
+            montant += verse
+            detail.append(_("{0} : {1} ({2})").format(f.name, frappe.utils.fmt_money(verse),
+                                                      f.mode_paiement or _("caisse")))
+    avances = flt(sum(flt(a.allocated_amount) for a in (doc.get("advances") or [])), 3)
+    if avances > 0:
+        montant += avances
+        detail.append(_("avances imputées : {0}").format(frappe.utils.fmt_money(avances)))
+    if doc.get("is_paid") and flt(doc.get("paid_amount")) > 0:
+        montant += flt(doc.paid_amount, 3)
+        detail.append(_("payée à la saisie : {0}").format(frappe.utils.fmt_money(doc.paid_amount)))
+    return {"montant": round(montant, 3), "detail": detail}
+
+
+def sans_retenue(doc) -> dict:
+    """Decide de la case « Sans retenue a la source » et en tire les consequences, EN MEMOIRE.
+
+    -> {"actif": bool, "faits": [str]}. `actif` : la retenue n'est ni posee ni corrigee.
+
+    ⚠️ UNE RETENUE SE PRELEVE SUR UN PAIEMENT (cf. `regles.deja_payee_sans_retenue`). Quand la caisse
+    a deja remis tout le TTC — ACC-PINV-2026-00109, cheque de 1 200 DT sur 1 200 DT —, la poser
+    declarerait une retenue jamais retenue et laisserait 12 DT d'avance non allouee. La version
+    precedente la reposait a chaque enregistrement : impossible de valider sans elle.
+
+    - Deja payee integralement, la case se coche d'office (et on le dit) a la creation, ou des
+      que la ligne de retenue a ete supprimee. Decochee par l'utilisateur, la retenue se pose.
+    - Cochee, elle retire la ligne de retenue.
+    - Cochee alors qu'il reste de quoi prelever la retenue, elle est decochee : on corrige
+      plutot que de refuser, comme partout dans ce module.
+    """
+    from bank_retenue_sync.achat import retenue
+
+    if not doc.meta.has_field(CHAMP_SANS_RETENUE):
+        return {"actif": False, "faits": []}
+    doc.calculate_taxes_and_totals()
+    c = retenue.controle(doc)
+    if not c["due"]:
+        return {"actif": False, "faits": []}
+    regle = deja_regle(doc)
+    payee = regles.deja_payee_sans_retenue(c["ttc_avant_retenue"], regle["montant"], c["due"])
+    paiements = ", ".join(regle["detail"])
+    coche = frappe.utils.cint(doc.get(CHAMP_SANS_RETENUE))
+    avant = doc.get_doc_before_save()
+    decochee = bool(avant and frappe.utils.cint(avant.get(CHAMP_SANS_RETENUE)) and not coche)
+    # ⚠️ SUPPRIMER LA LIGNE DOIT SUFFIRE. Sur 00109 (facture existante), la ligne retiree a la main
+    # etait reposee a l'enregistrement tant que la case n'etait pas cochee : le geste naturel ne
+    # tenait pas. Payee integralement et SANS ligne -> la case se coche seule. Seul un decochage
+    # explicite (la case etait cochee avant ce geste) fait poser la retenue malgre le paiement.
+    if not coche and payee and not decochee and (doc.is_new() or not c["saisie"]):
+        doc.set(CHAMP_SANS_RETENUE, 1)
+        retenue.retirer_lignes(doc)
+        return {"actif": True, "faits": [_(
+            "Facture déjà payée intégralement sans retenue ({0}) : « Sans retenue à la source » "
+            "est cochée, aucune retenue n'est posée. Décochez-la pour retenir quand même.").format(
+                paiements)]}
+    if not coche and payee and not decochee:
+        # Une ligne saisie sur une facture deja payee : on la laisse, mais on dit qu'elle n'est
+        # pas obligatoire — sinon personne ne decouvre la case.
+        return {"actif": False, "faits": [_(
+            "Facture déjà payée intégralement ({0}) : la retenue de {1} n'est pas obligatoire. "
+            "Supprimez sa ligne (ou cochez « Sans retenue à la source ») si rien n'a été retenu "
+            "au fournisseur.").format(paiements, frappe.utils.fmt_money(c["saisie"]))]}
+    if coche and not payee:
+        doc.set(CHAMP_SANS_RETENUE, 0)
+        return {"actif": False, "faits": [_(
+            "« Sans retenue à la source » décochée : le fournisseur n'a reçu que {0} sur {1} TTC, "
+            "la retenue de {2} se prélève sur le reste.").format(
+                frappe.utils.fmt_money(regle["montant"]),
+                frappe.utils.fmt_money(c["ttc_avant_retenue"]), frappe.utils.fmt_money(c["due"]))]}
+    if not coche:
+        return {"actif": False, "faits": []}
+    retiree = retenue.retirer_lignes(doc)
+    if retiree["statut"] != "retiree":
+        return {"actif": True, "faits": []}
+    return {"actif": True, "faits": [_(
+        "Retenue à la source de {0} retirée : la facture est déjà payée intégralement ({1}), rien "
+        "n'a été retenu au fournisseur.").format(frappe.utils.fmt_money(retiree["montant"]),
+                                                 paiements)]}
+
+
 @frappe.whitelist()
 def extraire_maintenant(nom, forcer=0):
     """Bouton « Lire le scan » du formulaire."""
@@ -345,7 +496,13 @@ def diagnostic(nom) -> dict:
     facture = _lu(doc)
     extraction = extraction_de(nom)
     perimetre = regles.dans_le_perimetre(doc.posting_date, _plancher())
+    c = facture["controle_retenue"]
+    regle = deja_regle(doc)
     return {"local": regles.est_local(facture["pays_fournisseur"]),
+            "sans_retenue": {"coche": frappe.utils.cint(doc.get(CHAMP_SANS_RETENUE)),
+                             "payee": regles.deja_payee_sans_retenue(
+                                 c["ttc_avant_retenue"], regle["montant"], c["due"]),
+                             **regle},
             "dans_perimetre": perimetre,
             "manques": (regles.bloquants(facture, _pieces_jointes(nom), extraction, *_seuils())
                         if perimetre else []),
@@ -415,7 +572,19 @@ def avant_validation(doc, method=None):
     # un echeancier calcule sur l'ancien total. On refuse, et l'enregistrement — qui, lui, pose et
     # redresse tout seul — suffit a se remettre en règle.
     c = facture["controle_retenue"]
-    if c["verdict"] == "manquante":
+    if frappe.utils.cint(doc.get(CHAMP_SANS_RETENUE)) and c["due"]:
+        # Meme trou que ci-dessus : cochee dans le dernier geste, la case n'a pas ete verifiee.
+        regle = deja_regle(doc)
+        if not regles.deja_payee_sans_retenue(c["ttc_avant_retenue"], regle["montant"], c["due"]):
+            refus.append("« Sans retenue à la source » est cochée, mais le fournisseur n'a reçu que "
+                         "%s DT sur %s DT TTC : la retenue de %s DT se prélève sur le reste — "
+                         "décochez la case et enregistrez"
+                         % (regle["montant"], c["ttc_avant_retenue"], c["due"]))
+        elif c["saisie"]:
+            refus.append("« Sans retenue à la source » est cochée, mais une ligne de retenue de %s DT "
+                         "reste dans les taxes : enregistrez la facture — elle se retire seule — "
+                         "puis validez" % c["saisie"])
+    elif c["verdict"] == "manquante":
         refus.append("la retenue à la source de %s DT (1 %% de %s, timbre exclu) n'est pas posée : "
                      "enregistrez la facture — elle se pose seule — puis validez"
                      % (c["due"], c["assiette"]))
@@ -452,7 +621,6 @@ def a_l_enregistrement(doc, method=None):
         return
     if not regles.est_local(frappe.db.get_value("Supplier", doc.supplier, "country")):
         return
-    from bank_retenue_sync.achat import retenue
 
     # ⚠️ TOUT CE QUI PEUT ETRE CORRIGE L'EST ICI, ET RIEN N'EST REFUSE POUR CELA. Le stock, le
     # magasin, le numero, les dates et la retenue se posent seuls ; ne restent bloquants que
@@ -497,6 +665,19 @@ def a_l_enregistrement(doc, method=None):
         # facture se validera, et l'extraction se retentera au prochain enregistrement.
         frappe.log_error(title="Extraction facture achat %s" % doc.name,
                          message=frappe.get_traceback())
+    # ⚠️ AVANT LA POSE : une facture deja payee integralement n'a plus de quoi porter la retenue,
+    # et `corriger_ligne` la remettait a chaque enregistrement (ACC-PINV-2026-00109).
+    sans = sans_retenue(doc)
+    faits += sans["faits"]
+    if not sans["actif"]:
+        _poser_retenue(doc, faits)
+    _annoncer(faits)
+
+
+def _poser_retenue(doc, faits):
+    """Pose, redresse et complete la ligne de retenue ; ajoute a `faits` ce qui a change."""
+    from bank_retenue_sync.achat import retenue
+
     posee = retenue.poser_ligne(doc)
     if posee.get("statut") == "posee":
         faits.append(_("Retenue à la source ajoutée : {0} — 1 % de {1} (timbre exclu).").format(
@@ -516,7 +697,6 @@ def a_l_enregistrement(doc, method=None):
     elif centre.get("statut") == "aucun centre de couts":
         faits.append(_("Aucun centre de coûts par défaut sur la société : la ligne de retenue en "
                        "exige un, la validation sera refusée tant qu'il manquera."))
-    _annoncer(faits)
 
 
 def _annoncer(faits):

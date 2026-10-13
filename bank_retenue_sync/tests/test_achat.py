@@ -220,6 +220,33 @@ class TestControleDeLaRetenue(unittest.TestCase):
         self.assertEqual(c["due"], 19.66)
 
 
+class TestDejaPayeeSansRetenue(unittest.TestCase):
+    """Une retenue se preleve sur un paiement : quand la caisse a deja tout verse, il ne reste rien
+    sur quoi la prelever (ACC-PINV-2026-00109)."""
+
+    def test_00109_cheque_du_ttc_entier(self):
+        self.assertTrue(R.deja_payee_sans_retenue(1200.0, 1200.0, 12.0))
+
+    def test_la_caisse_a_deja_retenu(self):
+        """1 188 verses sur 1 200 : il reste exactement la retenue, elle se pose normalement."""
+        self.assertFalse(R.deja_payee_sans_retenue(1200.0, 1188.0, 12.0))
+
+    def test_rien_n_est_paye(self):
+        self.assertFalse(R.deja_payee_sans_retenue(1200.0, 0, 12.0))
+
+    def test_paiement_partiel_laisse_de_quoi_retenir(self):
+        self.assertFalse(R.deja_payee_sans_retenue(1200.0, 500.0, 12.0))
+
+    def test_le_reste_ne_peut_plus_porter_la_retenue_entiere(self):
+        self.assertTrue(R.deja_payee_sans_retenue(1200.0, 1195.0, 12.0))
+
+    def test_au_millime_pres(self):
+        self.assertFalse(R.deja_payee_sans_retenue(1200.0, 1188.005, 12.0))
+
+    def test_sous_le_seuil_rien_n_est_du(self):
+        self.assertFalse(R.deja_payee_sans_retenue(800.0, 800.0, 0.0))
+
+
 class TestDateLueSurLeScan(unittest.TestCase):
     """⚠️ La lecture de l'ANNEE est le point faible du modele : sur une meme facture, trois
     lectures ont rendu 2020, 2023 et 2026. Le numero et les montants, eux, etaient stables."""
