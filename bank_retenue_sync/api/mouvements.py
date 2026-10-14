@@ -556,3 +556,52 @@ def generer_descriptions(date_from=None, date_to=None) -> dict:
     return {"mouvements": len(lignes),
             "decrits": sum(1 for l in lignes if details.get(l["cle"])),
             "maj": maj}
+
+
+# ─── déclenchements manuels et journal des passages (14/10/2026) ─────────────
+
+@frappe.whitelist()
+def apercu_reglements() -> dict:
+    """Ce que « Régler les dettes » ferait MAINTENANT (essai à blanc, rien n'est écrit) : les factures
+    Aramex / notes d'honoraire appariées à un virement émis du même montant, et celles qui attendent."""
+    _guard()
+    from bank_retenue_sync.bank import registry
+    from bank_retenue_sync.expenses import reglement
+    from bank_retenue_sync.orchestrator import _movements_geres
+
+    lignes = reglement.process_reglements(_movements_geres(registry.registry_as_movements()), insert=False)
+    return {"lignes": lignes, "a_regler": sum(1 for l in lignes if l.get("status") == "a regler")}
+
+
+@frappe.whitelist(methods=["POST"])
+def regler_dettes() -> dict:
+    """« Régler les dettes » à la main : la même étape que la vérification bancaire, tout de suite."""
+    _guard(write=True)
+    from bank_retenue_sync.orchestrator import run_reglements
+
+    lignes = run_reglements(insert=1)
+    return {"lignes": lignes, "regles": sum(1 for l in lignes if l.get("status") == "regle"),
+            "erreurs": [l for l in lignes if l.get("status") == "error"]}
+
+
+@frappe.whitelist(methods=["POST"])
+def lancer_verification() -> dict:
+    """Un passage complet de vérification bancaire, maintenant — le même que les 7 passages planifiés,
+    journalisé de même. En file sur la queue longue ; un passage déjà en cours n'est pas doublé."""
+    _guard(write=True)
+    frappe.only_for("System Manager")
+    from bank_retenue_sync.tasks import passages
+
+    passages.surveiller()
+    frappe.enqueue("bank_retenue_sync.tasks.daily.verification_bancaire_job", queue="long", timeout=3600,
+                   job_id="brs-verification_bancaire", deduplicate=True, declencheur="manuel (%s)" % frappe.session.user)
+    return {"statut": "en file"}
+
+
+@frappe.whitelist()
+def dernieres_verifications(limite: int = 10) -> list:
+    """Les derniers passages de vérification bancaire : statut, heures, étapes, erreurs."""
+    _guard()
+    from bank_retenue_sync.tasks import passages
+
+    return passages.derniers(limite)

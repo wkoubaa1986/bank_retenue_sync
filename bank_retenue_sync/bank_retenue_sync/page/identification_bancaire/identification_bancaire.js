@@ -194,7 +194,12 @@ class IdentificationBancaire {
       "refresh"
     );
     this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
-    this.page.add_menu_item(__("Générer les règlements"), () => this._reglements());
+    // « Générer les règlements » ne réglait RIEN (il décrit la colonne Règlement) : renommé le 14/10/2026,
+    // le vrai règlement des dettes a son bouton ci-dessous.
+    this.page.add_menu_item(__("Décrire les règlements (colonne Règlement)"), () => this._reglements());
+    this.page.add_inner_button(__("Régler les dettes (Aramex / honoraires)"), () => this._regler_dettes());
+    this.page.add_menu_item(__("Lancer la vérification bancaire maintenant"), () => this._lancer_verification());
+    this.page.add_menu_item(__("Dernières vérifications bancaires"), () => this._verifications());
     this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes());
     // bouton visible dans l'en-tête (pas seulement dans le menu « ··· »)
     this.page.add_inner_button(__("Régulariser un chèque impayé"), () => this._regulariser_impaye());
@@ -203,6 +208,94 @@ class IdentificationBancaire {
     this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
       frappe.set_route("Form", "Bank Retenue Sync Settings")
     );
+  }
+
+  // ------------------------------------------------- règlement des dettes et passages (14/10/2026)
+  // Le passage de 15h du 14/10 avait importé les virements Aramex sans aller jusqu'au règlement, et
+  // sans rien dire. Désormais : on règle à la main quand on veut, on relance un passage, et chaque
+  // passage se lit (indicateur à côté du titre, détail étape par étape).
+
+  async _regler_dettes() {
+    const r = await frappe.call({ method: this._m("apercu_reglements"), freeze: true,
+                                  freeze_message: __("Recherche des virements émis…") });
+    const m = r.message || {}, lignes = m.lignes || [];
+    const esc = frappe.utils.escape_html;
+    const fmt = (v) => format_number(flt(v, 3), null, 3);
+    const a_regler = lignes.filter((l) => l.status === "a regler");
+    const autres = lignes.filter((l) => l.status !== "a regler");
+    const statut = { "en attente": __("en attente"), ambigu: __("ambigu — plusieurs candidats"), "rien a faire": __("rien à faire") };
+    const html = `<div style="font-size:13px">
+      <p style="color:var(--text-muted)">${__("Une facture Aramex ou une note d'honoraire posée sur son compte d'attente est réglée quand un virement émis du MÊME montant (au millime) paraît au relevé après elle, et qu'il n'y a qu'un candidat de chaque côté. L'écriture d'attente est remplacée par une écriture sur la banque, à la même date, avec la référence du virement.")}</p>
+      ${a_regler.length ? `<h5>${__("À régler maintenant")} (${a_regler.length})</h5>
+        <table class="table table-bordered" style="font-size:12px"><thead><tr><th>${__("Pièce")}</th><th>${__("Dette")}</th>
+          <th style="text-align:right">${__("Montant")}</th><th>${__("Virement")}</th><th>${__("Date de la pièce")}</th></tr></thead>
+        <tbody>${a_regler.map((l) => `<tr><td>${esc(l.je_ancienne || "")}</td><td>${esc((l.flux || "").replace("reglement_", ""))}</td>
+          <td style="text-align:right">${fmt(l.montant)}</td><td>${esc(l.reference || "")}</td><td>${esc(l.date || "")}</td></tr>`).join("")}</tbody></table>`
+        : `<p><b>${__("Rien à régler pour l'instant.")}</b></p>`}
+      ${autres.length ? `<h6 style="margin-top:10px">${__("En attente")}</h6><ul style="font-size:12px">${autres.map((l) =>
+          `<li>${esc(l.je || l.je_ancienne || l.flux || "")} ${l.montant ? "— " + fmt(l.montant) : ""} : ${esc(statut[l.status] || l.status || "")}${l.raison ? " — " + esc(l.raison) : ""}</li>`).join("")}</ul>` : ""}
+    </div>`;
+    const d = new frappe.ui.Dialog({ title: __("Régler les dettes (Aramex / honoraires)"), size: "large",
+      fields: [{ fieldtype: "HTML", options: html }],
+      primary_action_label: a_regler.length ? __("Régler {0} dette(s)", [a_regler.length]) : __("Fermer"),
+      primary_action: async () => {
+        if (!a_regler.length) return d.hide();
+        const r2 = await frappe.call({ method: this._m("regler_dettes"), freeze: true, freeze_message: __("Règlement…") });
+        d.hide();
+        const res = r2.message || {};
+        if ((res.erreurs || []).length) {
+          frappe.msgprint({ title: __("Règlement incomplet"), indicator: "orange",
+            message: (res.erreurs || []).map((e) => `${esc(e.je || "")} : ${esc(e.error || "")}`).join("<br>") });
+        } else {
+          frappe.show_alert({ message: __("{0} dette(s) réglée(s).", [res.regles || 0]), indicator: "green" }, 6);
+        }
+        this.load();
+      } });
+    d.show();
+  }
+
+  async _lancer_verification() {
+    frappe.confirm(__("Lancer maintenant un passage complet de vérification bancaire (export, solde, identification, écritures, règlement des dettes) ? Comptez quelques minutes ; le résultat s'affiche à côté du titre."), async () => {
+      await frappe.call({ method: this._m("lancer_verification") });
+      frappe.show_alert({ message: __("Vérification bancaire en file."), indicator: "blue" }, 6);
+      setTimeout(() => this._indicateur_verification(), 3000);
+    });
+  }
+
+  async _indicateur_verification() {
+    try {
+      const r = await frappe.call({ method: this._m("dernieres_verifications"), args: { limite: 1 } });
+      const v = (r.message || [])[0];
+      if (!v) return;
+      const heure = frappe.datetime.str_to_user(v.started_at).replace(/:\d\d(\.\d+)?$/, "");
+      const etat = { Success: ["green", "✓"], Partial: ["orange", __("étape en erreur")], Failed: ["red", __("échec")],
+                     Running: ["blue", __("en cours…")] }[v.status] || ["gray", v.status];
+      this.page.set_indicator(__("Vérification {0} {1}", [heure, etat[1]]), etat[0]);
+      const $ind = this.page.indicator || this.page.$title_area.find(".indicator-pill");
+      $($ind).css("cursor", "pointer").attr("title", __("Dernières vérifications bancaires")).off("click.brs")
+        .on("click.brs", () => this._verifications());
+      if (v.status === "Running") setTimeout(() => this._indicateur_verification(), 20000);
+    } catch (e) { /* l'indicateur ne doit jamais gêner la page */ }
+  }
+
+  async _verifications() {
+    const r = await frappe.call({ method: this._m("dernieres_verifications"), args: { limite: 10 } });
+    const esc = frappe.utils.escape_html;
+    const couleur = { Success: "green", Partial: "orange", Failed: "red", Running: "blue" };
+    const libelle = { Success: __("Réussi"), Partial: __("Étape en erreur"), Failed: __("Échec / interrompu"), Running: __("En cours") };
+    const html = (r.message || []).map((v) => `<div style="border:1px solid var(--border-color);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+        <div><span class="indicator-pill ${couleur[v.status] || "gray"}">${esc(libelle[v.status] || v.status)}</span>
+          <b style="margin-left:6px">${esc(frappe.datetime.str_to_user(v.started_at))}</b>
+          ${v.finished_at ? `→ ${esc(frappe.datetime.str_to_user(v.finished_at).split(" ").pop())}` : ""}
+          <span style="color:var(--text-muted);font-size:12px;margin-left:6px">${esc(v.declencheur || "")} · ${esc(v.name)}</span></div>
+        ${(v.erreurs || []).length ? `<div style="color:var(--red-600);font-size:12px;margin-top:4px">${v.erreurs.map(esc).join("<br>")}</div>` : ""}
+        ${(v.etapes || []).length ? `<details style="margin-top:4px;font-size:12px"><summary style="cursor:pointer">${__("Étapes")}</summary>
+          <table class="table table-condensed" style="font-size:12px;margin:4px 0 0">${v.etapes.map((e) =>
+            `<tr><td>${e.ok ? "✓" : "✗"}</td><td>${esc(e.libelle)}</td><td style="color:${e.ok ? "var(--text-muted)" : "var(--red-600)"}">${esc(e.detail || "")}</td></tr>`).join("")}</table></details>` : ""}
+      </div>`).join("") || `<p>${__("Aucun passage journalisé pour l'instant (le journal existe depuis le 14/10/2026).")}</p>`;
+    new frappe.ui.Dialog({ title: __("Dernières vérifications bancaires"), size: "large",
+      fields: [{ fieldtype: "HTML", options: `<div style="font-size:13px">${html}</div>` }],
+      primary_action_label: __("Lancer maintenant"), primary_action: () => { cur_dialog && cur_dialog.hide(); this._lancer_verification(); } }).show();
   }
 
   // ------------------------------------------------------------------ data
@@ -224,6 +317,7 @@ class IdentificationBancaire {
   }
 
   async load() {
+    this._indicateur_verification();
     this.$root.find('[data-role="table"]').html('<div class="ib-loading">Chargement…</div>');
     // Les filtres du relevé (statut, catégorie, écart) n'ont pas d'équivalent côté pièces :
     // les désactiver vaut mieux que les laisser actifs sans effet.

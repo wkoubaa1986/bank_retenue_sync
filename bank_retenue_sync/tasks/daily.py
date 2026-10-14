@@ -100,13 +100,39 @@ def verification_bancaire():
     l'ecriture mensuelle de frais est recalculee depuis zero puis refaite seulement si son total
     a change. Un passage sans nouveaute ne laisse aucune trace comptable.
     """
+    # un passage precedent reste « en cours » trop longtemps a ete tue : on le dit avant d'en lancer un autre
+    if _enabled():
+        try:
+            from bank_retenue_sync.tasks import passages
+            passages.surveiller()
+        except Exception as e:
+            frappe.log_error(f"surveillance des passages echouee\n{e}", "brs verification")
     return _dispatch("verification_bancaire")
 
 
-def verification_bancaire_job():
+def verification_bancaire_job(declencheur: str = "planifié"):
+    """Le vrai passage, sur la queue `long` — journalise dans `BRS Sync Run` (14/10/2026 : le passage
+    de 15h s'etait arrete sans laisser aucune trace, cf. tasks/passages)."""
     from bank_retenue_sync import orchestrator
+    from bank_retenue_sync.tasks import passages
 
-    return _safe("verification_bancaire", lambda: orchestrator.run_verification_bancaire())
+    if not _enabled():
+        return None
+    try:
+        nom = passages.ouvrir(declencheur)
+    except Exception as e:
+        frappe.log_error(f"ouverture du journal de passage echouee\n{e}", "brs verification")
+        return _safe("verification_bancaire", lambda: orchestrator.run_verification_bancaire())
+    try:
+        out = orchestrator.run_verification_bancaire()
+        frappe.db.commit()
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(f"tache verification_bancaire echouee\n{e}", "brs scheduler")
+        passages.fermer(nom, exception=e)
+        return None
+    passages.fermer(nom, out=out)
+    return out
 
 
 def sync_bancaire():

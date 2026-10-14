@@ -34,7 +34,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Type",
-   "options": "tej_certificates\nbank_movements\nremises_cheques\ntej_certificats_recus",
+   "options": "tej_certificates\nbank_movements\nremises_cheques\ntej_certificats_recus\nverification_bancaire",
    "reqd": 1
   },
   {
@@ -140,7 +140,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-12 12:00:00.000000",
+ "modified": "2026-10-14 17:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Sync Run",
