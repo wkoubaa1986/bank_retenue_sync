@@ -59,9 +59,11 @@ scheduler_events = {
         # utilisateur 15/10/2026 : quand rien d'autre ne tourne). Avant, seul le bouton le
         # demandait — trois fois en tout. Le passage de 07:20 relit l'export frais.
         "0 4 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras_refresh"],
-        # Lundi 09:00 (heure de Tunis, fuseau du site) : liste d'appels « Retenue a la source » puis
-        # bilan hebdomadaire par e-mail — apres le refresh de 04:00 et le passage de 07:20.
+        # Lundi 09:00 (heure de Tunis, fuseau du site) : bilan hebdomadaire par e-mail — apres le
+        # refresh de 04:00 et le passage de 07:20. Mardi 09:00 : liste d'appels « Retenue a la
+        # source » (le lundi matin est aux relances de paiement, le mardi a la retenue).
         "0 9 * * 1": ["bank_retenue_sync.tasks.daily.bilan_ras_hebdo"],
+        "0 9 * * 2": ["bank_retenue_sync.tasks.daily.liste_appels_ras_hebdo"],
         # Depots de certificats EMIS en attente d'analyse chez TEJ. CINQ passages (12h10 et
         # 16h10 ajoutes le 2026-08-21 a la demande de l'utilisateur) : un depot soumis le matin
         # doit devenir un PDF remis au fournisseur dans la journee, pas le lendemain. L'appel

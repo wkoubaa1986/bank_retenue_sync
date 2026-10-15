@@ -252,13 +252,17 @@ def certificats_ras_refresh_job():
 
 
 def bilan_ras_hebdo():
-    """Lundi 09:00 (heure de Tunis) : la liste d'appels « Retenue a la source » (certificats manquants
-    depuis plus de 45 jours, cf. tej/liste_appels_ras), puis le bilan par e-mail aux System Managers
-    (cf. tej/bilan_hebdo). Rapide : lecture seule, pas de portail."""
-    from bank_retenue_sync.tej import bilan_hebdo, liste_appels_ras
+    """Lundi 09:00 (heure de Tunis) : le bilan de la retenue a la source vente par e-mail aux System
+    Managers (cf. tej/bilan_hebdo). Rapide : lecture seule, pas de portail."""
+    from bank_retenue_sync.tej import bilan_hebdo
 
-    def _les_deux():
-        liste = liste_appels_ras.creer()
-        return {"liste": liste, "bilan": bilan_hebdo.envoyer(liste=liste)}
+    return _safe("bilan_ras_hebdo", lambda: bilan_hebdo.envoyer(liste={"raison": "la liste d'appels se cree le mardi 09:00"}))
 
-    return _safe("bilan_ras_hebdo", _les_deux)
+
+def liste_appels_ras_hebdo():
+    """MARDI 09:00 (heure de Tunis) : la liste d'appels « Retenue a la source » — certificats manquants
+    depuis plus de 45 jours (cf. tej/liste_appels_ras). Le lundi est aux relances de paiement, le mardi
+    a la retenue a la source (decision utilisateur 15/10/2026)."""
+    from bank_retenue_sync.tej import liste_appels_ras
+
+    return _safe("liste_appels_ras_hebdo", liste_appels_ras.creer)

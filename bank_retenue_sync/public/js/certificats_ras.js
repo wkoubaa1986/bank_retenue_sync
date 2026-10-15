@@ -598,7 +598,7 @@ window.CertificatsRAS = class CertificatsRAS {
       .then((r) => {
         const b = r.message || {};
         const d = new frappe.ui.Dialog({
-          title: __("Bilan hebdomadaire (envoyé chaque lundi 08:00)"),
+          title: __("Bilan hebdomadaire (envoyé chaque lundi 09:00 ; liste d'appels le mardi 09:00)"),
           size: "large",
           fields: [{ fieldtype: "HTML", fieldname: "corps" }],
           primary_action_label: __("Envoyer maintenant"),

@@ -1,4 +1,4 @@
-"""BILAN HEBDOMADAIRE DE LA RETENUE A LA SOURCE VENTE (15/10/2026) — lundi 08:00, par e-mail.
+"""BILAN HEBDOMADAIRE DE LA RETENUE A LA SOURCE VENTE (15/10/2026) — lundi 09:00, par e-mail.
 
 Jusqu'ici il fallait OUVRIR la page pour savoir : 3 certificats « sans piece » attendaient depuis
 mai, 6 retenues restaient sans certificat, et personne n'avait demande un nouvel export du portail
