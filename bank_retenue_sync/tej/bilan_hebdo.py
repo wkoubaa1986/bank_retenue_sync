@@ -125,6 +125,12 @@ def rendre(b: dict, url: str) -> str:
                           ["Piece", "Client", "TTC", "Dette = retenue", "Depuis"],
                           [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), _jj(l.get("dette_date"))]
                            for l in probables if not l.get("declaree")], "aucune"))
+    liste = b.get("liste") or {}
+    if liste.get("created"):
+        parts.append("<p>📞 Liste d'appels <b>%s</b> creee : <b>%d</b> client(s) a appeler pour leur certificat (onglet Appels, file « Retenue a la source »).</p>"
+                     % (esc(liste.get("name") or ""), liste.get("count_clients") or 0))
+    elif liste:
+        parts.append("<p style='color:#888'>Liste d'appels « Retenue a la source » : %s.</p>" % esc(liste.get("raison") or "rien a creer"))
     if b.get("erreurs"):
         parts.append("<p style='color:#c0392b'>Rubriques en erreur : %s</p>" % esc(" ; ".join(b["erreurs"])))
     return "".join(parts)
@@ -136,8 +142,9 @@ def destinataires() -> list:
     return [e for e in (frappe.db.get_value("User", u, "email") for u in _system_managers()) if e]
 
 
-def envoyer(today=None) -> dict:
+def envoyer(today=None, liste: dict = None) -> dict:
     b = composer(today)
+    b["liste"] = liste
     dest = destinataires()
     if not dest:
         return {"envoye": False, "raison": "aucun System Manager avec e-mail", "a_faire": b["a_faire"]}

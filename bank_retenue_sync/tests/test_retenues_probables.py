@@ -99,3 +99,16 @@ class TestCommandesRegroupees(unittest.TestCase):
         # l'argent compté la couvre, et c'est son imputation qui bougera (jamais son montant).
         r2 = P.reglement_a_reprendre({"montant_retenue": 140.14}, lignes=lignes[:3], ttc=14014.0)
         self.assertEqual((r2["ok"], r2["reglement"]["name"], r2["regle"]), (True, "ESP", "seul reglement qui la couvre"))
+
+
+class TestListeAppelsRAS(unittest.TestCase):
+    def test_regrouper_par_client_sans_les_relances_recentes(self):
+        from bank_retenue_sync.tej import liste_appels_ras as L
+        pieces = [{"customer": "A", "piece": "SI-1", "date": "2026-07-09", "montant": 34.14, "motif": "x"},
+                  {"customer": "A", "piece": "SI-2", "date": "2026-07-31", "montant": 54.11, "motif": "x"},
+                  {"customer": "B", "piece": "SI-3", "date": "2026-08-31", "montant": 20.86, "motif": "x"},
+                  {"customer": None, "piece": "SI-4", "date": "2026-08-31", "montant": 1.0, "motif": "x"}]
+        g = L.regrouper(pieces, relances_recentes={"B"})
+        self.assertEqual(sorted(g), ["A"])
+        self.assertEqual([p["piece"] for p in g["A"]], ["SI-1", "SI-2"])
+        self.assertIn("SI-1 du 09/07/2026 : retenue 34.14 DT", L._texte_piece(pieces[0]))

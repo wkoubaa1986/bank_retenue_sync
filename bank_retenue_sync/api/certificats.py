@@ -425,3 +425,15 @@ def bilan_hebdo(envoyer=0):
         return B.envoyer()
     b = B.composer()
     return {"a_faire": b["a_faire"], "html": B.rendre(b, frappe.utils.get_url("/app/retenue-source-vente")), "fraicheur": b.get("fraicheur")}
+
+
+@frappe.whitelist()
+def liste_appels_ras(insert=0):
+    """La liste d'appels « Retenue a la source » (certificats manquants > 45 j) : apercu, ou creation."""
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.tej import liste_appels_ras as L
+
+    out = L.creer(insert=bool(frappe.utils.cint(insert)))
+    if out.get("created"):
+        frappe.db.commit()
+    return out
