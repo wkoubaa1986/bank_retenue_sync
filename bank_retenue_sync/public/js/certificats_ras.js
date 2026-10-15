@@ -35,9 +35,14 @@ window.CertificatsRAS = class CertificatsRAS {
         method: "bank_retenue_sync.api.certificats.get_retenues_orphelines",
         args: { from_date: d.from, to_date: d.to },
       }),
-    ]).then(([r, o]) => {
+      frappe.call({
+        method: "bank_retenue_sync.api.certificats.retenues_probables",
+        args: { from_date: d.from, to_date: d.to },
+      }),
+    ]).then(([r, o, p]) => {
       this._data = r.message || {};
       this._orphelines = (o || {}).message || {};
+      this._probables = (p || {}).message || {};
       this._render();
     });
   }
@@ -65,6 +70,8 @@ window.CertificatsRAS = class CertificatsRAS {
         <button class="btn btn-default btn-sm" data-act="pdf">📎 Télécharger les PDF</button>
         <button class="btn btn-default btn-sm" data-act="doublons">🧹 Justificatifs en double</button>
         <button class="btn btn-default btn-sm" data-act="orphelines">🔎 Retenues sans certificat</button>
+        <button class="btn btn-default btn-sm" data-act="probables">💡 Retenues en dette</button>
+        <button class="btn btn-default btn-sm" data-act="bilan">✉️ Bilan hebdo</button>
         <button class="btn btn-primary btn-sm" data-act="creer">➕ Créer les écritures manquantes</button>
       </div>
       <div class="rsv-kpis" data-role="cert-kpis"></div>
@@ -88,6 +95,7 @@ window.CertificatsRAS = class CertificatsRAS {
         tuile(__("Écarts de montant"), `${k.ecarts || 0} <span class="rsv-rate">${dt(k.montant_ecarts)}</span>`, k.ecarts),
         tuile(__("PDF rangés"), `${k.pdf || 0} / ${k.rapproches || 0}`),
         tuile(__("Anomalies"), k.anomalies || 0, k.anomalies),
+        tuile(__("Retenues en dette"), `${(this._probables || {}).total || 0} <span class="rsv-rate">${dt((this._probables || {}).montant)}</span>`, (this._probables || {}).total),
         // L'AUTRE SENS. Un crédit d'impôt sans certificat n'est pas opposable au fisc : c'est le
         // seul chiffre de cette page qui appelle une relance client.
         tuile(
@@ -198,6 +206,8 @@ window.CertificatsRAS = class CertificatsRAS {
     this.$root.on("click", "[data-act='doublons']", () => this._doublons());
     this.$root.on("click", "[data-act='creer']", () => this._creer(null));
     this.$root.on("click", "[data-act='orphelines']", () => this._orphelines_dialogue());
+    this.$root.on("click", "[data-act='probables']", () => this._probables_dialogue());
+    this.$root.on("click", "[data-act='bilan']", () => this._bilan_dialogue());
     this.$root.on("click", "[data-act='regulariser']", (e) => this._regulariser($(e.currentTarget).data("ref")));
     this.$root.on("click", "[data-act='trancher']", (e) => this._trancher($(e.currentTarget).data("ref")));
   }
@@ -515,6 +525,87 @@ window.CertificatsRAS = class CertificatsRAS {
         <tbody>${corps || `<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">${__("Aucune : toute retenue comptabilisée a son certificat.")}</td></tr>`}</tbody>
       </table></div>`);
     d.show();
+  }
+
+  // La retenue déguisée en dette (15/10/2026) : le client a payé net, la caisse a soldé la facture
+  // avec une ligne de dette du 1 % manquant. On la loge sur la facture sans attendre le certificat.
+  _probables_dialogue() {
+    const m = this._probables || {};
+    const lignes = m.lignes || [];
+    const dt = (v) => format_currency(v, "TND");
+    const corps = lignes
+      .map(
+        (l) => `<tr>
+          <td>${frappe.datetime.str_to_user(l.posting_date)}</td>
+          <td><a href="/app/sales-invoice/${encodeURIComponent(l.sales_invoice)}">${l.sales_invoice}</a></td>
+          <td>${frappe.utils.escape_html(l.customer_name || l.customer || "")}</td>
+          <td class="rsv-num">${dt(l.grand_total)}</td>
+          <td class="rsv-num">${dt(l.retenue)} <span class="rsv-rate">${l.taux} %</span></td>
+          <td><a href="/app/payment-entry/${encodeURIComponent(l.dette_pe)}">${l.dette_pe}</a></td>
+          <td><button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.sales_invoice)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button></td>
+        </tr>`
+      )
+      .join("");
+    const d = new frappe.ui.Dialog({ title: __("Retenues probables logées en dette"), size: "extra-large", fields: [{ fieldtype: "HTML", fieldname: "corps" }] });
+    d.fields_dict.corps.$wrapper.html(`
+      <p>${__("Factures de clients à matricule fiscal soldées pour partie par une ligne « Dette non payée » qui vaut 1 % du TTC : c'est la part que le client a retenue pour le fisc, pas une dette. « Loger la retenue » déduit ce montant de la dette et crée l'écriture de retenue sur la facture — le total imputé à la facture ne bouge pas, et le certificat TEJ s'y rapprochera quand il arrivera.")}</p>
+      <div style="overflow-x:auto"><table class="table table-bordered" style="font-size:12px">
+        <thead><tr><th>${__("Date")}</th><th>${__("Facture")}</th><th>${__("Client")}</th><th class="rsv-num">${__("TTC")}</th>
+          <th class="rsv-num">${__("Dette = retenue")}</th><th>${__("Ligne de dette")}</th><th></th></tr></thead>
+        <tbody>${corps || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">${__("Aucune : aucune dette ne vaut une retenue.")}</td></tr>`}</tbody>
+      </table></div>`);
+    d.$wrapper.on("click", "[data-act='loger']", (e) => {
+      const $b = $(e.currentTarget);
+      this._loger($b.data("si"), $b.data("pe"), () => { d.hide(); this.refresh(); });
+    });
+    d.show();
+  }
+
+  _loger(sales_invoice, dette_pe, apres) {
+    frappe
+      .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, insert: 0 }, freeze: true, freeze_message: __("Analyse…") })
+      .then((r) => {
+        const p = r.message || {};
+        if (!p.ok) { frappe.msgprint({ title: __("Impossible"), indicator: "red", message: frappe.utils.escape_html(p.raison || "") }); return; }
+        const dt = (v) => format_currency(v, "TND");
+        frappe.confirm(
+          `<p>${__("Facture")} <b>${p.facture}</b> — ${frappe.utils.escape_html(p.customer)}</p>
+           <ul><li>${__("Dette")} ${p.dette} : ${dt(p.dette_avant)} → ${dt(p.dette_apres)}${p.dette_apres <= 0.001 ? ` (${__("soldée : elle ne portait que la retenue")})` : ""}</li>
+           <li>${__("Écriture de retenue créée sur la facture")} : <b>${dt(p.retenue)}</b></li></ul>
+           <p>${p.brouillon ? __("Elle restera en <b>brouillon</b>, à valider à la main.") : __("Elle sera <b>validée aussitôt</b>.")}</p>`,
+          () =>
+            frappe
+              .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, insert: 1 }, freeze: true, freeze_message: __("Écriture…") })
+              .then((r2) => {
+                const q = r2.message || {};
+                if (!q.ok) { frappe.msgprint({ title: __("Impossible"), indicator: "red", message: frappe.utils.escape_html(q.raison || "") }); return; }
+                frappe.show_alert({ message: __("Retenue logée : {0}", [q.payment_entry]), indicator: "green" });
+                apres && apres();
+              })
+        );
+      });
+  }
+
+  _bilan_dialogue() {
+    frappe
+      .call({ method: "bank_retenue_sync.api.certificats.bilan_hebdo", freeze: true, freeze_message: __("Bilan…") })
+      .then((r) => {
+        const b = r.message || {};
+        const d = new frappe.ui.Dialog({
+          title: __("Bilan hebdomadaire (envoyé chaque lundi 08:00)"),
+          size: "large",
+          fields: [{ fieldtype: "HTML", fieldname: "corps" }],
+          primary_action_label: __("Envoyer maintenant"),
+          primary_action: () =>
+            frappe.call({ method: "bank_retenue_sync.api.certificats.bilan_hebdo", args: { envoyer: 1 } }).then((r2) => {
+              const e = r2.message || {};
+              frappe.show_alert({ message: e.envoye ? __("Envoyé à {0}", [(e.destinataires || []).join(", ")]) : e.raison, indicator: e.envoye ? "green" : "orange" });
+              d.hide();
+            }),
+        });
+        d.fields_dict.corps.$wrapper.html(b.html || "");
+        d.show();
+      });
   }
 
   // Deux situations, deux gestes. Facture avec du reste à payer : une écriture de retenue suffit.

@@ -389,3 +389,37 @@ def telecharger_pdf(limite=10, insert=1):
     if frappe.utils.cint(insert):
         frappe.db.commit()
     return res
+
+
+@frappe.whitelist()
+def retenues_probables(from_date=None, to_date=None):
+    """Les retenues deguisees en dette (1 % du TTC chez un client a matricule), a loger sur la facture."""
+    _lecture()
+    from bank_retenue_sync.tej import retenues_probables
+
+    lignes = retenues_probables.detecter(depuis=from_date or None, jusqu_a=to_date or None)
+    return {"lignes": lignes, "total": len(lignes), "montant": round(sum(flt(l["retenue"], 3) for l in lignes), 3)}
+
+
+@frappe.whitelist()
+def loger_retenue_probable(sales_invoice, dette_pe, insert=0):
+    """Deduit la retenue de la dette et la loge sur la facture (essai a blanc sans insert)."""
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.tej import retenues_probables
+
+    out = retenues_probables.loger(sales_invoice, dette_pe, insert=bool(frappe.utils.cint(insert)))
+    if frappe.utils.cint(insert) and out.get("ok"):
+        frappe.db.commit()
+    return out
+
+
+@frappe.whitelist()
+def bilan_hebdo(envoyer=0):
+    """Le bilan du lundi, a la demande : apercu HTML, ou envoi immediat."""
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.tej import bilan_hebdo as B
+
+    if frappe.utils.cint(envoyer):
+        return B.envoyer()
+    b = B.composer()
+    return {"a_faire": b["a_faire"], "html": B.rendre(b, frappe.utils.get_url("/app/retenue-source-vente")), "fraicheur": b.get("fraicheur")}

@@ -414,9 +414,12 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
                                   order by per.allocated_amount desc""",
                                (cert.get("sales_invoice"), R.mode_ras()), as_dict=1)
     # Un reglement ne peut porter la retenue que s'il peut la ceder : son imputation a la facture
-    # ET son montant encaisse doivent rester positifs apres la reprise.
+    # doit couvrir la retenue, et son montant encaisse rester positif apres la reprise — sauf une
+    # DETTE, qui n'est pas de l'argent : elle peut tomber a zero (elle ne portait que la retenue).
+    dette = mode_dette()
     candidats = [l for l in lignes if flt(l["allocated_amount"], 3) >= montant
-                 and flt(l["paid_amount"], 3) > montant]
+                 and (flt(l["paid_amount"], 3) > montant
+                      or (not argent_compte(l.get("mode_of_payment"), dette) and flt(l["paid_amount"], 3) >= montant - 0.001))]
     if not candidats:
         return {"ok": False, "raison": "aucun reglement de la facture ne couvre la retenue"}
 
@@ -426,6 +429,16 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
             return {"ok": False, "raison": "le reglement %s ne peut pas porter cette retenue"
                     % choisi, "candidats": [_decrire(c) for c in candidats]}
         return {"ok": True, "reglement": retenu[0], "regle": "choix explicite"}
+
+    # 0. LA DETTE D'ABORD (regle de l'utilisateur, 15/10/2026) : si la facture est soldee pour partie par
+    #    une ligne de dette, c'est elle que le client n'a pas payee — la retenue en est deduite, et
+    #    l'argent reellement compte reste intact. Plusieurs dettes sur la meme facture : on fait trancher.
+    dettes = [c for c in candidats if not argent_compte(c.get("mode_of_payment"), dette)]
+    if len(dettes) == 1:
+        return {"ok": True, "reglement": dettes[0], "regle": "dette portee par la facture"}
+    if len(dettes) > 1:
+        return {"ok": False, "raison": "%s lignes de dette sur cette facture : laquelle porte la retenue ?" % len(dettes),
+                "candidats": [_decrire(c) for c in dettes]}
 
     if len(candidats) == 1:
         return {"ok": True, "reglement": candidats[0], "regle": "seul reglement qui la couvre"}
@@ -528,9 +541,11 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         "regle": trouve.get("regle"),
         "brouillon": not (_auto_submit() if submit is None else submit),
     }
-    if nouveau_montant <= 0:
+    dette_soldee = (not reel) and nouveau_montant <= 0.001      # la dette ne portait que la retenue
+    if nouveau_montant <= 0 and not dette_soldee:
         return {"ok": False, "raison": "le reglement (%s) ne peut pas descendre a %s"
                 % (pris["name"], nouveau_montant)}
+    plan["dette_soldee"] = dette_soldee
     if nouvelle_allocation < 0:
         return {"ok": False, "raison": "l'imputation de %s a la facture (%s) ne couvre pas la "
                 "retenue de %s" % (pris["name"], plan["allocation_avant"], montant)}
@@ -540,26 +555,28 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     valider = _auto_submit() if submit is None else bool(submit)
     supprimer = suppression_permise(valider, _supprimer_annule())
     original = frappe.get_doc("Payment Entry", pris["name"])
-    # 1. Reprise : la copie AVANT l'annulation, pour garder tous les details sous la main.
-    copie = frappe.copy_doc(original)
-    if not supprimer:
+    # 1. Reprise : la copie AVANT l'annulation, pour garder tous les details sous la main. Une dette
+    #    entierement consommee par la retenue n'a pas de remplacant : l'ecriture de retenue prend sa place.
+    copie = None if dette_soldee else frappe.copy_doc(original)
+    if copie is not None and not supprimer:
         # `amended_from` relie la copie a l'original annule — utile tant qu'il existe. Si l'original
         # doit disparaitre, ce lien empecherait sa suppression et laisserait a la copie un nom
         # d'amendement (« …-1 ») sans parent.
         copie.amended_from = original.name
-    copie.paid_amount = nouveau_montant
-    copie.received_amount = nouveau_montant
-    for ligne in copie.references:
-        if ligne.reference_name == cert["sales_invoice"]:
-            ligne.allocated_amount = nouvelle_allocation
-    # La part liberee va sur les autres creances du client. Ce qui ne trouve pas preneur reste en
-    # montant NON AFFECTE : ERPNext le porte alors en avance au credit du client — l'argent est
-    # toujours la, visible, en attente d'une facture.
-    for a in affectations:
-        copie.append("references", {"reference_doctype": a["doctype"],
-                                    "reference_name": a["name"],
-                                    "allocated_amount": a["montant"]})
-    copie.remarks = ("%s\nRepris le %s : %s DT retenus a la source par le client "
+    if copie is not None:
+        copie.paid_amount = nouveau_montant
+        copie.received_amount = nouveau_montant
+        for ligne in copie.references:
+            if ligne.reference_name == cert["sales_invoice"]:
+                ligne.allocated_amount = nouvelle_allocation
+        # La part liberee va sur les autres creances du client. Ce qui ne trouve pas preneur reste en
+        # montant NON AFFECTE : ERPNext le porte alors en avance au credit du client — l'argent est
+        # toujours la, visible, en attente d'une facture.
+        for a in affectations:
+            copie.append("references", {"reference_doctype": a["doctype"],
+                                        "reference_name": a["name"],
+                                        "allocated_amount": a["montant"]})
+        copie.remarks = ("%s\nRepris le %s : %s DT retenus a la source par le client "
                      "(certificat TEJ %s)%s"
                      % (original.remarks or "", frappe.utils.nowdate(), montant, reference,
                         ("\nMontant inchange (argent compte) ; %s DT reaffectes a %s"
@@ -574,13 +591,15 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     #        greater than outstanding ». Reduire d'abord libere exactement la place qu'il faut.
     reprises = [_reduire_dette(a, valider, supprimer) for a in affectations]
 
-    copie.insert(ignore_permissions=True)
+    if copie is not None:
+        copie.insert(ignore_permissions=True)
 
     # 2. L'ecriture de retenue prend exactement la difference.
     retenue = construire(cert, insert=True)
 
     if valider:
-        copie.submit()
+        if copie is not None:
+            copie.submit()
         retenue.submit()
 
     # 2 bis. Quand le reglement repris EST la dette (client qui a paye net, dette enregistree au
@@ -590,20 +609,20 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     echeancier_suivi = []
     if not reel:
         from bank_retenue_sync.tej import echeancier
-        echeancier_suivi = echeancier.suivre(copie, plan["reglement_avant"], nouveau_montant,
+        echeancier_suivi = echeancier.suivre(copie or original, plan["reglement_avant"], nouveau_montant,
                                              montant, mode_dette(), R.mode_ras(),
                                              motif="certificat TEJ %s" % reference)
 
     # 3. L'original annule n'a plus de role : la copie porte le meme encaissement, corrige. On ne
     #    l'efface qu'APRES la validation des deux ecritures (cf. `suppression_permise`).
-    suppression = _supprimer_reglement(original.name) if supprimer else {"supprime": False,
-                                                                         "raison": None}
+    suppression = _supprimer_reglement(original.name) if (supprimer or (dette_soldee and valider)) \
+        else {"supprime": False, "raison": None}
     frappe.db.set_value(DOCTYPE, reference, {
         "payment_entry": retenue.name,
         "match_status": "Auto Matched",
         "revue_requise": 0 if valider else 1,
         "match_raison": ("retenue logee dans la facture %s : reglement %s repris en %s (%s)%s%s"
-                         % (cert["sales_invoice"], original.name, copie.name,
+                         % (cert["sales_invoice"], original.name, copie.name if copie is not None else "— dette soldee",
                             ("montant inchange %s, imputation %s -> %s%s"
                              % (nouveau_montant, plan["allocation_avant"], nouvelle_allocation,
                                 (", %s DT vers %s" % (montant,
@@ -618,7 +637,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     # 4. Le justificatif : la retenue est logee, il lui manque sa preuve. Demande au portail en
     #    tache de fond — une session de scraping dure des minutes, l'ecran ne doit pas attendre.
     pdf = _demander_pdf(reference)
-    return {**plan, "statut": "ajuste", "reglement_repris": copie.name,
+    return {**plan, "statut": "ajuste", "reglement_repris": copie.name if copie is not None else None,
             "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
             "echeancier": echeancier_suivi,
             "reglement_supprime": suppression["supprime"],
