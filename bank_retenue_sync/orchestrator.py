@@ -1276,6 +1276,19 @@ def run_certificats_ras(refresh=0, insert=1, pdf=1, limite_pdf=20, use_ai=0):
     out["rapprochement"] = {k: v for k, v in rapprochement.rapprocher(
         insert=insert, use_ai=frappe.utils.cint(use_ai)).items() if k != "detail"}
 
+    # Ce qui ne demande aucun arbitrage se fait tout seul (reglage « Regulariser automatiquement »,
+    # 15/10/2026) : creation quand la piece a du reste du, ajustement quand une regle sure designe le
+    # reglement. Le reste attend l'humain dans l'onglet.
+    # Reglage jamais enregistre = valeur par defaut (coche) : un Single non sauvegarde ne porte aucune valeur.
+    actif = frappe.db.get_single_value("Bank Retenue Sync Settings", "ras_regularisation_auto")
+    if actif is None or frappe.utils.cint(actif):
+        from bank_retenue_sync.tej import paiements
+
+        try:
+            out["regularisation_auto"] = {k: v for k, v in paiements.regulariser_auto(insert=bool(insert)).items() if k != "detail"}
+        except Exception as e:
+            out["regularisation_auto"] = {"statut": "erreur", "detail": str(e)[:160]}
+
     if frappe.utils.cint(pdf):
         try:
             out["pdf"] = {k: v for k, v in pdf_module.traiter(

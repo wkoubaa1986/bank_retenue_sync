@@ -451,3 +451,15 @@ def tracer_appel_ras(customer, resume=None, note=None):
     nom = L.tracer_appel(customer, resume or "", note or "")
     frappe.db.commit()
     return {"ok": True, "commentaire": nom}
+
+
+@frappe.whitelist()
+def regulariser_auto(insert=0):
+    """Ce que la nuit ferait (essai a blanc), ou le faire maintenant."""
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.tej import paiements
+
+    out = paiements.regulariser_auto(insert=bool(frappe.utils.cint(insert)))
+    if frappe.utils.cint(insert):
+        frappe.db.commit()
+    return out

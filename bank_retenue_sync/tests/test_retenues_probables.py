@@ -128,3 +128,26 @@ class TestLaDetteDesigneLaFacture(unittest.TestCase):
         self.assertIsNone(R.facture_designee_par_dette(factures, 7.0, dettes))
         deux = dettes + [{"dette_pe": "PE-D4", "doctype": "Sales Invoice", "name": "SI-1450", "reste": 5.03}]
         self.assertIsNone(R.facture_designee_par_dette(factures, 5.03, deux))                       # deux dettes égales : on ne devine pas
+
+
+class TestComplementDuReglementNet(unittest.TestCase):
+    """SCPS 01782 : traite 07673 = 1 232,347 − 12,312 (le net) ; la caisse a comblé 12,312 avec la traite 07674."""
+
+    def test_le_complement_porte_la_retenue(self):
+        lignes = [frappe._dict(name="T-07673", posting_date="2026-10-08", mode_of_payment="Traite bancaire LC", paid_amount=1220.035, docstatus=1, allocated_amount=1220.035, idx=1),
+                  frappe._dict(name="T-07674", posting_date="2026-10-08", mode_of_payment="Traite bancaire LC", paid_amount=1319.483, docstatus=1, allocated_amount=12.312, idx=2)]
+        r = P.reglement_a_reprendre({"montant_retenue": 12.312, "date_paiement": "2026-09-21"}, lignes=lignes, ttc=1232.347)
+        self.assertTrue(r["ok"])
+        self.assertEqual((r["reglement"]["name"], r["regle"]), ("T-07674", "complement du reglement net T-07673"))
+        self.assertTrue(P.regle_sure(r["regle"]))
+        self.assertTrue(P.regle_sure("dette portee par la facture"))
+        self.assertFalse(P.regle_sure("choix explicite"))
+        self.assertFalse(P.regle_sure(""))
+
+
+class TestRegrouperParDette(unittest.TestCase):
+    def test_une_ecriture_plusieurs_imputations(self):
+        affs = [{"dette_pe": "D1", "name": "SI-A", "montant": 6.0}, {"dette_pe": "D1", "name": "SI-B", "montant": 6.312},
+                {"dette_pe": "D2", "name": "SI-C", "montant": 1.0}]
+        g = P.regrouper_par_dette(affs)
+        self.assertEqual([(x["dette_pe"], x["montant"], len(x["pieces"])) for x in g], [("D1", 12.312, 2), ("D2", 1.0, 1)])

@@ -38,6 +38,13 @@ COMPTE_CLIENT = "Débiteurs - A&S"
 # Commandes regroupees : la somme des dettes de 1 % doit retomber sur la retenue de la facture, au
 # timbre et aux arrondis pres (un timbre par commande).
 TOLERANCE_GROUPE = 0.05
+# Reglement net = TTC − retenue, le timbre de 1 DT en plus ou en moins selon la saisie.
+TOLERANCE_NET = 1.05
+
+# Les regles qui DESIGNENT le reglement sans arbitrage : les seules que la regularisation automatique
+# de nuit applique (cf. `regulariser_auto`). « choix explicite » n'en fait pas partie par construction.
+REGLES_SURES = ("dette portee par la facture", "seul reglement qui la couvre", "reglement du TTC entier",
+                "reglement du jour declare au portail")
 
 # Fenetre d'anti-doublon : une retenue du meme client au meme montant a moins de deux mois est
 # tres probablement la meme, saisie autrement (sur une commande, a une autre date).
@@ -351,6 +358,18 @@ def _demander_pdf(reference: str) -> dict:
         return {"statut": "erreur", "detail": str(e)[:160]}
 
 
+def regrouper_par_dette(affectations: list) -> list:
+    """Une ecriture de dette peut porter PLUSIEURS imputations (une par piece) : `dettes_non_payees` rend une
+    ligne par imputation, et la reprendre deux fois dans le meme geste annulait une ecriture deja annulee
+    (SCPS, 15/10/2026 : traite laissee annulee). → une affectation par ecriture, avec ses pieces. PURE."""
+    out = {}
+    for a in affectations:
+        g = out.setdefault(a["dette_pe"], {"dette_pe": a["dette_pe"], "montant": 0.0, "pieces": [], "name": a.get("name")})
+        g["montant"] = round(g["montant"] + flt(a["montant"], 3), 3)
+        g["pieces"].append({"name": a["name"], "montant": flt(a["montant"], 3)})
+    return list(out.values())
+
+
 def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
     """Diminue l'ecriture de dette du montant que l'argent compte vient de couvrir.
 
@@ -358,10 +377,14 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
     (fictive, non encaissee) l'est desormais par de l'argent reel — 851,20 de dette deviennent
     837,389 de dette + 13,811 d'especes. Le client doit moins, et ce qu'il doit encore est juste.
 
-    Une dette entierement couverte n'est pas recreee : elle n'a plus d'objet.
+    Une dette entierement couverte n'est pas recreee : elle n'a plus d'objet. `affectation` porte soit
+    une piece (`name`, `montant`), soit plusieurs (`pieces`) quand l'ecriture en imputait plusieurs.
     """
     nom, part = affectation["dette_pe"], flt(affectation["montant"], 3)
+    pieces = affectation.get("pieces") or [{"name": affectation["name"], "montant": part}]
     original = frappe.get_doc("Payment Entry", nom)
+    if original.docstatus != 1:
+        frappe.throw("la dette %s n'est plus validee (docstatus %s) : rien a reprendre" % (nom, original.docstatus))
     nouveau = round(flt(original.paid_amount, 3) - part, 3)
     copie = None
     if nouveau > 0.001:
@@ -370,9 +393,14 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
             copie.amended_from = original.name
         copie.paid_amount = nouveau
         copie.received_amount = nouveau
+        restes = {p["name"]: flt(p["montant"], 3) for p in pieces}
         for ligne in copie.references:
-            if ligne.reference_name == affectation["name"]:
-                ligne.allocated_amount = round(flt(ligne.allocated_amount, 3) - part, 3)
+            a_oter = restes.get(ligne.reference_name, 0.0)
+            if a_oter > 0.001:
+                retire = min(a_oter, flt(ligne.allocated_amount, 3))
+                ligne.allocated_amount = round(flt(ligne.allocated_amount, 3) - retire, 3)
+                restes[ligne.reference_name] = round(a_oter - retire, 3)
+        copie.references = [l for l in copie.references if flt(l.allocated_amount, 3) > 0.001]
         copie.remarks = ("%s\nRamenee a %s DT le %s : %s DT desormais couverts par un reglement "
                          "reel (retenue a la source)"
                          % (original.remarks or "", nouveau, frappe.utils.nowdate(), part))
@@ -485,6 +513,16 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
         entiers = [c for c in candidats if abs(flt(c["allocated_amount"], 3) - flt(ttc, 3)) < 0.005]
         if len(entiers) == 1:
             return {"ok": True, "reglement": entiers[0], "regle": "reglement du TTC entier"}
+        # 5. LE COMPLEMENT DU REGLEMENT NET (15/10/2026, SCPS) : un reglement vaut exactement TTC − retenue —
+        #    c'est le paiement net du client, il est juste — et la caisse a comble le trou avec UN autre
+        #    reglement (traite de la facture voisine, especes…) : ce complement porte la retenue, c'est son
+        #    imputation qui doit sauter. Le timbre de 1 DT est admis dans le net.
+        net = round(flt(ttc, 3) - montant, 3)
+        nets = [l for l in lignes if abs(flt(l["paid_amount"], 3) - net) <= TOLERANCE_NET]
+        if len(nets) == 1:
+            complements = [c for c in candidats if c["name"] != nets[0]["name"]]
+            if len(complements) == 1 and abs(flt(complements[0]["allocated_amount"], 3) - montant) <= TOLERANCE_GROUPE:
+                return {"ok": True, "reglement": complements[0], "regle": "complement du reglement net %s" % nets[0]["name"]}
 
     jour = cert.get("date_paiement")
     if jour:
@@ -630,7 +668,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     #        souvent avancee a 100 % (SAL-ORD-2026-02742 : 1 101,20 sur 1 101,20) : lui imputer un
     #        millime de plus avant d'avoir reduit la dette, et ERPNext refuse « allocated amount
     #        greater than outstanding ». Reduire d'abord libere exactement la place qu'il faut.
-    reprises = [_reduire_dette(a, valider, supprimer) for a in affectations]
+    reprises = [_reduire_dette(a, valider, supprimer) for a in regrouper_par_dette(affectations)]
 
     if copie is not None:
         copie.insert(ignore_permissions=True)
@@ -710,6 +748,78 @@ def _ajuster_dettes_groupees(cert: dict, reference: str, piece: str, doctype: st
     pdf = _demander_pdf(reference)
     return {**plan, "statut": "ajuste", "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
             "reglement_repris": None, "reglement_supprime": False, "suppression_raison": None, "pdf": pdf.get("statut")}
+
+
+def regle_sure(regle: str) -> bool:
+    """Une regle que la nuit peut appliquer seule : les regles qui designent, les dettes groupees, le
+    complement du reglement net. PURE."""
+    r = regle or ""
+    return r in REGLES_SURES or r.startswith("dettes des commandes regroupees") or r.startswith("complement du reglement net")
+
+
+def regulariser_auto(insert: bool = False, limite: int = None) -> dict:
+    """LA NUIT, CE QUI NE DEMANDE AUCUN ARBITRAGE (15/10/2026 — « pourquoi ce n'est pas fait automatiquement ? »).
+
+    Pour chaque certificat declare dont la piece est identifiee et qu'aucune ecriture ne porte :
+    - la piece a encore du reste du → l'ecriture de retenue est creee (`construire`) ;
+    - la piece est soldee et UNE regle sure designe le reglement a reprendre → `ajuster` ;
+    - sinon (plusieurs reglements, facture inconnue, anomalie) → rien : c'est a l'humain, et la page le dit.
+    Validation selon le reglage habituel. `insert=0` : essai a blanc complet."""
+    ctx = R.charger_contexte()
+    out = {"examines": 0, "crees": 0, "ajustes": 0, "laisses": 0, "erreurs": 0, "detail": []}
+    certs = frappe.db.get_all(DOCTYPE, filters={"match_status": "Sans piece", "hors_perimetre": 0, "anomalie": 0},
+                              fields=list(R.CHAMPS_CERTIFICAT) + ["sales_invoice", "sales_order", "total_brut", "numero_chez_declarant"],
+                              order_by="date_paiement", limit_page_length=0)
+    for cert in certs:
+        if limite and out["crees"] + out["ajustes"] >= limite:
+            break
+        doctype, piece = piece_du_certificat(cert)
+        if not piece or cert.get("payment_entry"):
+            continue
+        out["examines"] += 1
+        ligne = {"certificat": cert["name"], "numero": cert.get("numero_chez_declarant"), "declarant": cert.get("declarant"),
+                 "piece": piece, "retenue": flt(cert.get("montant_retenue"), 3)}
+        # CHAQUE CERTIFICAT EST ISOLE : une reprise qui echoue a mi-chemin laisserait un reglement annule sans
+        # remplacant (SCPS, 15/10/2026 : deux factures redevenues dues). Le savepoint remet tout en place.
+        frappe.db.savepoint("ras_auto")
+        try:
+            verdict = verifier(cert, ctx)
+            if verdict["ok"]:
+                if insert:
+                    pe = construire(cert, insert=True, submit=_auto_submit())
+                    frappe.db.set_value(DOCTYPE, cert["name"], {"payment_entry": pe.name, "match_status": "Auto Matched",
+                                                                "revue_requise": 0 if _auto_submit() else 1,
+                                                                "match_raison": "ecriture creee automatiquement (nuit) : la piece avait du reste du"},
+                                        update_modified=False)
+                    ctx.reserver(cert["name"], piece=pe.name, facture=piece)
+                    _demander_pdf(cert["name"])
+                    ligne["payment_entry"] = pe.name
+                out["crees"] += 1
+                out["detail"].append({**ligne, "voie": "creation"})
+                continue
+            if "deja soldee" not in (verdict["raison"] or ""):
+                out["laisses"] += 1
+                out["detail"].append({**ligne, "voie": "laisse", "raison": verdict["raison"]})
+                continue
+            plan = ajuster(cert["name"], insert=False, ctx=ctx)
+            if not plan.get("ok") or not regle_sure(plan.get("regle")):
+                out["laisses"] += 1
+                out["detail"].append({**ligne, "voie": "laisse", "raison": plan.get("raison") or "regle non sure : %s" % plan.get("regle")})
+                continue
+            if insert:
+                fait = ajuster(cert["name"], insert=True, ctx=ctx)
+                ligne["payment_entry"] = fait.get("payment_entry")
+                frappe.db.set_value(DOCTYPE, cert["name"], "match_raison",
+                                    "regularise automatiquement (nuit, %s) ; %s" % (plan.get("regle"), frappe.db.get_value(DOCTYPE, cert["name"], "match_raison") or ""),
+                                    update_modified=False)
+            out["ajustes"] += 1
+            out["detail"].append({**ligne, "voie": "ajustement", "regle": plan.get("regle"), "reglement": plan.get("reglement")})
+        except Exception as e:
+            frappe.db.rollback(save_point="ras_auto")
+            out["erreurs"] += 1
+            out["detail"].append({**ligne, "voie": "erreur", "raison": str(e)[:200]})
+            frappe.log_error(frappe.get_traceback(), "Regularisation RAS automatique %s" % cert["name"])
+    return out
 
 
 def creer(references: list = None, insert: bool = False, limite: int = None,
