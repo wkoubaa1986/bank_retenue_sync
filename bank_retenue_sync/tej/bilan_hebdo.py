@@ -115,7 +115,7 @@ def rendre(b: dict, url: str) -> str:
                           ["Date", "Declarant", "Retenue", "Ecart", "Ecriture"],
                           [[_jj(c.get("date_paiement")), esc(c.get("declarant") or ""), _dt(c.get("montant_retenue")), _dt(c.get("ecart_piece")), esc(c.get("payment_entry") or "")]
                            for c in b.get("ecarts", [])], "aucun"))
-    parts.append(_tableau("Retenues probables deguisees en dette (1 %% du TTC) — a loger sur la facture",
+    parts.append(_tableau("Retenues probables deguisees en dette (1 % du TTC) — a loger sur la piece",
                           ["Piece", "Client", "TTC", "Dette = retenue", "Ligne de dette"],
                           [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), esc(l.get("dette_pe"))]
                            for l in b.get("probables", [])], "aucune"))

@@ -540,7 +540,7 @@ window.CertificatsRAS = class CertificatsRAS {
           <td><a href="/app/${l.piece_doctype === "Sales Order" ? "sales-order" : "sales-invoice"}/${encodeURIComponent(l.piece)}">${l.piece}</a>${l.piece_doctype === "Sales Order" ? ` <span class="rsv-rate">${__("commande")}</span>` : ""}</td>
           <td>${frappe.utils.escape_html(l.customer_name || l.customer || "")}</td>
           <td class="rsv-num">${dt(l.grand_total)}</td>
-          <td class="rsv-num">${dt(l.retenue)} <span class="rsv-rate">${l.taux} %</span></td>
+          <td class="rsv-num">${dt(l.retenue)}<div class="rsv-rate">(${l.taux} % du TTC)</div></td>
           <td><a href="/app/payment-entry/${encodeURIComponent(l.dette_pe)}">${l.dette_pe}</a></td>
           <td><button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.piece)}" data-dt="${frappe.utils.escape_html(l.piece_doctype)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button></td>
         </tr>`
