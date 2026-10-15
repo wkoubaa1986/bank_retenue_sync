@@ -436,6 +436,16 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
                                     and pe.mode_of_payment != %s
                                   order by per.allocated_amount desc""",
                                (cert.get("sales_invoice"), R.mode_ras()), as_dict=1)
+    # Un meme reglement peut porter PLUSIEURS lignes d'imputation sur la meme facture (ERPNext reporte une
+    # ligne par commande regroupee) : on le compte une fois, avec la somme de ses imputations — sinon la
+    # question « lequel corriger ? » montrait « 4 reglements » pour 2 (SCPS, 15/10/2026).
+    fusion = {}
+    for l in lignes:
+        if l["name"] in fusion:
+            fusion[l["name"]]["allocated_amount"] = round(flt(fusion[l["name"]]["allocated_amount"], 3) + flt(l["allocated_amount"], 3), 3)
+        else:
+            fusion[l["name"]] = dict(l)
+    lignes = list(fusion.values())
     # Un reglement ne peut porter la retenue que s'il peut la ceder : son imputation a la facture
     # doit couvrir la retenue, et son montant encaisse rester positif apres la reprise — sauf une
     # DETTE, qui n'est pas de l'argent : elle peut tomber a zero (elle ne portait que la retenue).
