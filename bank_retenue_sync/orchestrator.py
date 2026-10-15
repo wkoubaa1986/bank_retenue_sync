@@ -1279,8 +1279,9 @@ def run_certificats_ras(refresh=0, insert=1, pdf=1, limite_pdf=20, use_ai=0):
     # Ce qui ne demande aucun arbitrage se fait tout seul (reglage « Regulariser automatiquement »,
     # 15/10/2026) : creation quand la piece a du reste du, ajustement quand une regle sure designe le
     # reglement. Le reste attend l'humain dans l'onglet.
-    # Reglage jamais enregistre = valeur par defaut (coche) : un Single non sauvegarde ne porte aucune valeur.
-    actif = frappe.db.get_single_value("Bank Retenue Sync Settings", "ras_regularisation_auto")
+    # Reglage jamais enregistre = valeur par defaut (coche) : un Single non sauvegarde ne porte aucune valeur —
+    # et `get_single_value` la caste en 0 pour un Check, d'ou la lecture brute de tabSingles.
+    actif = frappe.db.get_value("Singles", {"doctype": "Bank Retenue Sync Settings", "field": "ras_regularisation_auto"}, "value")
     if actif is None or frappe.utils.cint(actif):
         from bank_retenue_sync.tej import paiements
 

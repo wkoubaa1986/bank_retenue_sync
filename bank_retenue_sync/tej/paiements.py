@@ -40,6 +40,8 @@ COMPTE_CLIENT = "Débiteurs - A&S"
 TOLERANCE_GROUPE = 0.05
 # Reglement net = TTC − retenue, le timbre de 1 DT en plus ou en moins selon la saisie.
 TOLERANCE_NET = 1.05
+# 1 % du timbre de 1 DT : l'ecart normal entre la retenue declaree (hors timbre) et la notre (timbre compris).
+TOLERANCE_TIMBRE = 0.015
 
 # Les regles qui DESIGNENT le reglement sans arbitrage : les seules que la regularisation automatique
 # de nuit applique (cf. `regulariser_auto`). « choix explicite » n'en fait pas partie par construction.
@@ -358,6 +360,51 @@ def _demander_pdf(reference: str) -> dict:
         return {"statut": "erreur", "detail": str(e)[:160]}
 
 
+def fusionner_references(copie):
+    """UNE ligne par piece sur la copie : ERPNext (et le hook de customization_app qui fusionne les doublons)
+    reporte parfois plusieurs lignes d'imputation sur la meme facture (commandes regroupees : 24 + 6 sur
+    ACC-SINV-2026-01784). Reduire « la ligne » quand il y en a deux donnait un total faux (23,688 pour 17,688,
+    « Difference Amount must be zero », 15/10/2026). → {(doctype, name): montant} apres fusion."""
+    totaux, ordre = {}, []
+    for l in copie.references:
+        cle = (l.reference_doctype, l.reference_name)
+        if cle not in totaux:
+            totaux[cle] = {"ligne": l, "montant": 0.0}
+            ordre.append(cle)
+        totaux[cle]["montant"] = round(totaux[cle]["montant"] + flt(l.allocated_amount, 3), 3)
+    copie.references = []
+    for cle in ordre:
+        l = totaux[cle]["ligne"]
+        l.allocated_amount = totaux[cle]["montant"]
+        copie.append("references", {k: l.get(k) for k in ("reference_doctype", "reference_name", "allocated_amount",
+                                                           "outstanding_amount", "total_amount", "due_date", "bill_no", "payment_term")
+                                    if l.get(k) is not None})
+    return {cle: v["montant"] for cle, v in totaux.items()}
+
+
+def _ecarter_commandes_soldees(copie) -> list:
+    """Une copie de reglement qui portait des AVANCES sur des commandes depuis facturees : ERPNext refuse de les
+    re-imputer (« Sales Order … has already been fully paid », SCPS 15/10/2026 : 1 DT et 2 DT). Ces lignes sont
+    otees ; leur montant reste sur le reglement en non affecte — l'argent ne bouge pas, il attend une piece.
+    → commandes ecartees."""
+    ecartees = []
+    gardees = []
+    for l in copie.references:
+        if l.reference_doctype == "Sales Order":
+            so = frappe.db.get_value("Sales Order", l.reference_name, ["grand_total", "advance_paid", "per_billed", "status"], as_dict=True)
+            reste = round(flt(so.grand_total, 3) - flt(so.advance_paid, 3), 3) if so else 0.0
+            if not so or so.status in ("Completed", "Closed") or flt(so.per_billed) >= 99.999 or reste < flt(l.allocated_amount, 3) - 0.001:
+                ecartees.append(l.reference_name)
+                continue
+        gardees.append(l)
+    copie.references = []
+    for l in gardees:
+        copie.append("references", {k: l.get(k) for k in ("reference_doctype", "reference_name", "allocated_amount",
+                                                           "outstanding_amount", "total_amount", "due_date", "bill_no", "payment_term")
+                                    if l.get(k) is not None})
+    return ecartees
+
+
 def regrouper_par_dette(affectations: list) -> list:
     """Une ecriture de dette peut porter PLUSIEURS imputations (une par piece) : `dettes_non_payees` rend une
     ligne par imputation, et la reprendre deux fois dans le meme geste annulait une ecriture deja annulee
@@ -393,7 +440,12 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
             copie.amended_from = original.name
         copie.paid_amount = nouveau
         copie.received_amount = nouveau
-        restes = {p["name"]: flt(p["montant"], 3) for p in pieces}
+        fusionner_references(copie)
+        # Plusieurs parts peuvent viser la MEME piece (une dette imputee en deux lignes a la meme facture) :
+        # elles s'additionnent — un dict par comprehension ne gardait que la derniere (23,688 pour 17,688).
+        restes = {}
+        for p in pieces:
+            restes[p["name"]] = round(restes.get(p["name"], 0.0) + flt(p["montant"], 3), 3)
         for ligne in copie.references:
             a_oter = restes.get(ligne.reference_name, 0.0)
             if a_oter > 0.001:
@@ -589,12 +641,21 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     if trouve.get("reglements"):
         return _ajuster_dettes_groupees(cert, reference, piece, doctype, montant, trouve, insert, submit)
     pris = trouve["reglement"]
+    reel = argent_compte(pris["mode_of_payment"], mode_dette())
+    # UNE DETTE QUI VAUT LA RETENUE AU MILLIME PRES EST LA RETENUE : le certificat dit 6,109 (1 % hors timbre),
+    # la caisse a laisse 6,110 en dette. Loger 6,109 et solder la dette laissait 0,001 du sur la facture, qui
+    # repassait « en retard » (Marriott, 15/10/2026). L'ecriture prend alors le montant de la dette : la piece
+    # reste exactement soldee, et l'ecart d'un millime est celui du timbre, pas une retenue differente.
+    arrondi_timbre = 0.0
+    if not reel and abs(flt(pris["allocated_amount"], 3) - montant) <= TOLERANCE_TIMBRE:
+        arrondi_timbre = round(flt(pris["allocated_amount"], 3) - montant, 3)
+        montant = flt(pris["allocated_amount"], 3)
+        cert = {**cert, "montant_retenue": montant}
     nouvelle_allocation = round(flt(pris["allocated_amount"], 3) - montant, 3)
 
     # DEUX GESTES SELON LA NATURE DU REGLEMENT (cf. `argent_compte`). De l'argent compte ne se
     # reduit pas : c'est son affectation qui bouge, et la part liberee va eteindre une autre dette
     # du client — ou reste en avance a son credit si elle ne doit plus rien.
-    reel = argent_compte(pris["mode_of_payment"], mode_dette())
     if reel:
         nouveau_montant = flt(pris["paid_amount"], 3)
         affectations, non_affecte = repartir(montant, dettes_non_payees(cert["customer"]))
@@ -608,6 +669,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         "facture": piece,
         "piece_doctype": doctype,
         "retenue": montant,
+        "arrondi_timbre": arrondi_timbre,
         "reglement": pris["name"],
         "reglement_mode": pris["mode_of_payment"],
         "reglement_avant": flt(pris["paid_amount"], 3),
@@ -645,9 +707,11 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     if copie is not None:
         copie.paid_amount = nouveau_montant
         copie.received_amount = nouveau_montant
+        fusionner_references(copie)
         for ligne in copie.references:
             if ligne.reference_name == piece:
                 ligne.allocated_amount = nouvelle_allocation
+        copie.references = [l for l in copie.references if flt(l.allocated_amount, 3) > 0.001 or l.reference_name != piece]
         # La part liberee va sur les autres creances du client. Ce qui ne trouve pas preneur reste en
         # montant NON AFFECTE : ERPNext le porte alors en avance au credit du client — l'argent est
         # toujours la, visible, en attente d'une facture.
@@ -670,7 +734,11 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     #        greater than outstanding ». Reduire d'abord libere exactement la place qu'il faut.
     reprises = [_reduire_dette(a, valider, supprimer) for a in regrouper_par_dette(affectations)]
 
+    commandes_ecartees = []
     if copie is not None:
+        commandes_ecartees = _ecarter_commandes_soldees(copie)
+        if commandes_ecartees:
+            copie.remarks = (copie.remarks or "") + "\nAvance(s) sur commande(s) deja facturee(s) laissee(s) en non affecte : %s" % ", ".join(commandes_ecartees)
         copie.insert(ignore_permissions=True)
 
     # 2. L'ecriture de retenue prend exactement la difference.
@@ -717,6 +785,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     #    tache de fond — une session de scraping dure des minutes, l'ecran ne doit pas attendre.
     pdf = _demander_pdf(reference)
     return {**plan, "statut": "ajuste", "reglement_repris": copie.name if copie is not None else None,
+            "commandes_ecartees": commandes_ecartees,
             "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
             "echeancier": echeancier_suivi,
             "reglement_supprime": suppression["supprime"],
