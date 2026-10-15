@@ -107,8 +107,8 @@ class TestAReclamer(unittest.TestCase):
         pieces = [{"customer": "A", "piece": "SI-1", "date": "2026-07-09", "montant": 34.14, "motif": "x"},
                   {"customer": "A", "piece": "SI-2", "date": "2026-07-31", "montant": 54.11, "motif": "x"},
                   {"customer": "B", "piece": "SI-3", "date": "2026-08-31", "montant": 20.86, "motif": "x"},
-                  {"customer": None, "piece": "SI-4", "date": "2026-08-31", "montant": 1.0, "motif": "x"}]
+                  {"customer": None, "declarant": "U B C I", "piece": "SI-4", "date": "2026-08-31", "montant": 1.0, "motif": "x"}]
         g = L.regrouper(pieces, relances_recentes={"B"})
-        self.assertEqual(sorted(g), ["A"])
+        self.assertEqual(sorted(g), ["? U B C I", "A"])                       # sans fiche : regroupé sous le déclarant
         self.assertEqual([p["piece"] for p in g["A"]], ["SI-1", "SI-2"])
         self.assertIn("SI-1 du 09/07/2026 : retenue 34.14 DT", L._texte_piece(pieces[0]))
