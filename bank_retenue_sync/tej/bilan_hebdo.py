@@ -104,8 +104,8 @@ def rendre(b: dict, url: str) -> str:
     parts = ["<p>Retenue a la source vente — bilan du %s (exercice %s). <b>%d</b> point(s) appellent une action. "
              "<a href='%s'>Ouvrir la page</a>.</p><p style='font-size:13px'>%s</p>" % (_jj(b["date"]), b["annee"], b["a_faire"], esc(url), fraicheur)]
     parts.append(_tableau("Retenues comptabilisees sans certificat depuis plus de %d jours — a reclamer au client" % JOURS_SANS_CERTIFICAT,
-                          ["Date", "Client", "Retenue", "Facture", "Ecriture"],
-                          [[_jj(l.get("posting_date")), esc(l.get("customer") or ""), _dt(l.get("montant")), esc(l.get("sales_invoice") or ""), esc(l.get("name") or "")]
+                          ["Date", "Client", "Retenue", "Piece", "Ecriture"],
+                          [[_jj(l.get("posting_date")), esc(l.get("customer") or ""), _dt(l.get("montant")), esc(l.get("sales_invoice") or l.get("sales_order") or ""), esc(l.get("name") or "")]
                            for l in b.get("sans_certificat", [])], "aucune"))
     parts.append(_tableau("Certificats declares par les clients sans ecriture chez nous — credit d'impot a regulariser",
                           ["Date", "Declarant", "Client", "Retenue", "Pourquoi"],
@@ -116,8 +116,8 @@ def rendre(b: dict, url: str) -> str:
                           [[_jj(c.get("date_paiement")), esc(c.get("declarant") or ""), _dt(c.get("montant_retenue")), _dt(c.get("ecart_piece")), esc(c.get("payment_entry") or "")]
                            for c in b.get("ecarts", [])], "aucun"))
     parts.append(_tableau("Retenues probables deguisees en dette (1 %% du TTC) — a loger sur la facture",
-                          ["Facture", "Client", "TTC", "Dette = retenue", "Ligne de dette"],
-                          [[esc(l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), esc(l.get("dette_pe"))]
+                          ["Piece", "Client", "TTC", "Dette = retenue", "Ligne de dette"],
+                          [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), esc(l.get("dette_pe"))]
                            for l in b.get("probables", [])], "aucune"))
     if b.get("erreurs"):
         parts.append("<p style='color:#c0392b'>Rubriques en erreur : %s</p>" % esc(" ; ".join(b["erreurs"])))

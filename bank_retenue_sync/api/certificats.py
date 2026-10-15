@@ -308,9 +308,11 @@ def plan_regularisation(reference):
 
     cert = frappe.db.get_all(DOCTYPE, filters={"name": reference},
                              fields=list(rapprochement.CHAMPS_CERTIFICAT)
-                             + ["sales_invoice", "total_brut"])
+                             + ["sales_invoice", "sales_order", "total_brut"])
     if not cert:
         return {"voie": "impossible", "raison": _("Certificat inconnu.")}
+    # Sans facture, la commande fait la piece (paiements.piece_du_certificat) : l'ecran lit « facture ».
+    cert[0]["sales_invoice"] = cert[0].get("sales_invoice") or cert[0].get("sales_order")
     # Un seul contexte pour les deux questions : les charger separement doublait, a chaque clic,
     # l'inventaire complet des clients, des ecritures et des factures.
     ctx = rapprochement.charger_contexte()
@@ -402,12 +404,12 @@ def retenues_probables(from_date=None, to_date=None):
 
 
 @frappe.whitelist()
-def loger_retenue_probable(sales_invoice, dette_pe, insert=0):
-    """Deduit la retenue de la dette et la loge sur la facture (essai a blanc sans insert)."""
+def loger_retenue_probable(sales_invoice, dette_pe, insert=0, doctype="Sales Invoice"):
+    """Deduit la retenue de la dette et la loge sur la piece — facture ou commande (essai a blanc sans insert)."""
     frappe.only_for(("System Manager", "Accounts Manager"))
     from bank_retenue_sync.tej import retenues_probables
 
-    out = retenues_probables.loger(sales_invoice, dette_pe, insert=bool(frappe.utils.cint(insert)))
+    out = retenues_probables.loger(sales_invoice, dette_pe, insert=bool(frappe.utils.cint(insert)), doctype=doctype or "Sales Invoice")
     if frappe.utils.cint(insert) and out.get("ok"):
         frappe.db.commit()
     return out

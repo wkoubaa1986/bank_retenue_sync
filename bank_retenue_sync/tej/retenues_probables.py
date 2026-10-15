@@ -36,73 +36,86 @@ def dette_vaut_retenue(ttc: float, dette: float, taux: float = TAUX, tolerance: 
     return abs(dette - round(ttc * taux / 100.0, 3)) <= tolerance
 
 
-def detecter(depuis=None, jusqu_a=None, sales_invoice: str = None) -> list:
-    """Factures de clients a matricule fiscal, soldees, dont une ligne de dette vaut 1 % du TTC et
-    qui ne portent encore aucune ecriture de retenue. → [{sales_invoice, customer, …, dette_pe}]."""
-    conditions, params = [], {"mode": P.mode_dette(), "ras": R.mode_ras()}
-    if sales_invoice:
-        conditions.append("si.name = %(si)s")
-        params["si"] = sales_invoice
-    if depuis:
-        conditions.append("si.posting_date >= %(de)s")
-        params["de"] = getdate(depuis)
-    if jusqu_a:
-        conditions.append("si.posting_date <= %(a)s")
-        params["a"] = getdate(jusqu_a)
-    rows = frappe.db.sql("""
-        select si.name as sales_invoice, si.customer, c.customer_name, c.tax_id, si.posting_date, si.grand_total,
-               si.status, pe.name as dette_pe, pe.posting_date as dette_date, pe.paid_amount as dette_total,
-               per.allocated_amount as dette
-        from `tabSales Invoice` si
-        join tabCustomer c on c.name = si.customer
-        join `tabPayment Entry Reference` per on per.reference_name = si.name and per.reference_doctype = 'Sales Invoice'
-        join `tabPayment Entry` pe on pe.name = per.parent and pe.docstatus = 1 and pe.mode_of_payment = %(mode)s
-        where si.docstatus = 1 and si.is_return = 0 and ifnull(c.tax_id, '') <> '' and si.grand_total >= %(seuil)s
+_REQUETE = """
+        select '%(doctype)s' as piece_doctype, p.name as piece, p.name as sales_invoice, p.customer, c.customer_name, c.tax_id,
+               p.%(date)s as posting_date, p.grand_total, p.status, pe.name as dette_pe, pe.posting_date as dette_date,
+               pe.paid_amount as dette_total, per.allocated_amount as dette
+        from `tab%(doctype)s` p
+        join tabCustomer c on c.name = p.customer
+        join `tabPayment Entry Reference` per on per.reference_name = p.name and per.reference_doctype = '%(doctype)s'
+        join `tabPayment Entry` pe on pe.name = per.parent and pe.docstatus = 1 and pe.mode_of_payment = %%(mode)s
+        where p.docstatus = 1 %(retour)s and ifnull(c.tax_id, '') <> '' and p.grand_total >= %%(seuil)s
           and not exists (select 1 from `tabPayment Entry Reference` p2 join `tabPayment Entry` e2 on e2.name = p2.parent
-                           where p2.reference_name = si.name and e2.docstatus = 1 and e2.mode_of_payment = %(ras)s)
+                           where p2.reference_name = p.name and e2.docstatus = 1 and e2.mode_of_payment = %%(ras)s)
           %(conditions)s
-        order by si.posting_date desc""".replace("%(conditions)s", (" and " + " and ".join(conditions)) if conditions else ""),
-        {**params, "seuil": SEUIL_TTC}, as_dict=1)
+        order by p.%(date)s desc"""
+
+PIECES = (("Sales Invoice", "posting_date", "and p.is_return = 0"),
+          # Les reglements se font aussi sur les COMMANDES avant facturation (15/10/2026) ; a la
+          # facturation ERPNext reporte les imputations sur la facture, qui prend alors le relais.
+          ("Sales Order", "transaction_date", ""))
+
+
+def detecter(depuis=None, jusqu_a=None, sales_invoice: str = None, doctype: str = None) -> list:
+    """Factures ET commandes de clients a matricule fiscal, soldees pour partie par une ligne de dette
+    valant 1 % du TTC, sans aucune ecriture de retenue. → [{piece_doctype, piece, customer, …, dette_pe}]."""
     out = []
-    for r in rows:
-        if not dette_vaut_retenue(r.grand_total, r.dette):
+    for dt, date, retour in PIECES:
+        if doctype and dt != doctype:
             continue
-        r["retenue"] = flt(r.dette, 3)
-        r["taux"] = round(flt(r.dette, 3) / flt(r.grand_total, 3) * 100, 2) if r.grand_total else 0
-        r["explication"] = ("la dette de %s DT vaut %s %% du TTC (%s) : c'est la part que le client a retenue"
-                            % (r["retenue"], r["taux"], flt(r.grand_total, 3)))
-        out.append(r)
+        conditions, params = [], {"mode": P.mode_dette(), "ras": R.mode_ras(), "seuil": SEUIL_TTC}
+        if sales_invoice:
+            conditions.append("p.name = %(si)s")
+            params["si"] = sales_invoice
+        if depuis:
+            conditions.append("p.%s >= %%(de)s" % date)
+            params["de"] = getdate(depuis)
+        if jusqu_a:
+            conditions.append("p.%s <= %%(a)s" % date)
+            params["a"] = getdate(jusqu_a)
+        sql = _REQUETE % {"doctype": dt, "date": date, "retour": retour,
+                          "conditions": (" and " + " and ".join(conditions)) if conditions else ""}
+        for r in frappe.db.sql(sql, params, as_dict=1):
+            if not dette_vaut_retenue(r.grand_total, r.dette):
+                continue
+            r["retenue"] = flt(r.dette, 3)
+            r["taux"] = round(flt(r.dette, 3) / flt(r.grand_total, 3) * 100, 2) if r.grand_total else 0
+            r["explication"] = ("la dette de %s DT vaut %s %% du TTC (%s) : c'est la part que le client a retenue"
+                                % (r["retenue"], r["taux"], flt(r.grand_total, 3)))
+            out.append(r)
+    out.sort(key=lambda r: str(r.get("posting_date") or ""), reverse=True)
     return out
 
 
 def _construire(ligne: dict, montant: float):
     """L'ecriture de retenue, calquee sur celles d'un certificat, mais qui dit d'ou elle vient."""
+    cle = "sales_invoice" if ligne["piece_doctype"] == "Sales Invoice" else "sales_order"
     pe = P.construire({"montant_retenue": montant, "date_paiement": ligne["dette_date"], "customer": ligne["customer"],
-                       "sales_invoice": ligne["sales_invoice"], "reference": ligne["sales_invoice"],
+                       cle: ligne["piece"], "reference": ligne["piece"],
                        "declarant": ligne.get("customer_name"), "declarant_matricule": ligne.get("tax_id"),
                        "total_brut": flt(ligne["grand_total"], 3)}, insert=False)
-    pe.reference_no = ligne["sales_invoice"]
+    pe.reference_no = ligne["piece"]
     pe.remarks = ("Retenue a la source PROBABLE : la dette %s de %s DT valait %s %% du TTC de %s (%s DT).\n"
                   "Logee le %s en attendant le certificat TEJ du client %s (%s)."
-                  % (ligne["dette_pe"], montant, ligne.get("taux"), ligne["sales_invoice"], flt(ligne["grand_total"], 3),
+                  % (ligne["dette_pe"], montant, ligne.get("taux"), ligne["piece"], flt(ligne["grand_total"], 3),
                      frappe.utils.nowdate(), ligne.get("customer_name") or ligne["customer"], ligne.get("tax_id") or "—"))
     return pe
 
 
-def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None) -> dict:
-    """Deduit la retenue de la dette et la loge sur la facture. Le total impute a la facture ne bouge
-    pas : la dette baisse de la retenue (ou disparait si elle ne portait que ca), l'ecriture de
-    retenue prend la difference. Essai a blanc sans `insert`."""
-    lignes = [l for l in detecter(sales_invoice=sales_invoice) if l["dette_pe"] == dette_pe]
+def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, doctype: str = "Sales Invoice") -> dict:
+    """Deduit la retenue de la dette et la loge sur la piece (facture ou commande). Le total impute
+    ne bouge pas : la dette baisse de la retenue (ou disparait si elle ne portait que ca),
+    l'ecriture de retenue prend la difference. Essai a blanc sans `insert`."""
+    lignes = [l for l in detecter(sales_invoice=sales_invoice, doctype=doctype) if l["dette_pe"] == dette_pe]
     if not lignes:
-        return {"ok": False, "raison": "cette facture ne porte pas (ou plus) de dette valant la retenue"}
+        return {"ok": False, "raison": "cette piece ne porte pas (ou plus) de dette valant la retenue"}
     ligne = lignes[0]
-    deja = R.pieces_ras_de_la_facture(sales_invoice, ligne["customer"], R.charger_contexte(), None)
+    deja = R.pieces_ras_de_la_facture(sales_invoice, ligne["customer"], R.charger_contexte(), None, doctype=doctype)
     if deja:
         return {"ok": False, "raison": "la facture porte deja une retenue (%s)" % ", ".join(p["name"] for p in deja)}
     montant = flt(ligne["retenue"], 3)
     valider = P._auto_submit() if submit is None else bool(submit)
-    plan = {"ok": True, "facture": sales_invoice, "customer": ligne["customer"], "retenue": montant,
+    plan = {"ok": True, "facture": sales_invoice, "piece_doctype": doctype, "customer": ligne["customer"], "retenue": montant,
             "dette": dette_pe, "dette_avant": flt(ligne["dette_total"], 3),
             "dette_apres": round(flt(ligne["dette_total"], 3) - montant, 3), "brouillon": not valider}
     if not insert:
@@ -115,7 +128,7 @@ def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None) 
     if valider:
         pe.submit()
     try:
-        frappe.get_doc("Sales Invoice", sales_invoice).add_comment(
+        frappe.get_doc(doctype, sales_invoice).add_comment(
             "Info", "💡 Retenue a la source probable logee : %s DT deduits de la dette %s, ecriture %s%s. "
                     "Le certificat TEJ, quand il arrivera, s'y rapprochera." % (montant, dette_pe, pe.name, "" if valider else " (brouillon)"))
     except Exception:

@@ -67,3 +67,10 @@ class TestBilan(unittest.TestCase):
         self.assertIn("plus de 14 jours", html)                 # export du 08/09 lu le 19/10
         self.assertIn("<b>2</b> point(s)", html)
         self.assertIn("aucun", html)                             # rubriques vides dites comme telles
+
+
+class TestPieceDuCertificat(unittest.TestCase):
+    def test_facture_sinon_commande(self):
+        self.assertEqual(P.piece_du_certificat({"sales_invoice": "SI-1", "sales_order": "SO-1"}), ("Sales Invoice", "SI-1"))
+        self.assertEqual(P.piece_du_certificat({"sales_invoice": None, "sales_order": "SO-1"}), ("Sales Order", "SO-1"))
+        self.assertEqual(P.piece_du_certificat({}), (None, None))

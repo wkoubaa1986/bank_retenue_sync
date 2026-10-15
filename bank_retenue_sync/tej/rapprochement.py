@@ -374,7 +374,7 @@ def apparier_piece(cert: dict, ctx: Contexte, fenetre: int = FENETRE_JOURS) -> d
 
 
 def pieces_ras_de_la_facture(facture: str, customer: str, ctx: Contexte,
-                             cert_name: str = None) -> list:
+                             cert_name: str = None, doctype: str = "Sales Invoice") -> list:
     """Les ecritures de retenue IMPUTEES a cette facture. Sans aucune condition de date.
 
     Sert aux deux sens : a l'appariement (`apparier_par_facture`) et au garde-fou de la
@@ -385,7 +385,7 @@ def pieces_ras_de_la_facture(facture: str, customer: str, ctx: Contexte,
         return []
     return [p for p in ctx.pes_ras.get(customer, [])
             if (cert_name is None or ctx.piece_libre(p["name"], cert_name))
-            and any(r["doctype"] == "Sales Invoice" and r["name"] == facture and r.get("montant")
+            and any(r["doctype"] == doctype and r["name"] == facture and r.get("montant")
                     for r in ctx.refs.get(p["name"], []))]
 
 
@@ -405,6 +405,11 @@ def apparier_par_facture(cert: dict, ctx: Contexte, facture: str = None) -> dict
     facture = facture or cert.get("sales_invoice")
     retenue = flt(cert.get("montant_retenue"), 3)
     candidats = pieces_ras_de_la_facture(facture, cert.get("customer"), ctx, cert.get("name"))
+    if not candidats and not facture and cert.get("sales_order"):
+        # Pas de facture, mais une commande : la retenue a pu etre saisie dessus (15/10/2026 — les
+        # reglements se font aussi sur les commandes, 13 ecritures de retenue en portaient).
+        facture = cert["sales_order"]
+        candidats = pieces_ras_de_la_facture(facture, cert.get("customer"), ctx, cert.get("name"), doctype="Sales Order")
     if not candidats:
         return {"payment_entry": None, "mode": "aucune", "candidats": [],
                 "raison": "aucune ecriture de retenue imputee a la facture %s" % facture}

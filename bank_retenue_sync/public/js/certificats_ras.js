@@ -537,12 +537,12 @@ window.CertificatsRAS = class CertificatsRAS {
       .map(
         (l) => `<tr>
           <td>${frappe.datetime.str_to_user(l.posting_date)}</td>
-          <td><a href="/app/sales-invoice/${encodeURIComponent(l.sales_invoice)}">${l.sales_invoice}</a></td>
+          <td><a href="/app/${l.piece_doctype === "Sales Order" ? "sales-order" : "sales-invoice"}/${encodeURIComponent(l.piece)}">${l.piece}</a>${l.piece_doctype === "Sales Order" ? ` <span class="rsv-rate">${__("commande")}</span>` : ""}</td>
           <td>${frappe.utils.escape_html(l.customer_name || l.customer || "")}</td>
           <td class="rsv-num">${dt(l.grand_total)}</td>
           <td class="rsv-num">${dt(l.retenue)} <span class="rsv-rate">${l.taux} %</span></td>
           <td><a href="/app/payment-entry/${encodeURIComponent(l.dette_pe)}">${l.dette_pe}</a></td>
-          <td><button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.sales_invoice)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button></td>
+          <td><button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.piece)}" data-dt="${frappe.utils.escape_html(l.piece_doctype)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button></td>
         </tr>`
       )
       .join("");
@@ -556,26 +556,26 @@ window.CertificatsRAS = class CertificatsRAS {
       </table></div>`);
     d.$wrapper.on("click", "[data-act='loger']", (e) => {
       const $b = $(e.currentTarget);
-      this._loger($b.data("si"), $b.data("pe"), () => { d.hide(); this.refresh(); });
+      this._loger($b.data("si"), $b.data("pe"), $b.data("dt"), () => { d.hide(); this.refresh(); });
     });
     d.show();
   }
 
-  _loger(sales_invoice, dette_pe, apres) {
+  _loger(sales_invoice, dette_pe, doctype, apres) {
     frappe
-      .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, insert: 0 }, freeze: true, freeze_message: __("Analyse…") })
+      .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, doctype, insert: 0 }, freeze: true, freeze_message: __("Analyse…") })
       .then((r) => {
         const p = r.message || {};
         if (!p.ok) { frappe.msgprint({ title: __("Impossible"), indicator: "red", message: frappe.utils.escape_html(p.raison || "") }); return; }
         const dt = (v) => format_currency(v, "TND");
         frappe.confirm(
-          `<p>${__("Facture")} <b>${p.facture}</b> — ${frappe.utils.escape_html(p.customer)}</p>
+          `<p>${p.piece_doctype === "Sales Order" ? __("Commande") : __("Facture")} <b>${p.facture}</b> — ${frappe.utils.escape_html(p.customer)}</p>
            <ul><li>${__("Dette")} ${p.dette} : ${dt(p.dette_avant)} → ${dt(p.dette_apres)}${p.dette_apres <= 0.001 ? ` (${__("soldée : elle ne portait que la retenue")})` : ""}</li>
            <li>${__("Écriture de retenue créée sur la facture")} : <b>${dt(p.retenue)}</b></li></ul>
            <p>${p.brouillon ? __("Elle restera en <b>brouillon</b>, à valider à la main.") : __("Elle sera <b>validée aussitôt</b>.")}</p>`,
           () =>
             frappe
-              .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, insert: 1 }, freeze: true, freeze_message: __("Écriture…") })
+              .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, doctype, insert: 1 }, freeze: true, freeze_message: __("Écriture…") })
               .then((r2) => {
                 const q = r2.message || {};
                 if (!q.ok) { frappe.msgprint({ title: __("Impossible"), indicator: "red", message: frappe.utils.escape_html(q.raison || "") }); return; }

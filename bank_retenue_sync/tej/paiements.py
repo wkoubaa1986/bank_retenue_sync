@@ -45,7 +45,24 @@ def _company() -> str:
             or frappe.defaults.get_global_default("company"))
 
 
-def _charger_facture(nom: str):
+def piece_du_certificat(cert: dict) -> tuple:
+    """(doctype, nom) de la piece que la retenue eteint : la facture, sinon la COMMANDE (15/10/2026 —
+    les reglements se font aussi sur les commandes, avant facturation ; ERPNext reporte ensuite les
+    imputations sur la facture). (None, None) si rien n'est identifie. PURE."""
+    if cert.get("sales_invoice"):
+        return "Sales Invoice", cert["sales_invoice"]
+    if cert.get("sales_order"):
+        return "Sales Order", cert["sales_order"]
+    return None, None
+
+
+def _charger_facture(nom: str, doctype: str = "Sales Invoice"):
+    """La piece avec son reste du : `outstanding_amount` d'une facture, TTC moins avances d'une commande."""
+    if doctype == "Sales Order":
+        so = frappe.db.get_value("Sales Order", nom, ["customer", "grand_total", "advance_paid", "docstatus", "company"], as_dict=1)
+        if so:
+            so["outstanding_amount"] = round(flt(so.grand_total, 3) - flt(so.advance_paid, 3), 3)
+        return so
     return frappe.db.get_value("Sales Invoice", nom,
                                ["customer", "outstanding_amount", "docstatus", "company"],
                                as_dict=1)
@@ -71,11 +88,11 @@ def verifier(cert: dict, ctx: R.Contexte = None, charger_facture=None, cause=Non
                 % cert["payment_entry"]}
     if not cert.get("customer"):
         return {"ok": False, "raison": "client non identifie"}
-    if not cert.get("sales_invoice"):
-        # Le point le plus important : sans facture, on ne sait pas quelle creance s'eteint.
+    doctype, piece = piece_du_certificat(cert)
+    if not piece:
+        # Le point le plus important : sans facture ni commande, on ne sait pas quelle creance s'eteint.
         return {"ok": False, "raison": "facture non identifiee"}
-    deja = R.pieces_ras_de_la_facture(cert["sales_invoice"], cert["customer"], ctx,
-                                      cert.get("name"))
+    deja = R.pieces_ras_de_la_facture(piece, cert["customer"], ctx, cert.get("name"), doctype=doctype)
     if deja:
         # ⚠️ LE GARDE-FOU QUI EMPECHE UNE DOUBLE COMPTABILISATION. Une retenue peut etre saisie des
         # mois avant que le client ne la declare : le certificat sort alors « sans ecriture » alors
@@ -87,7 +104,7 @@ def verifier(cert: dict, ctx: R.Contexte = None, charger_facture=None, cause=Non
     if montant <= 0:
         return {"ok": False, "raison": "montant nul"}
 
-    facture = charger_facture(cert["sales_invoice"])
+    facture = charger_facture(cert["sales_invoice"]) if doctype == "Sales Invoice" else charger_facture(piece, doctype)
     if not facture or facture.docstatus != 1:
         return {"ok": False, "raison": "facture introuvable ou non validee"}
     if facture.customer != cert["customer"]:
@@ -98,7 +115,8 @@ def verifier(cert: dict, ctx: R.Contexte = None, charger_facture=None, cause=Non
         # reglement a ete encaisse pour le TTC ENTIER alors que le client avait retenu 1 %. La
         # retenue existe donc bien — c'est le reglement qui est surevalue de son montant.
         return {"ok": False, "raison": "facture deja soldee%s"
-                % cause(cert["sales_invoice"], montant, cert.get("date_paiement"))}
+                % (cause(piece, montant, cert.get("date_paiement")) if doctype == "Sales Invoice"
+                   else cause(piece, montant, cert.get("date_paiement"), doctype))}
 
     jour = getdate(cert.get("date_paiement"))
     doublons = [p for p in ctx.pes_ras.get(cert["customer"], [])
@@ -111,7 +129,7 @@ def verifier(cert: dict, ctx: R.Contexte = None, charger_facture=None, cause=Non
     return {"ok": True, "raison": "", "facture": facture}
 
 
-def _cause_facture_soldee(facture: str, montant: float, jour=None) -> str:
+def _cause_facture_soldee(facture: str, montant: float, jour=None, doctype: str = "Sales Invoice") -> str:
     """Nomme le reglement qui a solde la facture, et l'ajustement qu'il faudrait pour y loger la
     retenue. Sans cette precision, l'utilisateur lit « facture soldee » et ne sait pas quoi faire.
 
@@ -129,7 +147,7 @@ def _cause_facture_soldee(facture: str, montant: float, jour=None) -> str:
                            (facture, R.mode_ras()), as_dict=1)
     if not lignes:
         return ""
-    ttc = frappe.db.get_value("Sales Invoice", facture, "grand_total")
+    ttc = frappe.db.get_value(doctype, facture, "grand_total")
     trouve = reglement_a_reprendre({"montant_retenue": montant, "sales_invoice": facture,
                                     "date_paiement": jour},
                                    lignes=lignes, ttc=flt(ttc, 3) if ttc else None)
@@ -183,9 +201,10 @@ def construire(cert: dict, insert: bool = False, submit: bool = False):
                     % (cert["reference"], cert["date_paiement"], cert.get("declarant"),
                        cert.get("declarant_matricule"), flt(cert.get("total_brut"), 3), montant)),
     })
+    doctype, piece = piece_du_certificat(cert)
     pe.append("references", {
-        "reference_doctype": "Sales Invoice",
-        "reference_name": cert["sales_invoice"],
+        "reference_doctype": doctype or "Sales Invoice",
+        "reference_name": piece,
         "allocated_amount": montant,
     })
     if insert:
@@ -481,24 +500,24 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     reglement qui ne couvre pas la retenue est refuse, meme demande explicitement.
     """
     cert = frappe.db.get_all(DOCTYPE, filters={"name": reference},
-                             fields=list(R.CHAMPS_CERTIFICAT) + ["sales_invoice", "total_brut"])
+                             fields=list(R.CHAMPS_CERTIFICAT) + ["sales_invoice", "sales_order", "total_brut"])
     if not cert:
         return {"ok": False, "raison": "certificat inconnu"}
     cert = cert[0]
     montant = flt(cert.get("montant_retenue"), 3)
+    doctype, piece = piece_du_certificat(cert)
 
     if cert.get("payment_entry"):
         return {"ok": False, "raison": "une ecriture porte deja cette retenue"}
-    if not cert.get("customer") or not cert.get("sales_invoice"):
+    if not cert.get("customer") or not piece:
         return {"ok": False, "raison": "client ou facture non identifie"}
     if cert.get("hors_perimetre") or cert.get("anomalie"):
         return {"ok": False, "raison": "certificat hors perimetre ou en anomalie"}
 
-    facture = frappe.db.get_value("Sales Invoice", cert["sales_invoice"],
-                                  ["grand_total", "customer"], as_dict=1)
-    deja = R.pieces_ras_de_la_facture(cert["sales_invoice"], cert["customer"],
+    facture = frappe.db.get_value(doctype, piece, ["grand_total", "customer"], as_dict=1)
+    deja = R.pieces_ras_de_la_facture(piece, cert["customer"],
                                       ctx if ctx is not None else R.charger_contexte(),
-                                      cert.get("name"))
+                                      cert.get("name"), doctype=doctype)
     if deja:
         # Meme garde-fou que dans `verifier`, et pour la meme raison : l'ajustement est le seul
         # geste de cette app qui peut comptabiliser deux fois la meme retenue.
@@ -506,7 +525,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
                                        "rapprochement a faire, pas une regularisation"
                 % ", ".join(p["name"] for p in deja)}
 
-    trouve = reglement_a_reprendre(cert, choisi=reglement,
+    trouve = reglement_a_reprendre({**cert, "sales_invoice": piece}, choisi=reglement,
                                    ttc=flt(facture.grand_total, 3) if facture else None)
     if not trouve.get("ok"):
         return {"ok": False, **trouve}
@@ -527,7 +546,8 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     plan = {
         "ok": True,
         "certificat": reference,
-        "facture": cert["sales_invoice"],
+        "facture": piece,
+        "piece_doctype": doctype,
         "retenue": montant,
         "reglement": pris["name"],
         "reglement_mode": pris["mode_of_payment"],
@@ -567,7 +587,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         copie.paid_amount = nouveau_montant
         copie.received_amount = nouveau_montant
         for ligne in copie.references:
-            if ligne.reference_name == cert["sales_invoice"]:
+            if ligne.reference_name == piece:
                 ligne.allocated_amount = nouvelle_allocation
         # La part liberee va sur les autres creances du client. Ce qui ne trouve pas preneur reste en
         # montant NON AFFECTE : ERPNext le porte alors en avance au credit du client — l'argent est
@@ -622,7 +642,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         "match_status": "Auto Matched",
         "revue_requise": 0 if valider else 1,
         "match_raison": ("retenue logee dans la facture %s : reglement %s repris en %s (%s)%s%s"
-                         % (cert["sales_invoice"], original.name, copie.name if copie is not None else "— dette soldee",
+                         % (piece, original.name, copie.name if copie is not None else "— dette soldee",
                             ("montant inchange %s, imputation %s -> %s%s"
                              % (nouveau_montant, plan["allocation_avant"], nouvelle_allocation,
                                 (", %s DT vers %s" % (montant,
