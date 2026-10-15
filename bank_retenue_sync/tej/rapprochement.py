@@ -525,6 +525,19 @@ def facture_par_reglement_net(cert: dict, ctx: Contexte,
                 else "aucun reglement net de %s DT autour du %s" % (net, jour)}
     factures = [r["name"] for r in ctx.refs.get(proches[0]["name"], [])
                 if r["doctype"] == "Sales Invoice" and r.get("montant")]
+    if len(factures) > 1:
+        # Plusieurs factures reglees d'un coup : LA DETTE DESIGNE LA FACTURE (15/10/2026). Le client a paye
+        # net, la caisse a solde une des factures avec une « Dette non payee » du montant exact de la
+        # retenue — BHM : 497,97 net pour 3 factures, 5,03 de dette sur ACC-SINV-2026-01452-1. Cette
+        # dette est la retenue ; c'est la que l'ecriture se loge, et « la dette d'abord » la reprendra.
+        from bank_retenue_sync.tej import paiements as P
+
+        designee = facture_designee_par_dette(factures, flt(cert.get("montant_retenue"), 3), P.dettes_non_payees(customer))
+        if designee:
+            return {"sales_invoice": designee["name"], "reglement": proches[0]["name"], "candidats": [],
+                    "raison": "reglement net %s (%s DT) porte %s factures ; la dette %s de %s DT sur %s vaut la retenue"
+                              % (proches[0]["name"], proches[0]["paid_amount"], len(factures), designee["dette_pe"],
+                                 designee["reste"], designee["name"])}
     if len(factures) != 1:
         # ⚠️ PAS UN ECHEC : UNE PISTE. Le client paie souvent son solde en une fois pour plusieurs
         # factures, parfois partiellement — BHM : 367,29 net (371,00 - 3,71) impute a 271,29 sur une
@@ -540,6 +553,14 @@ def facture_par_reglement_net(cert: dict, ctx: Contexte,
             "raison": "reglement net %s (%s DT) du %s" % (proches[0]["name"],
                                                           proches[0]["paid_amount"],
                                                           proches[0]["posting_date"])}
+
+
+def facture_designee_par_dette(factures: list, retenue: float, dettes: list, marge: float = MARGE_IDENTIFICATION):
+    """Parmi `factures`, celle qui porte une ligne « Dette non payee » du montant de la retenue (au timbre pres).
+    `dettes` : [{dette_pe, doctype, name, reste}] (paiements.dettes_non_payees). None si aucune ou plusieurs. PURE."""
+    candidates = [d for d in dettes if d.get("doctype") == "Sales Invoice" and d.get("name") in factures
+                  and abs(flt(d.get("reste"), 3) - flt(retenue, 3)) <= marge]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def facture_par_assiette(cert: dict, ctx: Contexte, fenetre: int = FENETRE_REGLEMENT) -> dict:

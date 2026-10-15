@@ -112,3 +112,19 @@ class TestAReclamer(unittest.TestCase):
         self.assertEqual(sorted(g), ["? U B C I", "A"])                       # sans fiche : regroupé sous le déclarant
         self.assertEqual([p["piece"] for p in g["A"]], ["SI-1", "SI-2"])
         self.assertIn("SI-1 du 09/07/2026 : retenue 34.14 DT", L._texte_piece(pieces[0]))
+
+
+class TestLaDetteDesigneLaFacture(unittest.TestCase):
+    """BHM 08/09/2026 : 497,97 net pour 3 factures, 5,03 de dette sur l'une d'elles = la retenue déclarée."""
+
+    def test_designation(self):
+        from bank_retenue_sync.tej import rapprochement as R
+        factures = ["SI-1450", "SI-1451", "SI-1452"]
+        dettes = [{"dette_pe": "PE-D1", "doctype": "Sales Invoice", "name": "SI-1452", "reste": 5.03},
+                  {"dette_pe": "PE-D2", "doctype": "Sales Order", "name": "SO-9", "reste": 5.03},        # une commande : pas une des factures
+                  {"dette_pe": "PE-D3", "doctype": "Sales Invoice", "name": "SI-1451", "reste": 40.0}]
+        self.assertEqual(R.facture_designee_par_dette(factures, 5.03, dettes)["name"], "SI-1452")
+        self.assertEqual(R.facture_designee_par_dette(factures, 5.04, dettes)["name"], "SI-1452")     # timbre
+        self.assertIsNone(R.facture_designee_par_dette(factures, 7.0, dettes))
+        deux = dettes + [{"dette_pe": "PE-D4", "doctype": "Sales Invoice", "name": "SI-1450", "reste": 5.03}]
+        self.assertIsNone(R.facture_designee_par_dette(factures, 5.03, deux))                       # deux dettes égales : on ne devine pas
