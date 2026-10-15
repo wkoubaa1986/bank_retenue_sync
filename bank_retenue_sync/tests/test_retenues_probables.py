@@ -101,7 +101,7 @@ class TestCommandesRegroupees(unittest.TestCase):
         self.assertEqual((r2["ok"], r2["reglement"]["name"], r2["regle"]), (True, "ESP", "seul reglement qui la couvre"))
 
 
-class TestListeAppelsRAS(unittest.TestCase):
+class TestAReclamer(unittest.TestCase):
     def test_regrouper_par_client_sans_les_relances_recentes(self):
         from bank_retenue_sync.tej import liste_appels_ras as L
         pieces = [{"customer": "A", "piece": "SI-1", "date": "2026-07-09", "montant": 34.14, "motif": "x"},

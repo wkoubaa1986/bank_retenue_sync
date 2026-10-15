@@ -1,28 +1,26 @@
-"""LISTE D'APPELS « RETENUE A LA SOURCE » (15/10/2026) — les certificats manquants depuis plus de 45 jours.
+"""A RECLAMER — les certificats de retenue a la source manquants depuis plus de 45 jours (15/10/2026).
 
-Jusqu'ici, reclamer un certificat etait un geste isole (SMS / e-mail / telephone depuis l'onglet
-Factures, 7 fois en aout, plus rien ensuite). La demande : en faire une LISTE D'APPELS comme les
-autres, creee chaque lundi, dans le poste de travail de Salma, derriere la relance paiements.
+La premiere version creait une LISTE D'APPELS le mardi. Decision de l'utilisateur le soir meme : pas de
+liste — la retenue a la source s'appelle et se trace DANS SA PAGE (/app/retenue-source-vente, onglet
+« A reclamer »), la ou Salma voit le probleme : les pieces, les montants, le telephone, la derniere
+relance. Ce module ne fait que dire QUI appeler et POURQUOI ; la page fait le reste, et le tableau des
+appels compte les appels traces ([RELANCE-RAS] | Telephone) dans la file « Retenue a la source » du mardi.
 
 QUI Y ENTRE — un client par ligne, avec toutes ses pieces :
 - une retenue que NOUS avons comptabilisee et que le portail ne justifie pas (`orphelines`, verdict
   « sans certificat ») depuis plus de `JOURS` jours ;
 - une dette de 1 % du TTC que le client n'a PAS declaree (`retenues_probables`, non declaree) depuis
   plus de `JOURS` jours — la retenue probable qui n'existe nulle part tant qu'il ne depose pas.
-QUI N'Y ENTRE PAS : un client deja relance (liste de ce type, ou commentaire [RELANCE-RAS] d'un SMS,
-e-mail ou appel) depuis moins de `JOURS` jours — on ne harcele pas, on revient dans 45 jours.
-
-La ligne n'a pas d'echeancier d'entretien : le champ, obligatoire jusqu'ici, ne l'est plus (patch
-customization_app ensure_liste_retenue_source). Pas de 2e appel automatique : la liste revient
-d'elle-meme tant que le certificat manque.
+QUI N'Y ENTRE PAS : un client deja relance (SMS, e-mail ou appel trace [RELANCE-RAS]) depuis moins de
+`JOURS` jours — on ne harcele pas, on revient dans 45 jours. Il reste visible, grise, avec la date.
 """
 from __future__ import annotations
+
+import re
 
 import frappe
 from frappe.utils import add_days, flt, getdate, nowdate
 
-DOCTYPE = "Liste Appelle Entretien"
-TYPE_LISTE = "Retenue à la source"
 JOURS = 45
 MARQUEUR = "[RELANCE-RAS]"
 
@@ -60,40 +58,50 @@ def pieces_a_reclamer(today, jours: int = JOURS) -> list:
     return out
 
 
-def relances_recentes(today, jours: int = JOURS) -> set:
-    """Clients deja relances pour un certificat depuis moins de `jours` jours : liste de ce type (non annulee)
-    ou commentaire [RELANCE-RAS] (SMS, e-mail, telephone depuis l'onglet Factures)."""
+def dernieres_relances() -> dict:
+    """{client: {date, type, note}} de la derniere relance RAS tracee (SMS, e-mail ou telephone)."""
+    out = {}
+    for r in frappe.db.sql("""select reference_name, creation, content from tabComment where reference_doctype = 'Customer'
+                              and content like %s order by creation desc""", ("%" + MARQUEUR + "%",), as_dict=1):
+        if r.reference_name in out:
+            continue
+        bouts = [b.strip() for b in (r.content or "").split("|")]
+        out[r.reference_name] = {"date": r.creation, "type": bouts[1] if len(bouts) > 1 else "", "note": bouts[2] if len(bouts) > 2 else ""}
+    return out
+
+
+def relances_recentes(today, jours: int = JOURS, dernieres: dict = None) -> set:
+    """Clients deja relances pour un certificat depuis moins de `jours` jours."""
     limite = add_days(getdate(today), -jours)
-    listes = set(frappe.db.sql_list("""select distinct a.client from `tabAppelle Client` a join `tabListe Appelle Entretien` l on l.name = a.parent
-                                       where l.type_liste = %s and l.docstatus <> 2 and l.creation >= %s""", (TYPE_LISTE, limite)))
-    commentaires = set(frappe.db.sql_list("""select distinct reference_name from tabComment where reference_doctype = 'Customer'
-                                             and content like %s and creation >= %s""", ("%" + MARQUEUR + "%", limite)))
-    return listes | commentaires
+    return {c for c, r in (dernieres if dernieres is not None else dernieres_relances()).items() if getdate(r["date"]) >= limite}
 
 
-def creer(today=None, insert: bool = True) -> dict:
-    """La liste du lundi. Un seul brouillon a la fois ; sans client, rien n'est cree."""
+def clients_a_reclamer(today=None, jours: int = JOURS) -> list:
+    """Pour l'onglet « A reclamer » et la file du mardi : [{customer, customer_name, tax_id, telephones, pieces,
+    total, depuis, derniere_relance, a_appeler}] — `a_appeler` faux quand une relance date de moins de `jours` jours."""
     today = getdate(today or nowdate())
-    if frappe.db.exists(DOCTYPE, {"docstatus": 0, "type_liste": TYPE_LISTE}):
-        return {"created": False, "raison": "un brouillon existe deja", "type": TYPE_LISTE}
-    clients = regrouper(pieces_a_reclamer(today), relances_recentes(today))
-    if not clients:
-        return {"created": False, "raison": "aucun certificat manquant depuis plus de %d jours" % JOURS, "type": TYPE_LISTE, "count_clients": 0}
-    if not insert:
-        return {"created": False, "essai": True, "type": TYPE_LISTE, "count_clients": len(clients),
-                "clients": {c: [_texte_piece(p) for p in ps] for c, ps in clients.items()}}
-    doc = frappe.new_doc(DOCTYPE)
-    for customer, ps in sorted(clients.items(), key=lambda kv: str(min(p["date"] for p in kv[1]))):
-        client = frappe.db.get_value("Customer", customer, ["custom_liste_telephone", "customer_name", "tax_id"], as_dict=True) or frappe._dict()
-        doc.append("clients", {
-            "client": customer, "telephone": client.custom_liste_telephone, "secteur": "",
-            "info": ("Certificat de retenue a la source manquant (%d piece(s), %s DT) — MF %s :\n%s\nDemander au client de deposer "
-                     "sa retenue sur le portail TEJ (ou d'envoyer le certificat papier)."
-                     % (len(ps), round(sum(p["montant"] for p in ps), 3), client.tax_id or "?", "\n".join("• " + _texte_piece(p) for p in ps))),
-        })
-    doc.type_liste, doc.date = TYPE_LISTE, today
-    doc.nb_appels_restant, doc.nb_r_p, doc.nb_r_c = len(clients), 0, 0
-    doc.titre = "%s %s — certificats manquants depuis plus de %d jours" % (TYPE_LISTE, today, JOURS)
-    doc.flags.ignore_permissions = True
-    doc.insert()
-    return {"created": True, "type": TYPE_LISTE, "count_clients": len(clients), "name": doc.name}
+    dernieres = dernieres_relances()
+    recentes = relances_recentes(today, jours, dernieres)
+    out = []
+    for customer, ps in regrouper(pieces_a_reclamer(today, jours), set()).items():
+        client = frappe.db.get_value("Customer", customer, ["customer_name", "tax_id", "custom_liste_telephone", "mobile_no"], as_dict=True) or frappe._dict()
+        tels = [t.strip() for t in re.split(r"[\n,;/]+", (client.custom_liste_telephone or "") + "\n" + (client.mobile_no or "")) if t.strip()]
+        ps = sorted(ps, key=lambda p: str(p["date"]))
+        out.append({"customer": customer, "customer_name": client.customer_name or customer, "tax_id": client.tax_id,
+                    "telephones": list(dict.fromkeys(tels)), "pieces": [{**p, "texte": _texte_piece(p)} for p in ps],
+                    "total": round(sum(p["montant"] for p in ps), 3), "depuis": ps[0]["date"],
+                    "derniere_relance": dernieres.get(customer), "a_appeler": customer not in recentes})
+    out.sort(key=lambda c: (not c["a_appeler"], str(c["depuis"])))
+    return out
+
+
+def tracer_appel(customer: str, resume: str, note: str = "") -> str:
+    """L'appel passe depuis l'onglet : le meme commentaire [RELANCE-RAS] | Telephone | … que l'onglet Factures,
+    pour que l'historique, la « derniere relance » et le tableau des appels le voient."""
+    if not customer or not frappe.db.exists("Customer", customer):
+        frappe.throw("client inconnu")
+    texte = " — ".join(x.strip() for x in (resume or "", note or "") if x and x.strip())
+    doc = frappe.get_doc({"doctype": "Comment", "comment_type": "Comment", "reference_doctype": "Customer",
+                          "reference_name": customer, "content": "%s | Téléphone | %s" % (MARQUEUR, texte)})
+    doc.insert(ignore_permissions=True)
+    return doc.name

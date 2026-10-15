@@ -63,9 +63,10 @@ def composer(today=None) -> dict:
     today = getdate(today or nowdate())
     annee = today.year
     out = {"date": str(today), "annee": annee, "erreurs": []}
+    from bank_retenue_sync.tej import liste_appels_ras
     for cle, fn in (("sans_certificat", lambda: _sans_certificat(today, annee)), ("sans_piece", _sans_piece),
                     ("ecarts", _ecarts), ("probables", lambda: retenues_probables.detecter(depuis="%s-01-01" % annee)),
-                    ("fraicheur", _fraicheur)):
+                    ("a_reclamer", lambda: liste_appels_ras.clients_a_reclamer(today)), ("fraicheur", _fraicheur)):
         try:
             out[cle] = fn()
         except Exception as e:
@@ -125,12 +126,10 @@ def rendre(b: dict, url: str) -> str:
                           ["Piece", "Client", "TTC", "Dette = retenue", "Depuis"],
                           [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), _jj(l.get("dette_date"))]
                            for l in probables if not l.get("declaree")], "aucune"))
-    liste = b.get("liste") or {}
-    if liste.get("created"):
-        parts.append("<p>📞 Liste d'appels <b>%s</b> creee : <b>%d</b> client(s) a appeler pour leur certificat (onglet Appels, file « Retenue a la source »).</p>"
-                     % (esc(liste.get("name") or ""), liste.get("count_clients") or 0))
-    elif liste:
-        parts.append("<p style='color:#888'>Liste d'appels « Retenue a la source » : %s.</p>" % esc(liste.get("raison") or "rien a creer"))
+    a_reclamer = b.get("a_reclamer") or []
+    parts.append("<p>📞 <b>%d</b> client(s) a appeler mardi pour leur certificat (onglet « A reclamer » de la page) : %s</p>"
+                 % (len([c for c in a_reclamer if c.get("a_appeler")]),
+                    esc(", ".join("%s (%s DT)" % (c["customer_name"], c["total"]) for c in a_reclamer if c.get("a_appeler")) or "aucun")))
     if b.get("erreurs"):
         parts.append("<p style='color:#c0392b'>Rubriques en erreur : %s</p>" % esc(" ; ".join(b["erreurs"])))
     return "".join(parts)
@@ -142,9 +141,8 @@ def destinataires() -> list:
     return [e for e in (frappe.db.get_value("User", u, "email") for u in _system_managers()) if e]
 
 
-def envoyer(today=None, liste: dict = None) -> dict:
+def envoyer(today=None) -> dict:
     b = composer(today)
-    b["liste"] = liste
     dest = destinataires()
     if not dest:
         return {"envoye": False, "raison": "aucun System Manager avec e-mail", "a_faire": b["a_faire"]}

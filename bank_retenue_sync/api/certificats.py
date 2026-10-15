@@ -427,13 +427,27 @@ def bilan_hebdo(envoyer=0):
     return {"a_faire": b["a_faire"], "html": B.rendre(b, frappe.utils.get_url("/app/retenue-source-vente")), "fraicheur": b.get("fraicheur")}
 
 
+ROLES_RECLAMER = ROLES + ("Sales Manager", "Sales User", "Appels")     # Salma appelle et trace depuis la page
+
+
 @frappe.whitelist()
-def liste_appels_ras(insert=0):
-    """La liste d'appels « Retenue a la source » (certificats manquants > 45 j) : apercu, ou creation."""
-    frappe.only_for(("System Manager", "Accounts Manager"))
+def a_reclamer():
+    """Onglet « A reclamer » : les clients dont un certificat de retenue manque depuis plus de 45 jours, avec
+    leurs pieces, leurs telephones et leur derniere relance."""
+    frappe.only_for(list(ROLES_RECLAMER))
     from bank_retenue_sync.tej import liste_appels_ras as L
 
-    out = L.creer(insert=bool(frappe.utils.cint(insert)))
-    if out.get("created"):
-        frappe.db.commit()
-    return out
+    lignes = L.clients_a_reclamer()
+    return {"lignes": lignes, "jours": L.JOURS, "a_appeler": len([l for l in lignes if l["a_appeler"]]),
+            "total": round(sum(l["total"] for l in lignes), 3)}
+
+
+@frappe.whitelist()
+def tracer_appel_ras(customer, resume=None, note=None):
+    """L'appel passe depuis l'onglet « A reclamer » : trace [RELANCE-RAS] | Telephone | resume — note."""
+    frappe.only_for(list(ROLES_RECLAMER))
+    from bank_retenue_sync.tej import liste_appels_ras as L
+
+    nom = L.tracer_appel(customer, resume or "", note or "")
+    frappe.db.commit()
+    return {"ok": True, "commentaire": nom}
