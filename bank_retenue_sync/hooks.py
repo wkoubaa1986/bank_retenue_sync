@@ -55,11 +55,10 @@ scheduler_events = {
         # L'empreinte du fichier coupe court si le portail n'a pas bouge depuis le passage
         # precedent ; seul le rapprochement est rejoue, et il est bon marche.
         "20 7,12,16 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras"],
-        # Nouvel export des certificats RECUS demande au portail : lundi 06:40 et le 29 de chaque
-        # mois (apres la date limite de declaration). Avant le 15/10/2026, seul le bouton le
-        # demandait — trois fois en tout. Creux avant le passage de 07:20, qui relira l'export.
-        "40 6 * * 1": ["bank_retenue_sync.tasks.daily.certificats_ras_refresh"],
-        "40 6 29 * *": ["bank_retenue_sync.tasks.daily.certificats_ras_refresh"],
+        # Nouvel export des certificats RECUS demande au portail CHAQUE NUIT a 04:00 (decision
+        # utilisateur 15/10/2026 : quand rien d'autre ne tourne). Avant, seul le bouton le
+        # demandait — trois fois en tout. Le passage de 07:20 relit l'export frais.
+        "0 4 * * *": ["bank_retenue_sync.tasks.daily.certificats_ras_refresh"],
         # Bilan hebdomadaire de la retenue vente par e-mail (lundi 08:00, apres le refresh et le
         # passage de 07:20 qui l'exploite).
         "0 8 * * 1": ["bank_retenue_sync.tasks.daily.bilan_ras_hebdo"],

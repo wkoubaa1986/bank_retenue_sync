@@ -238,9 +238,9 @@ def certificats_ras_refresh():
     Le passage quotidien ne relit que l'export que le service detient deja ; un nouvel export ne
     partait que du bouton « Demander un nouveau releve » — clique trois fois en tout, la derniere
     le 8 septembre : au 15 octobre, le dernier certificat connu datait du 24 aout et toute retenue
-    posterieure passait « sans certificat » a tort. Une fois par semaine, et le 29 de chaque mois
-    (juste apres la date limite de declaration des clients). Un scraping dure des minutes : queue
-    longue, comme les passages banque.
+    posterieure passait « sans certificat » a tort. Chaque nuit a 04:00, quand la plateforme est
+    au calme (decision utilisateur). Un scraping dure des minutes : queue longue, comme les
+    passages banque.
     """
     return _dispatch("certificats_ras_refresh", timeout=3600)
 
