@@ -35,6 +35,10 @@ DOCTYPE = "Retenue Certificate"
 COMPTE_CREDIT_IMPOT = "Avance  impôt société - A&S"
 COMPTE_CLIENT = "Débiteurs - A&S"
 
+# Commandes regroupees : la somme des dettes de 1 % doit retomber sur la retenue de la facture, au
+# timbre et aux arrondis pres (un timbre par commande).
+TOLERANCE_GROUPE = 0.05
+
 # Fenetre d'anti-doublon : une retenue du meme client au meme montant a moins de deux mois est
 # tres probablement la meme, saisie autrement (sur une commande, a une autre date).
 FENETRE_DOUBLON = 60
@@ -455,6 +459,11 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
     dettes = [c for c in candidats if not argent_compte(c.get("mode_of_payment"), dette)]
     if len(dettes) == 1:
         return {"ok": True, "reglement": dettes[0], "regle": "dette portee par la facture"}
+    # Plusieurs commandes regroupees dans une facture : chacune a laisse sa dette de 1 %, le client
+    # retient 1 % de la facture. Leurs dettes FORMENT la retenue : toutes sont reprises ensemble.
+    toutes = [l for l in lignes if not argent_compte(l.get("mode_of_payment"), dette)]
+    if len(toutes) > 1 and abs(sum(flt(l["allocated_amount"], 3) for l in toutes) - montant) <= TOLERANCE_GROUPE:
+        return {"ok": True, "reglements": toutes, "regle": "dettes des commandes regroupees (%d) formant la retenue" % len(toutes)}
     if len(dettes) > 1:
         return {"ok": False, "raison": "%s lignes de dette sur cette facture : laquelle porte la retenue ?" % len(dettes),
                 "candidats": [_decrire(c) for c in dettes]}
@@ -529,6 +538,8 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
                                    ttc=flt(facture.grand_total, 3) if facture else None)
     if not trouve.get("ok"):
         return {"ok": False, **trouve}
+    if trouve.get("reglements"):
+        return _ajuster_dettes_groupees(cert, reference, piece, doctype, montant, trouve, insert, submit)
     pris = trouve["reglement"]
     nouvelle_allocation = round(flt(pris["allocated_amount"], 3) - montant, 3)
 
@@ -662,6 +673,33 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
             "echeancier": echeancier_suivi,
             "reglement_supprime": suppression["supprime"],
             "suppression_raison": suppression["raison"], "pdf": pdf.get("statut")}
+
+
+def _ajuster_dettes_groupees(cert: dict, reference: str, piece: str, doctype: str, montant: float, trouve: dict,
+                             insert: bool, submit) -> dict:
+    """Commandes regroupees : chaque ligne de dette est reprise de son propre montant (elle disparait
+    si elle ne portait que ca), et UNE ecriture de retenue prend le total sur la facture. Le total
+    impute a la facture ne bouge pas."""
+    valider = _auto_submit() if submit is None else bool(submit)
+    plan = {"ok": True, "certificat": reference, "facture": piece, "piece_doctype": doctype, "retenue": montant,
+            "reglements": [_decrire(l) for l in trouve["reglements"]], "regle": trouve.get("regle"),
+            "argent_compte": False, "reaffectations": [], "non_affecte": 0.0, "brouillon": not valider}
+    if not insert:
+        return {**plan, "statut": "a faire (essai a blanc)"}
+    supprimer = suppression_permise(valider, _supprimer_annule())
+    reprises = [_reduire_dette({"dette_pe": l["name"], "name": piece, "montant": flt(l["allocated_amount"], 3)}, valider, supprimer)
+                for l in trouve["reglements"]]
+    retenue = construire(cert, insert=True)
+    if valider:
+        retenue.submit()
+    frappe.db.set_value(DOCTYPE, reference, {
+        "payment_entry": retenue.name, "match_status": "Auto Matched", "revue_requise": 0 if valider else 1,
+        "match_raison": ("retenue logee dans la facture %s : %d dettes de commandes regroupees reprises (%s)%s"
+                         % (piece, len(reprises), ", ".join(r["dette"] for r in reprises), "" if valider else " — BROUILLONS A VALIDER")),
+    }, update_modified=False)
+    pdf = _demander_pdf(reference)
+    return {**plan, "statut": "ajuste", "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
+            "reglement_repris": None, "reglement_supprime": False, "suppression_raison": None, "pdf": pdf.get("statut")}
 
 
 def creer(references: list = None, insert: bool = False, limite: int = None,

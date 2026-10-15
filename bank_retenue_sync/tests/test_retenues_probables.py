@@ -74,3 +74,28 @@ class TestPieceDuCertificat(unittest.TestCase):
         self.assertEqual(P.piece_du_certificat({"sales_invoice": "SI-1", "sales_order": "SO-1"}), ("Sales Invoice", "SI-1"))
         self.assertEqual(P.piece_du_certificat({"sales_invoice": None, "sales_order": "SO-1"}), ("Sales Order", "SO-1"))
         self.assertEqual(P.piece_du_certificat({}), (None, None))
+
+
+class TestCommandesRegroupees(unittest.TestCase):
+    """Plusieurs commandes regroupées dans une facture : chaque commande a laissé sa dette de 1 %, le
+    client retient 1 % de la facture (ACC-SINV-2024-00447 : 3 écritures = 140,14 sur 14 014 DT)."""
+
+    def test_dettes_qui_forment_la_retenue(self):
+        lignes = [{"dette_pe": "D1", "dette": 54.66}, {"dette_pe": "D2", "dette": 30.00}, {"dette_pe": "D3", "dette": 55.48}]
+        self.assertEqual([l["dette_pe"] for l in RP.dettes_de_la_retenue(14014.0, lignes)], ["D1", "D2", "D3"])
+        self.assertEqual([l["dette_pe"] for l in RP.dettes_de_la_retenue(5466.0, [{"dette_pe": "D1", "dette": 54.66}, {"dette_pe": "X", "dette": 500.0}])], ["D1"])
+        self.assertEqual(RP.dettes_de_la_retenue(5466.0, [{"dette_pe": "X", "dette": 500.0}, {"dette_pe": "Y", "dette": 20.0}]), [])
+        self.assertEqual(RP.dettes_de_la_retenue(5466.0, []), [])
+
+    def test_reglement_a_reprendre_reprend_toutes_les_dettes(self):
+        lignes = [frappe._dict(name="ESP", posting_date="2026-03-01", mode_of_payment="Espèces", paid_amount=13873.86, docstatus=1, allocated_amount=13873.86, idx=1),
+                  frappe._dict(name="D1", posting_date="2026-03-01", mode_of_payment="Dette non payée", paid_amount=54.66, docstatus=1, allocated_amount=54.66, idx=2),
+                  frappe._dict(name="D2", posting_date="2026-03-02", mode_of_payment="Dette non payée", paid_amount=30.0, docstatus=1, allocated_amount=30.0, idx=3),
+                  frappe._dict(name="D3", posting_date="2026-03-03", mode_of_payment="Dette non payée", paid_amount=55.48, docstatus=1, allocated_amount=55.48, idx=4)]
+        r = P.reglement_a_reprendre({"montant_retenue": 140.14, "date_paiement": "2026-04-01"}, lignes=lignes, ttc=14014.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual([l["name"] for l in r["reglements"]], ["D1", "D2", "D3"])
+        # Deux dettes trop petites qui ne totalisent pas la retenue : elles ne la portent pas ; seul
+        # l'argent compté la couvre, et c'est son imputation qui bougera (jamais son montant).
+        r2 = P.reglement_a_reprendre({"montant_retenue": 140.14}, lignes=lignes[:3], ttc=14014.0)
+        self.assertEqual((r2["ok"], r2["reglement"]["name"], r2["regle"]), (True, "ESP", "seul reglement qui la couvre"))

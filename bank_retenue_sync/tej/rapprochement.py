@@ -414,6 +414,15 @@ def apparier_par_facture(cert: dict, ctx: Contexte, facture: str = None) -> dict
         return {"payment_entry": None, "mode": "aucune", "candidats": [],
                 "raison": "aucune ecriture de retenue imputee a la facture %s" % facture}
     if len(candidats) > 1:
+        # Commandes regroupees dans une facture : une ecriture de retenue par commande, le client
+        # declare 1 % de la facture. Quand elles TOTALISENT la retenue, c'est bien la notre — on
+        # rattache la premiere et on nomme les autres (le certificat ne porte qu'une ecriture).
+        total = round(sum(flt(c["paid_amount"], 3) for c in candidats), 3)
+        if abs(total - retenue) <= max(tolerance(retenue), 0.011 * len(candidats)):
+            premiere = sorted(candidats, key=lambda c: str(c.get("posting_date") or ""))[0]
+            return _piece(premiere, "impute_a_la_facture", round(total - retenue, 3),
+                          "%d ecritures de retenue imputees a la facture %s totalisent %s DT (%s)"
+                          % (len(candidats), facture, total, ", ".join(c["name"] for c in candidats)))
         return _ambigu(candidats, "%s ecritures de retenue sur la facture %s"
                        % (len(candidats), facture))
     piece = candidats[0]

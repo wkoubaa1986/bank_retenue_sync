@@ -56,6 +56,20 @@ PIECES = (("Sales Invoice", "posting_date", "and p.is_return = 0"),
           ("Sales Order", "transaction_date", ""))
 
 
+def dettes_de_la_retenue(ttc: float, lignes: list) -> list:
+    """Parmi les lignes de dette d'une piece [{dette_pe, dette}], celles qui FORMENT la retenue : une
+    seule qui vaut 1 % du TTC, sinon toutes ensemble quand leur somme le vaut — le cas des commandes
+    regroupees dans une facture : chaque commande a laisse sa dette de 1 %, le client retient 1 % de
+    la facture. [] si rien ne colle. PURE."""
+    lignes = [l for l in lignes if flt(l.get("dette"), 3) > 0]
+    seules = [l for l in lignes if dette_vaut_retenue(ttc, l["dette"])]
+    if len(seules) == 1:
+        return seules
+    if len(lignes) > 1 and dette_vaut_retenue(ttc, sum(flt(l["dette"], 3) for l in lignes)):
+        return lignes
+    return []
+
+
 def detecter(depuis=None, jusqu_a=None, sales_invoice: str = None, doctype: str = None) -> list:
     """Factures ET commandes de clients a matricule fiscal, soldees pour partie par une ligne de dette
     valant 1 % du TTC, sans aucune ecriture de retenue. → [{piece_doctype, piece, customer, …, dette_pe}]."""
@@ -75,13 +89,22 @@ def detecter(depuis=None, jusqu_a=None, sales_invoice: str = None, doctype: str 
             params["a"] = getdate(jusqu_a)
         sql = _REQUETE % {"doctype": dt, "date": date, "retour": retour,
                           "conditions": (" and " + " and ".join(conditions)) if conditions else ""}
+        par_piece = {}
         for r in frappe.db.sql(sql, params, as_dict=1):
-            if not dette_vaut_retenue(r.grand_total, r.dette):
+            par_piece.setdefault(r.piece, []).append(r)
+        for piece, lignes in par_piece.items():
+            retenues = dettes_de_la_retenue(lignes[0].grand_total, lignes)
+            if not retenues:
                 continue
-            r["retenue"] = flt(r.dette, 3)
-            r["taux"] = round(flt(r.dette, 3) / flt(r.grand_total, 3) * 100, 2) if r.grand_total else 0
+            r = dict(retenues[0])
+            r["dettes"] = [{"dette_pe": l.dette_pe, "montant": flt(l.dette, 3), "dette_total": flt(l.dette_total, 3),
+                            "dette_date": l.dette_date} for l in retenues]
+            r["retenue"] = round(sum(d["montant"] for d in r["dettes"]), 3)
+            r["taux"] = round(r["retenue"] / flt(r["grand_total"], 3) * 100, 2) if r["grand_total"] else 0
             r["explication"] = ("la dette de %s DT vaut %s %% du TTC (%s) : c'est la part que le client a retenue"
-                                % (r["retenue"], r["taux"], flt(r.grand_total, 3)))
+                                % (r["retenue"], r["taux"], flt(r["grand_total"], 3)) if len(retenues) == 1 else
+                                "%d lignes de dette (commandes regroupees) totalisent %s DT = %s %% du TTC (%s) : la part retenue"
+                                % (len(retenues), r["retenue"], r["taux"], flt(r["grand_total"], 3)))
             out.append(r)
     out.sort(key=lambda r: str(r.get("posting_date") or ""), reverse=True)
     return out
@@ -106,7 +129,8 @@ def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, 
     """Deduit la retenue de la dette et la loge sur la piece (facture ou commande). Le total impute
     ne bouge pas : la dette baisse de la retenue (ou disparait si elle ne portait que ca),
     l'ecriture de retenue prend la difference. Essai a blanc sans `insert`."""
-    lignes = [l for l in detecter(sales_invoice=sales_invoice, doctype=doctype) if l["dette_pe"] == dette_pe]
+    lignes = [l for l in detecter(sales_invoice=sales_invoice, doctype=doctype)
+              if dette_pe in [d["dette_pe"] for d in l["dettes"]]]
     if not lignes:
         return {"ok": False, "raison": "cette piece ne porte pas (ou plus) de dette valant la retenue"}
     ligne = lignes[0]
@@ -117,12 +141,15 @@ def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, 
     valider = P._auto_submit() if submit is None else bool(submit)
     plan = {"ok": True, "facture": sales_invoice, "piece_doctype": doctype, "customer": ligne["customer"], "retenue": montant,
             "dette": dette_pe, "dette_avant": flt(ligne["dette_total"], 3),
-            "dette_apres": round(flt(ligne["dette_total"], 3) - montant, 3), "brouillon": not valider}
+            "dette_apres": round(flt(ligne["dette_total"], 3) - flt(ligne["dettes"][0]["montant"], 3), 3),
+            "dettes": [{**d, "apres": round(d["dette_total"] - d["montant"], 3)} for d in ligne["dettes"]],
+            "brouillon": not valider}
     if not insert:
         return {**plan, "statut": "a faire (essai a blanc)"}
     supprimer = P.suppression_permise(valider, P._supprimer_annule())
-    # La dette d'abord : elle libere exactement la place que la retenue va prendre sur la facture.
-    reprise = P._reduire_dette({"dette_pe": dette_pe, "name": sales_invoice, "montant": montant}, valider, supprimer)
+    # Les dettes d'abord : chacune libere exactement la place que la retenue va prendre sur la piece.
+    reprise = [P._reduire_dette({"dette_pe": d["dette_pe"], "name": sales_invoice, "montant": d["montant"]}, valider, supprimer)
+               for d in ligne["dettes"]]
     pe = _construire(ligne, montant)
     pe.insert(ignore_permissions=True)
     if valider:
@@ -130,7 +157,8 @@ def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, 
     try:
         frappe.get_doc(doctype, sales_invoice).add_comment(
             "Info", "💡 Retenue a la source probable logee : %s DT deduits de la dette %s, ecriture %s%s. "
-                    "Le certificat TEJ, quand il arrivera, s'y rapprochera." % (montant, dette_pe, pe.name, "" if valider else " (brouillon)"))
+                    "Le certificat TEJ, quand il arrivera, s'y rapprochera."
+                    % (montant, ", ".join(d["dette_pe"] for d in ligne["dettes"]), pe.name, "" if valider else " (brouillon)"))
     except Exception:
         pass
     return {**plan, "statut": "logee", "payment_entry": pe.name, "valide": valider, "dette_reprise": reprise}
