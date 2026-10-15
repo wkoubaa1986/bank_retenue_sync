@@ -569,11 +569,15 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
         #    c'est le paiement net du client, il est juste — et la caisse a comble le trou avec UN autre
         #    reglement (traite de la facture voisine, especes…) : ce complement porte la retenue, c'est son
         #    imputation qui doit sauter. Le timbre de 1 DT est admis dans le net.
+        #    Le reglement net peut avoir ete EPARPILLE par la caisse (SCPS 01783 : la traite de 1 319,483 — le net
+        #    exact — n'est imputee qu'a 1 271,50 sur la facture, le reste sur la facture voisine et des commandes,
+        #    et 61,30 d'especes comblent le trou) : des lors qu'il existe et qu'un seul autre reglement couvre la
+        #    retenue, c'est cet autre qui est en trop sur la facture, quel que soit son montant.
         net = round(flt(ttc, 3) - montant, 3)
         nets = [l for l in lignes if abs(flt(l["paid_amount"], 3) - net) <= TOLERANCE_NET]
         if len(nets) == 1:
             complements = [c for c in candidats if c["name"] != nets[0]["name"]]
-            if len(complements) == 1 and abs(flt(complements[0]["allocated_amount"], 3) - montant) <= TOLERANCE_GROUPE:
+            if len(complements) == 1:
                 return {"ok": True, "reglement": complements[0], "regle": "complement du reglement net %s" % nets[0]["name"]}
 
     jour = cert.get("date_paiement")

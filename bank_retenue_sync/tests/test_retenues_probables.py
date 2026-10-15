@@ -140,6 +140,12 @@ class TestComplementDuReglementNet(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual((r["reglement"]["name"], r["regle"]), ("T-07674", "complement du reglement net T-07673"))
         self.assertTrue(P.regle_sure(r["regle"]))
+        # SCPS 01783 : la traite nette (1 319,483 = 1 332,801 − 13,317) n'est imputée qu'à 1 271,50 ; 61,30 d'espèces
+        # comblent le trou → ce sont les espèces, en trop sur la facture, qui cèdent la retenue.
+        eparpille = [frappe._dict(name="T-07674", posting_date="2026-10-08", mode_of_payment="Traite bancaire LC", paid_amount=1319.483, docstatus=1, allocated_amount=1271.5, idx=1),
+                     frappe._dict(name="ESP", posting_date="2026-08-03", mode_of_payment="Espèces", paid_amount=61.301, docstatus=1, allocated_amount=61.301, idx=2)]
+        r2 = P.reglement_a_reprendre({"montant_retenue": 13.317}, lignes=eparpille, ttc=1332.801)
+        self.assertEqual((r2["ok"], r2["reglement"]["name"], r2["regle"]), (True, "ESP", "complement du reglement net T-07674"))
         self.assertTrue(P.regle_sure("dette portee par la facture"))
         self.assertFalse(P.regle_sure("choix explicite"))
         self.assertFalse(P.regle_sure(""))
