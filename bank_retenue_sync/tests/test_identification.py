@@ -527,6 +527,15 @@ class TestFraisBancaires(unittest.TestCase):
         self.assertEqual(c.total, 0.0)
         self.assertEqual(c.lignes, [])
 
+    def test_date_ecriture_jamais_dans_le_futur(self):
+        # 15/10/2026 : la banque date le virement du loyer (et sa commission) du 16/10 ;
+        # l'ecriture du mois reste au 15/10, sinon le solde « a la date du releve » l'exclut.
+        auj = date(2026, 10, 15)
+        self.assertEqual(fees.date_ecriture(date(2026, 10, 16), auj), date(2026, 10, 15))
+        self.assertEqual(fees.date_ecriture(date(2026, 10, 14), auj), date(2026, 10, 14))
+        self.assertEqual(fees.date_ecriture("2026-10-16", auj), date(2026, 10, 15))
+        self.assertIsNone(fees.date_ecriture(None, auj))
+
     def test_cle_mensuelle_lisible(self):
         self.assertEqual(fees.cle_mensuelle("2026-07"), "Frais bancaire 07-2026")
         self.assertEqual(fees.periode_de(date(2026, 7, 14)), "2026-07")

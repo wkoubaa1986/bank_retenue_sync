@@ -233,6 +233,24 @@ def is_enabled() -> bool:
         return False
 
 
+def date_ecriture(jour, aujourd_hui=None):
+    """Date de l'ecriture des frais : le dernier frais du mois, mais JAMAIS dans le futur.
+
+    La banque date parfois une operation du lendemain (date d'operation 16/10 posee le 15/10
+    a midi, pour une date de valeur du 14/10). Reprise telle quelle, cette date renvoie toute
+    l'ecriture du mois a demain : le solde ERPNext « a la date du releve » l'ignore alors en
+    entier alors que la banque a deja preleve ces frais — l'ecart affiche gonfle du cumul du
+    mois (−363 au lieu de −209 le 15/10/2026) et la projection le porte comme une anomalie.
+    Plafonner a aujourd'hui garde l'ecriture dans la fenetre comparee ; le lendemain, un nouveau
+    frais la refait a sa vraie date.
+    """
+    if not jour:
+        return jour
+    jour = getdate(jour)
+    auj = getdate(aujourd_hui) if aujourd_hui else getdate()
+    return min(jour, auj)
+
+
 def build_fee_journal_entry(group: FeeGroup, insert: bool = True):
     """Ecriture cumulative du mois.
 
@@ -245,7 +263,8 @@ def build_fee_journal_entry(group: FeeGroup, insert: bool = True):
     « Frais bancaire » (78,493 = 68,597 de commissions + 9,896 de delta en mai).
 
     Datee du DERNIER frais connu du mois : l'ecriture suit l'avancement du mois, et se retrouve
-    naturellement en fin de mois une fois celui-ci complet.
+    naturellement en fin de mois une fois celui-ci complet. Jamais dans le futur, cf.
+    `date_ecriture`.
     """
     if not group.total:
         return None
@@ -274,8 +293,9 @@ def build_fee_journal_entry(group: FeeGroup, insert: bool = True):
             detail += " | ecarts de rapprochement %s" % group.total_residus
     remark = "%s\n%s\nRéf. banque %s" % (
         group.cle, detail, ", ".join(sorted(set(group.references))[:20]))
-    je = journal.build_journal_entry(COMPANY, group.jour, lines, remark=remark,
-                                     cheque_no=group.cle, cheque_date=group.jour)
+    jour = date_ecriture(group.jour)
+    je = journal.build_journal_entry(COMPANY, jour, lines, remark=remark,
+                                     cheque_no=group.cle, cheque_date=jour)
     if insert:
         je.insert(ignore_permissions=True)      # BROUILLON : la soumission reste manuelle
     return je
