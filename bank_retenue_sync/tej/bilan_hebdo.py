@@ -115,10 +115,16 @@ def rendre(b: dict, url: str) -> str:
                           ["Date", "Declarant", "Retenue", "Ecart", "Ecriture"],
                           [[_jj(c.get("date_paiement")), esc(c.get("declarant") or ""), _dt(c.get("montant_retenue")), _dt(c.get("ecart_piece")), esc(c.get("payment_entry") or "")]
                            for c in b.get("ecarts", [])], "aucun"))
-    parts.append(_tableau("Retenues probables deguisees en dette (1 % du TTC) — a loger sur la piece",
-                          ["Piece", "Client", "TTC", "Dette = retenue", "Ligne de dette"],
-                          [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), esc(l.get("dette_pe"))]
-                           for l in b.get("probables", [])], "aucune"))
+    probables = b.get("probables", [])
+    parts.append(_tableau("Dettes de 1 % du TTC dont le client a DECLARE la retenue — a loger sur la piece",
+                          ["Piece", "Client", "TTC", "Dette = retenue", "Certificat"],
+                          [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")),
+                            esc((l.get("certificat") or {}).get("numero_chez_declarant") or "")]
+                           for l in probables if l.get("declaree")], "aucune"))
+    parts.append(_tableau("Dettes de 1 % du TTC NON declarees au portail — retenue probable, a reclamer au client",
+                          ["Piece", "Client", "TTC", "Dette = retenue", "Depuis"],
+                          [[esc(l.get("piece") or l.get("sales_invoice")), esc(l.get("customer_name") or l.get("customer")), _dt(l.get("grand_total")), _dt(l.get("retenue")), _jj(l.get("dette_date"))]
+                           for l in probables if not l.get("declaree")], "aucune"))
     if b.get("erreurs"):
         parts.append("<p style='color:#c0392b'>Rubriques en erreur : %s</p>" % esc(" ; ".join(b["erreurs"])))
     return "".join(parts)

@@ -542,13 +542,18 @@ window.CertificatsRAS = class CertificatsRAS {
           <td class="rsv-num">${dt(l.grand_total)}</td>
           <td class="rsv-num">${dt(l.retenue)}<div class="rsv-rate">(${l.taux} % du TTC)</div></td>
           <td><a href="/app/payment-entry/${encodeURIComponent(l.dette_pe)}">${l.dette_pe}</a></td>
-          <td><button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.piece)}" data-dt="${frappe.utils.escape_html(l.piece_doctype)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button></td>
+          <td>${
+            l.declaree
+              ? `<div style="color:var(--rsv-gain);font-weight:600">✅ ${__("déclarée")} ${frappe.utils.escape_html((l.certificat || {}).numero_chez_declarant || "")}</div>
+                 <button class="btn btn-xs btn-primary" data-act="loger" data-si="${frappe.utils.escape_html(l.piece)}" data-dt="${frappe.utils.escape_html(l.piece_doctype)}" data-pe="${frappe.utils.escape_html(l.dette_pe)}">${__("Loger la retenue")}</button>`
+              : `<div style="color:var(--rsv-warn);font-weight:600">⏳ ${__("non déclarée au portail")}</div><div class="rsv-rate">${__("la dette reste ; réclamer le certificat au client")}</div>`
+          }</td>
         </tr>`
       )
       .join("");
     const d = new frappe.ui.Dialog({ title: __("Retenues probables logées en dette"), size: "extra-large", fields: [{ fieldtype: "HTML", fieldname: "corps" }] });
     d.fields_dict.corps.$wrapper.html(`
-      <p>${__("Factures de clients à matricule fiscal soldées pour partie par une ligne « Dette non payée » qui vaut 1 % du TTC : c'est la part que le client a retenue pour le fisc, pas une dette. « Loger la retenue » déduit ce montant de la dette et crée l'écriture de retenue sur la facture — le total imputé à la facture ne bouge pas, et le certificat TEJ s'y rapprochera quand il arrivera.")}</p>
+      <p>${__("Factures et commandes de clients à matricule fiscal soldées pour partie par une ligne « Dette non payée » qui vaut 1 % du TTC : c'est la part que le client a retenue pour le fisc, pas une dette. Elle n'est tenue pour versée au fisc que lorsque le client l'a DÉCLARÉE : l'export du portail est rafraîchi chaque nuit à 04:00. Déclarée → « Loger la retenue » déduit ce montant de la dette et crée l'écriture de retenue sur la pièce (le total imputé ne bouge pas). Non déclarée → la dette reste, et c'est le client qu'il faut relancer pour qu'il dépose sa retenue.")}</p>
       <div style="overflow-x:auto"><table class="table table-bordered" style="font-size:12px">
         <thead><tr><th>${__("Date")}</th><th>${__("Facture")}</th><th>${__("Client")}</th><th class="rsv-num">${__("TTC")}</th>
           <th class="rsv-num">${__("Dette = retenue")}</th><th>${__("Ligne de dette")}</th><th></th></tr></thead>
@@ -566,13 +571,14 @@ window.CertificatsRAS = class CertificatsRAS {
       .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, doctype, insert: 0 }, freeze: true, freeze_message: __("Analyse…") })
       .then((r) => {
         const p = r.message || {};
-        if (!p.ok) { frappe.msgprint({ title: __("Impossible"), indicator: "red", message: frappe.utils.escape_html(p.raison || "") }); return; }
+        if (!p.ok) { frappe.msgprint({ title: p.non_declaree ? __("Non déclarée") : __("Impossible"), indicator: p.non_declaree ? "orange" : "red", message: frappe.utils.escape_html(p.raison || "") }); return; }
         const dt = (v) => format_currency(v, "TND");
+        const dettes = (p.reglements && p.reglements.length) ? p.reglements : [{ name: p.reglement, montant: p.reglement_avant, apres: p.reglement_apres }];
         frappe.confirm(
-          `<p>${p.piece_doctype === "Sales Order" ? __("Commande") : __("Facture")} <b>${p.facture}</b> — ${frappe.utils.escape_html(p.customer)}</p>
-           <ul><li>${__("Dette")} ${p.dette} : ${dt(p.dette_avant)} → ${dt(p.dette_apres)}${p.dette_apres <= 0.001 ? ` (${__("soldée : elle ne portait que la retenue")})` : ""}</li>
-           <li>${__("Écriture de retenue créée sur la facture")} : <b>${dt(p.retenue)}</b></li></ul>
-           <p>${p.brouillon ? __("Elle restera en <b>brouillon</b>, à valider à la main.") : __("Elle sera <b>validée aussitôt</b>.")}</p>`,
+          `<p>${p.piece_doctype === "Sales Order" ? __("Commande") : __("Facture")} <b>${p.facture}</b> — ${__("certificat")} ${frappe.utils.escape_html(p.certificat_numero || p.certificat || "")}</p>
+           <ul>${dettes.map((d) => `<li>${__("Dette")} ${d.name} : ${dt(d.montant)}${p.dette_soldee || p.reglements ? ` (${__("reprise : elle ne portait que la retenue")})` : ` → ${dt(d.apres)}`}</li>`).join("")}
+           <li>${__("Écriture de retenue créée sur la pièce")} : <b>${dt(p.retenue)}</b></li></ul>
+           <p>${p.brouillon ? __("Elle restera en <b>brouillon</b>, à valider à la main.") : __("Elle sera <b>validée aussitôt</b>, et le certificat PDF demandé au portail.")}</p>`,
           () =>
             frappe
               .call({ method: "bank_retenue_sync.api.certificats.loger_retenue_probable", args: { sales_invoice, dette_pe, doctype, insert: 1 }, freeze: true, freeze_message: __("Écriture…") })

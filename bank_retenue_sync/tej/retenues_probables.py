@@ -14,6 +14,12 @@ deux a l'arrivee du certificat, qui retrouve alors l'ecriture deja logee (`appar
 
 CE QUE CE MODULE NE DECIDE PAS : il PROPOSE (detection + plan) ; l'ecriture n'est passee qu'au clic,
 sous le meme reglage de validation que les regularisations de certificat.
+
+⚠️ PAS DE CERTIFICAT, PAS DE RETENUE (regle de l'utilisateur, 15/10/2026) : une dette de 1 % n'est tenue
+pour versee au fisc QUE lorsque le client l'a DECLAREE au portail — le certificat en est la preuve.
+Tant qu'il n'existe pas dans l'export (rafraichi chaque nuit a 04:00), la dette reste une dette, la
+ligne est « non declaree » et c'est le client qu'il faut relancer. Des que le certificat est la,
+« Loger » passe par la regularisation du certificat (`paiements.ajuster`, regle « la dette d'abord »).
 """
 from __future__ import annotations
 
@@ -105,30 +111,33 @@ def detecter(depuis=None, jusqu_a=None, sales_invoice: str = None, doctype: str 
                                 % (r["retenue"], r["taux"], flt(r["grand_total"], 3)) if len(retenues) == 1 else
                                 "%d lignes de dette (commandes regroupees) totalisent %s DT = %s %% du TTC (%s) : la part retenue"
                                 % (len(retenues), r["retenue"], r["taux"], flt(r["grand_total"], 3)))
+            cert = certificat_declare(r["customer"], piece, r["retenue"], dt)
+            r["certificat"] = cert
+            r["declaree"] = bool(cert)
             out.append(r)
     out.sort(key=lambda r: str(r.get("posting_date") or ""), reverse=True)
     return out
 
 
-def _construire(ligne: dict, montant: float):
-    """L'ecriture de retenue, calquee sur celles d'un certificat, mais qui dit d'ou elle vient."""
-    cle = "sales_invoice" if ligne["piece_doctype"] == "Sales Invoice" else "sales_order"
-    pe = P.construire({"montant_retenue": montant, "date_paiement": ligne["dette_date"], "customer": ligne["customer"],
-                       cle: ligne["piece"], "reference": ligne["piece"],
-                       "declarant": ligne.get("customer_name"), "declarant_matricule": ligne.get("tax_id"),
-                       "total_brut": flt(ligne["grand_total"], 3)}, insert=False)
-    pe.reference_no = ligne["piece"]
-    pe.remarks = ("Retenue a la source PROBABLE : la dette %s de %s DT valait %s %% du TTC de %s (%s DT).\n"
-                  "Logee le %s en attendant le certificat TEJ du client %s (%s)."
-                  % (ligne["dette_pe"], montant, ligne.get("taux"), ligne["piece"], flt(ligne["grand_total"], 3),
-                     frappe.utils.nowdate(), ligne.get("customer_name") or ligne["customer"], ligne.get("tax_id") or "—"))
-    return pe
+def certificat_declare(customer: str, piece: str, montant: float, doctype: str = "Sales Invoice"):
+    """Le certificat du portail qui prouve cette retenue : meme client, meme montant au timbre pres (ou
+    deja pose sur la piece), recu, dans le perimetre, pas encore porte par une ecriture. None sinon."""
+    champ = "sales_invoice" if doctype == "Sales Invoice" else "sales_order"
+    for c in frappe.get_all("Retenue Certificate",
+                            filters=[["hors_perimetre", "=", 0], ["etat_depot", "in", ["Recue", "Rectifie"]],
+                                     ["payment_entry", "is", "not set"]],
+                            or_filters=[["customer", "=", customer], [champ, "=", piece]],
+                            fields=["name", "numero_chez_declarant", "date_paiement", "montant_retenue", "customer",
+                                    "sales_invoice", "sales_order", "match_status"], order_by="date_paiement desc"):
+        if c.get(champ) == piece or abs(flt(c.montant_retenue, 3) - flt(montant, 3)) <= TOLERANCE:
+            return c
+    return None
 
 
 def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, doctype: str = "Sales Invoice") -> dict:
-    """Deduit la retenue de la dette et la loge sur la piece (facture ou commande). Le total impute
-    ne bouge pas : la dette baisse de la retenue (ou disparait si elle ne portait que ca),
-    l'ecriture de retenue prend la difference. Essai a blanc sans `insert`."""
+    """Loge la retenue d'une dette de 1 % — SEULEMENT si le client l'a declaree (certificat au portail).
+    Passe alors par la regularisation du certificat : la dette baisse de la retenue (ou disparait si elle
+    ne portait que ca), l'ecriture de retenue prend la difference sur la piece. Essai a blanc sans `insert`."""
     lignes = [l for l in detecter(sales_invoice=sales_invoice, doctype=doctype)
               if dette_pe in [d["dette_pe"] for d in l["dettes"]]]
     if not lignes:
@@ -138,27 +147,24 @@ def loger(sales_invoice: str, dette_pe: str, insert: bool = False, submit=None, 
     if deja:
         return {"ok": False, "raison": "la facture porte deja une retenue (%s)" % ", ".join(p["name"] for p in deja)}
     montant = flt(ligne["retenue"], 3)
-    valider = P._auto_submit() if submit is None else bool(submit)
-    plan = {"ok": True, "facture": sales_invoice, "piece_doctype": doctype, "customer": ligne["customer"], "retenue": montant,
-            "dette": dette_pe, "dette_avant": flt(ligne["dette_total"], 3),
-            "dette_apres": round(flt(ligne["dette_total"], 3) - flt(ligne["dettes"][0]["montant"], 3), 3),
-            "dettes": [{**d, "apres": round(d["dette_total"] - d["montant"], 3)} for d in ligne["dettes"]],
-            "brouillon": not valider}
-    if not insert:
-        return {**plan, "statut": "a faire (essai a blanc)"}
-    supprimer = P.suppression_permise(valider, P._supprimer_annule())
-    # Les dettes d'abord : chacune libere exactement la place que la retenue va prendre sur la piece.
-    reprise = [P._reduire_dette({"dette_pe": d["dette_pe"], "name": sales_invoice, "montant": d["montant"]}, valider, supprimer)
-               for d in ligne["dettes"]]
-    pe = _construire(ligne, montant)
-    pe.insert(ignore_permissions=True)
-    if valider:
-        pe.submit()
-    try:
-        frappe.get_doc(doctype, sales_invoice).add_comment(
-            "Info", "💡 Retenue a la source probable logee : %s DT deduits de la dette %s, ecriture %s%s. "
-                    "Le certificat TEJ, quand il arrivera, s'y rapprochera."
-                    % (montant, ", ".join(d["dette_pe"] for d in ligne["dettes"]), pe.name, "" if valider else " (brouillon)"))
-    except Exception:
-        pass
-    return {**plan, "statut": "logee", "payment_entry": pe.name, "valide": valider, "dette_reprise": reprise}
+    cert = ligne.get("certificat")
+    if not cert:
+        # La regle : rien n'est verse au fisc tant que le client n'a pas declare. La dette reste.
+        return {"ok": False, "non_declaree": True,
+                "raison": "aucun certificat du portail ne prouve cette retenue (dernier export : %s) : le client ne l'a pas "
+                          "encore declaree — la dette reste, c'est lui qu'il faut relancer" % _date_export()}
+    # Le certificat existe : on pose la piece dessus s'il ne la porte pas, puis la regularisation du
+    # certificat fait le reste (« la dette d'abord », cf. paiements.ajuster).
+    champ = "sales_invoice" if doctype == "Sales Invoice" else "sales_order"
+    if cert.get(champ) != sales_invoice:
+        frappe.db.set_value("Retenue Certificate", cert["name"], {champ: sales_invoice, "customer": ligne["customer"],
+                                                                 "match_status": "Manually Matched"}, update_modified=False)
+    plan = P.ajuster(cert["name"], insert=insert, submit=submit)
+    plan["certificat_numero"] = cert.get("numero_chez_declarant")
+    return plan
+
+
+def _date_export() -> str:
+    run = frappe.get_all("BRS Sync Run", filters={"kind": "tej_certificats_recus", "status": "Success"},
+                         fields=["started_at"], order_by="started_at desc", limit_page_length=1)
+    return getdate(run[0].started_at).strftime("%d/%m/%Y") if run else "jamais"
