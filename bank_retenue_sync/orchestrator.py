@@ -1282,6 +1282,13 @@ def run_certificats_ras(refresh=0, insert=1, pdf=1, limite_pdf=20, use_ai=0):
         except Exception as e:
             out["regularisation_auto"] = {"statut": "erreur", "detail": str(e)[:160]}
 
+    # ⚠️ ECRIRE AVANT LES PDF. Le telechargement attend le portail jusqu'a deux minutes par
+    # certificat : laisser ouverte la transaction du rapprochement pendant tout ce temps verrouillait
+    # les certificats, et toute ecriture qui les touche attendait puis echouait (22/10/2026 : fusion
+    # « Sté TAURUS - 1 » -> « STE TAURUS » en « Delai d'attente depasse » au milieu du passage de 16:20).
+    if insert:
+        frappe.db.commit()
+
     if frappe.utils.cint(pdf):
         try:
             out["pdf"] = {k: v for k, v in pdf_module.traiter(

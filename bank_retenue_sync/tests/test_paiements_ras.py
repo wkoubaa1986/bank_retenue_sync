@@ -269,6 +269,56 @@ class TestRangementDuPdf(unittest.TestCase):
         finally:
             PDF.frappe.db.get_value = original
 
+    def _lot(self, reponses):
+        """Rejoue `traiter` sur 10 certificats ; `reponses` dit, telechargement apres
+        telechargement, s'il reussit (True) ou echoue (False). -> (resultat, appels, commits)."""
+        certs = [{"name": "C-%d" % i, "reference": "r-%d" % i, "declarant": "X",
+                  "sales_invoice": "SI-%d" % i} for i in range(10)]
+        reponses, appels, commits = list(reponses), [], []
+
+        def telecharger(reference, declarant=None):
+            appels.append(reference)
+            if not (reponses.pop(0) if reponses else False):
+                raise RuntimeError("Le tableau des certificats ne s'est pas affiche")
+            return b"%PDF"
+
+        remplaces = {
+            (PDF, "a_traiter"): lambda limite: certs,
+            (PDF, "_justificatif_manuel"): lambda doctype, nom: None,
+            (PDF, "telecharger"): telecharger,
+            (PDF, "attacher"): lambda cert, contenu, doctype, nom: {"file_url": "/f", "cible": nom},
+            (PDF.frappe, "log_error"): lambda *a, **k: None,
+            (PDF.frappe, "get_traceback"): lambda *a, **k: "",
+            (PDF.frappe.db, "set_value"): lambda *a, **k: None,
+            (PDF.frappe.db, "commit"): lambda: commits.append(1),
+        }
+        originaux = {cle: getattr(*cle) for cle in remplaces}
+        for (objet, nom), valeur in remplaces.items():
+            setattr(objet, nom, valeur)
+        try:
+            return PDF.traiter(limite=10), appels, commits
+        finally:
+            for (objet, nom), valeur in originaux.items():
+                setattr(objet, nom, valeur)
+
+    def test_un_portail_en_panne_arrete_le_lot(self):
+        """22/10/2026 : vingt « tableau des certificats non affiche » d'affilee, pres de deux minutes
+        chacun — la tache est restee en vie plus d'une demi-heure pour rien."""
+        out, appels, _ = self._lot([False] * 10)
+        self.assertEqual(len(appels), PDF.ECHECS_AVANT_ARRET)
+        self.assertEqual(out["erreurs"], PDF.ECHECS_AVANT_ARRET)
+        self.assertIn("portail indisponible", out["interrompu"])
+
+    def test_chaque_pdf_range_est_ecrit_aussitot(self):
+        """Un PDF range ne doit pas attendre la fin du lot pour etre ecrit : la transaction ouverte
+        verrouillait les certificats, et la fusion de deux fiches client a echoue en « Delai
+        d'attente depasse ». Une reussite remet aussi le compteur d'echecs a zero."""
+        out, appels, commits = self._lot([False, False, True, False, False, True, True])
+        self.assertEqual(out["attaches"], 3)
+        self.assertEqual(len(commits), 3)
+        self.assertNotIn("interrompu", out)
+        self.assertEqual(len(appels), 10)
+
 
     def test_le_nom_de_fichier_est_stable(self):
         """C'est lui qui rend l'attachement idempotent : un nom variable creerait un doublon a

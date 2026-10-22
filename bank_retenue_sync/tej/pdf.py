@@ -32,6 +32,11 @@ ROUTE_PDF = "/tej/certificats/%s/pdf"
 
 LIMITE_PAR_PASSAGE = 20
 
+# Au-dela, le portail est en panne : on s'arrete et le passage suivant reprendra. Chaque echec coute
+# pres de deux minutes d'attente du service ; vingt echecs d'affilee gardaient la tache en vie plus
+# d'une demi-heure (22/10/2026 : « Le tableau des certificats ne s'est pas affiche » x 20).
+ECHECS_AVANT_ARRET = 3
+
 
 def nom_fichier(reference: str) -> str:
     """Nom stable : c'est lui qui rend l'attachement idempotent."""
@@ -212,7 +217,11 @@ def traiter(limite: int = None, insert: bool = True) -> dict:
     """Telecharge et range les PDF manquants. -> {traites, attaches, erreurs, detail}."""
     limite = limite or LIMITE_PAR_PASSAGE
     out = {"traites": 0, "attaches": 0, "erreurs": 0, "detail": []}
+    echecs_de_suite = 0
     for cert in a_traiter(limite):
+        if echecs_de_suite >= ECHECS_AVANT_ARRET:
+            out["interrompu"] = "portail indisponible : %d echecs d'affilee" % echecs_de_suite
+            break
         doctype, nom = cible(cert)
         if not doctype:
             out["detail"].append({"reference": cert["reference"], "statut": "sans piece ou ranger"})
@@ -229,6 +238,7 @@ def traiter(limite: int = None, insert: bool = True) -> dict:
                     "pdf_file": manuel.file_url, "pdf_attached_to_pe": 1,
                     "pdf_attache_a": "%s: %s (depose a la main)" % (doctype, nom)},
                     update_modified=False)
+                frappe.db.commit()
             out["detail"].append({"reference": cert["reference"],
                                   "statut": "justificatif manuel deja present",
                                   "cible": "%s: %s" % (doctype, nom),
@@ -245,6 +255,11 @@ def traiter(limite: int = None, insert: bool = True) -> dict:
             frappe.db.set_value(DOCTYPE, cert["name"], {
                 "pdf_file": res["file_url"], "pdf_attached_to_pe": 1,
                 "pdf_attache_a": res["cible"]}, update_modified=False)
+            # Un PDF a la fois, comme `traiter_un` : chaque telechargement attend le portail plusieurs
+            # minutes, et une transaction ouverte pendant tout le lot bloquait les ecrans (22/10/2026 :
+            # fusion de deux fiches client en « Delai d'attente depasse »).
+            frappe.db.commit()
+            echecs_de_suite = 0
             out["attaches"] += 1
             out["detail"].append({"reference": cert["reference"], **res})
         except Exception as e:
@@ -252,6 +267,7 @@ def traiter(limite: int = None, insert: bool = True) -> dict:
             # doit LAISSER UNE TRACE — l'orchestrateur ne remonte que des compteurs, et sans journal
             # un certificat restait sans justificatif sans que rien ne dise pourquoi.
             out["erreurs"] += 1
+            echecs_de_suite += 1
             frappe.log_error(title="PDF certificat RAS %s" % cert["reference"],
                              message=frappe.get_traceback())
             out["detail"].append({"reference": cert["reference"], "statut": "erreur",
