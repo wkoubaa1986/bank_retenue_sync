@@ -171,6 +171,19 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(c.statut, C.STATUT_ORPHELIN)
         self.assertTrue(c.raison)
 
+    def test_remise_sans_brouillon_nomme_le_cheque_absent(self):
+        """21/10/2026 : remise 90028827, cheque 9416698 de BIOAQUA jamais saisi. Son ecart se lit
+        sur la ligne du depot, plus sur le lot Aramex du jour."""
+        ecart = {"flux": "cheque", "bon": "90028827", "suivi": "9416698", "client": "Ste BIO AQUA",
+                 "type_ecart": "Sans pièce", "montant_advice": 3000.0}
+        ctx = self.ctx(encaissements={"sans_brouillon": {("cheque", "90028827"): [ecart]}})
+        c = C.classify_one(mv("ENC CHEQ TN NUM 90028827", credit=3000.0, reference="FT26294ZX4BB"), ctx)
+        self.assertEqual(c.statut, C.STATUT_ORPHELIN)
+        self.assertEqual(c.raison, "chèque 9416698 de Ste BIO AQUA (3000.0) absent d'ERPNext : saisir "
+                                   "le paiement, l'encaissement sera créé au passage suivant")
+        autre = C.classify_one(mv("ENC CHEQ TN NUM 90028828", credit=50.0), ctx)
+        self.assertNotIn("9416698", autre.raison)
+
     def test_reference_deja_saisie_a_la_main_est_identifiee(self):
         m = mv("VIREMENT TN MM BQ CLIMA FILTRI PRO", credit=3481.0, reference="FT23999XX")
         c = C.classify_one(m, self.ctx(booked={"FT23999XX"}))

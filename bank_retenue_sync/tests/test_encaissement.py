@@ -532,31 +532,70 @@ class TestUnEncaissementParBordereau(unittest.TestCase):
 
 
 class TestRepartitionDesEcarts(unittest.TestCase):
-    """Un ecart de cheque suit SON bordereau ; le reste va au brouillon commun."""
+    """Un ecart va au brouillon qui porte une ligne de SON mouvement ; sans brouillon, il reste
+    sans brouillon. Cas reel du 21/10/2026 : le bordereau 90028827 (cheque 9416698 de BIOAQUA,
+    sans piece) bloquait le lot Aramex FT262948VH9P, avec lequel il n'a rien a voir."""
+
+    PAR_CLE = {"cheque": {"90028536": "ENC-CHQ"}, "aramex": {"FT262948VH9P": "ENC-COMMUN"},
+               "traite": {"FT26200TRA01": "ENC-COMMUN"}, "virement": {}}
 
     def setUp(self):
-        from bank_retenue_sync import orchestrator
-        self.o = orchestrator
         self.diags = [
-            {"type": "ecart", "flux": "cheque", "bon": "90028536", "sous_type": "Sans pièce"},
-            {"type": "ecart", "flux": "cheque", "bon": "90028531", "sous_type": "Toléré"},
-            {"type": "ecart", "flux": "aramex", "suivi": "5133", "sous_type": "Delta paiement"},
+            {"type": "ecart", "flux": "cheque", "bon": "90028536", "sous_type": "Delta paiement"},
+            {"type": "ecart", "flux": "cheque", "bon": "90028827", "reference": "FT26294ZX4BB",
+             "sous_type": "Sans pièce"},
+            {"type": "ecart", "flux": "aramex", "reference": "FT262948VH9P", "sous_type": "Frais"},
+            {"type": "ecart", "flux": "traite", "bon": "FT26200TRA02", "reference": "FT26200TRA02",
+             "sous_type": "Sans pièce"},
             {"type": "cheque", "bon": "90028536", "reason": "diagnostic, pas un écart"},
         ]
 
-    def test_un_bordereau_ne_recoit_que_ses_ecarts(self):
-        r = self.o._ecarts_de_bordereaux(self.diags, {"90028536"})
-        self.assertEqual([e["sous_type"] for e in r], ["Sans pièce"])
+    def _types(self, r, enc):
+        return [(e["flux"], e["sous_type"]) for e in r.get(enc, [])]
+
+    def test_chaque_ecart_suit_son_mouvement(self):
+        r = ecarts.repartir(self.diags, self.PAR_CLE)
+        self.assertEqual(self._types(r, "ENC-CHQ"), [("cheque", "Delta paiement")])
+        self.assertEqual(self._types(r, "ENC-COMMUN"), [("aramex", "Frais")])
+
+    def test_un_bordereau_sans_brouillon_ne_bloque_pas_le_lot_commun(self):
+        r = ecarts.repartir(self.diags, self.PAR_CLE)
+        self.assertEqual(self._types(r, ecarts.SANS_BROUILLON),
+                         [("cheque", "Sans pièce"), ("traite", "Sans pièce")])
 
     def test_les_diagnostics_qui_ne_sont_pas_des_ecarts_sont_ignores(self):
-        r = self.o._ecarts_de_bordereaux(self.diags, {"90028536", "90028531"})
-        self.assertTrue(all(e["type"] == "ecart" for e in r))
-        self.assertEqual(len(r), 2)
+        r = ecarts.repartir(self.diags, self.PAR_CLE)
+        self.assertEqual(sum(len(v) for v in r.values()), 4)
 
-    def test_le_reste_recupere_aramex_et_les_bordereaux_sans_brouillon(self):
-        r = self.o._ecarts_hors_bordereaux(self.diags, {"90028536"})
-        self.assertEqual(sorted(e["sous_type"] for e in r), ["Delta paiement", "Toléré"])
+    def test_cle_bancaire(self):
+        self.assertEqual(ecarts.cle_bancaire("cheque", "90028827", "FT26294ZX4BB"), "90028827")
+        self.assertEqual(ecarts.cle_bancaire("traite", "FT1", "FT1"), "FT1")
+        self.assertEqual(ecarts.cle_bancaire("aramex", "", "FT262948VH9P"), "FT262948VH9P")
 
-    def test_tous_les_bordereaux_traites_ne_laissent_que_les_autres_flux(self):
-        r = self.o._ecarts_hors_bordereaux(self.diags, {"90028536", "90028531"})
-        self.assertEqual([e["flux"] for e in r], ["aramex"])
+
+class TestEcartsSansBrouillon(unittest.TestCase):
+    """Persistance, fermeture et lecture des ecarts SANS brouillon (base reelle, rollback)."""
+
+    def setUp(self):
+        frappe.db.savepoint("ecarts_sans_brouillon")
+        self.diag = {"type": "ecart", "flux": "cheque", "bon": "99990001", "reference": "FTTESTSB0001",
+                     "suivi": "9999001", "client": "Client test", "sous_type": "Sans pièce",
+                     "bloquant": 1, "montant_advice": 3000.0, "ecart": -3000.0}
+
+    def tearDown(self):
+        frappe.db.rollback(save_point="ecarts_sans_brouillon")
+
+    def test_persister_est_idempotent_sans_brouillon(self):
+        self.assertEqual(len(ecarts.persister(ecarts.SANS_BROUILLON, [self.diag])), 1)
+        self.assertEqual(ecarts.persister(ecarts.SANS_BROUILLON, [self.diag]), [])
+
+    def test_lu_par_cle_puis_ferme_quand_un_encaissement_porte_le_bon(self):
+        nom = ecarts.persister(ecarts.SANS_BROUILLON, [self.diag])[0]
+        lus = ecarts.sans_brouillon_par_cle().get(("cheque", "99990001"))
+        self.assertEqual([(e.suivi, e.client) for e in lus], [("9999001", "Client test")])
+
+        self.assertEqual(ecarts.fermer_sans_brouillon({"cheque": {"99990002": "ENC-X"}}), [])
+        self.assertEqual(ecarts.fermer_sans_brouillon({"cheque": {"99990001": "ENC-X"}}), [nom])
+        e = frappe.db.get_value(ecarts.DOCTYPE, nom, ["encaissement", "statut"], as_dict=True)
+        self.assertEqual((e.encaissement, e.statut), ("ENC-X", "Résolu"))
+        self.assertNotIn(("cheque", "99990001"), ecarts.sans_brouillon_par_cle())

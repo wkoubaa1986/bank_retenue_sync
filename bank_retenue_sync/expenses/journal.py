@@ -99,6 +99,11 @@ def build_journal_entry(company, posting_date, lines, remark=None,
     if mode_of_payment:
         je.mode_of_payment = mode_of_payment
     for l in lines:
+        # Une ligne a zero des deux cotes est refusee par ERPNext (« Both Debit and Credit values
+        # cannot be zero ») et fait tomber TOUTE l'ecriture. Cas reel : la note d'honoraire
+        # 09-2026 n'a pas de retenue a la source, la ligne RS a 0 l'a empechee d'exister (21/10/2026).
+        if not float(l.get("debit") or 0) and not float(l.get("credit") or 0):
+            continue
         je.append("accounts", {
             "account": l["account"],
             "debit_in_account_currency": float(l.get("debit") or 0),

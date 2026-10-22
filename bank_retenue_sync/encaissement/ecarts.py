@@ -59,19 +59,80 @@ _COMPTES_ATTENTE = {"aramex": "Livraison Aramex - A&S", "cheque": "Chèques - A&
 COMPTE_DETTES = "Dettes - A&S"                   # patron dette du server script (l.794)
 PERTE_ACCOUNT = "Perte de non paiement - A&S"    # meme compte que expenses/pertes.py
 SEUIL_IGNORABLE = 1.0                            # « Sans pièce » ignorable jusqu'a 1 DT inclus
+# Ecart dont le mouvement n'a de ligne dans AUCUN brouillon : un bordereau dont aucun cheque n'a
+# de piece n'a pas de brouillon a lui. Rattache au brouillon commun, son ecart bloquait un lot sans
+# rapport et restait invisible sur sa propre ligne bancaire (cheque 9416698 de BIOAQUA sur le lot
+# Aramex du 21/10/2026). Il reste donc SANS brouillon ; l'identification l'affiche sur sa ligne.
+SANS_BROUILLON = ""
 
 
 # ------------------------------------------------------------------ persistance & blocage
 
+def cle_bancaire(flux: str, bon: str, reference: str) -> str:
+    """Cle qu'un brouillon porte pour ce mouvement (cf. pending.consumed_bank_keys) : le bon de
+    remise pour un cheque ou une traite, la reference bancaire pour Aramex et les virements."""
+    return ((bon if flux in ("cheque", "traite") else reference) or "").strip()
+
+
+def repartir(diagnostics: list, par_cle: dict) -> dict:
+    """{brouillon: [ecarts]} : chaque ecart va au brouillon qui porte une ligne de SON mouvement,
+    sinon a SANS_BROUILLON. `par_cle` = {flux: {cle: brouillon}} des seuls brouillons a alimenter."""
+    out = {}
+    for e in diagnostics or []:
+        if e.get("type") != "ecart":
+            continue
+        flux = e.get("flux") or "aramex"
+        cible = (par_cle.get(flux) or {}).get(cle_bancaire(flux, e.get("bon"), e.get("reference")))
+        out.setdefault(cible or SANS_BROUILLON, []).append(e)
+    return out
+
+
+def fermer_sans_brouillon(par_cle: dict) -> list:
+    """Ferme les ecarts SANS brouillon dont le mouvement est desormais porte par un encaissement.
+
+    Le passage qui a cree cet encaissement a refait le diagnostic du mouvement : ses ecarts du
+    moment (cheque toujours absent, delta) sont sur le nouveau brouillon. L'ancien constat est
+    perime ; il est rattache a l'encaissement pour l'historique, et clos.
+    """
+    fermes = []
+    for e in frappe.get_all(DOCTYPE, filters={"encaissement": ("is", "not set"),
+                                              "statut": ("in", ("À traiter", "Auto"))},
+                            fields=["name", "flux", "bon", "reference_bancaire", "note"]):
+        flux = e.flux or "aramex"
+        enc = (par_cle.get(flux) or {}).get(cle_bancaire(flux, e.bon, e.reference_bancaire))
+        if not enc:
+            continue
+        note = _("Mouvement désormais porté par {0} : constat repris par ce lot.").format(enc)
+        frappe.db.set_value(DOCTYPE, e.name, {
+            "encaissement": enc, "statut": "Résolu",
+            "note": ((e.note + " | ") if e.note else "") + note})
+        fermes.append(e.name)
+    return fermes
+
+
+def sans_brouillon_par_cle() -> dict:
+    """{(flux, cle): [ecarts a traiter sans brouillon]} pour l'identification bancaire."""
+    out = {}
+    if not frappe.db.exists("DocType", DOCTYPE):
+        return out
+    for e in frappe.get_all(DOCTYPE, filters={"encaissement": ("is", "not set"), "statut": "À traiter"},
+                            fields=["flux", "bon", "reference_bancaire", "suivi", "client",
+                                    "type_ecart", "montant_advice"], order_by="creation asc"):
+        flux = e.flux or "aramex"
+        out.setdefault((flux, cle_bancaire(flux, e.bon, e.reference_bancaire)), []).append(e)
+    return out
+
+
 def persister(encaissement: str, diagnostics: list) -> list:
     """Enregistre les diagnostics {"type": "ecart"} produits par matching.match_aramex sur le
-    brouillon `encaissement`. Idempotent : un ecart deja present (meme brouillon, meme suivi,
-    meme type) n'est pas reecrit — l'arbitrage humain (statut, resolution) prime."""
+    brouillon `encaissement` (SANS_BROUILLON : sur aucun). Idempotent : un ecart deja present (meme
+    brouillon, meme suivi, meme type) n'est pas reecrit — l'arbitrage humain (statut, resolution)
+    prime."""
     created = []
     for e in diagnostics or []:
         if e.get("type") != "ecart":
             continue
-        key = {"encaissement": encaissement, "type_ecart": e.get("sous_type"),
+        key = {"encaissement": encaissement or ("is", "not set"), "type_ecart": e.get("sous_type"),
                "suivi": e.get("suivi") or "", "reference_bancaire": e.get("reference") or ""}
         if frappe.db.exists(DOCTYPE, key):
             continue

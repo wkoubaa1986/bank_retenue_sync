@@ -35,8 +35,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Encaissement",
-   "reqd": 1,
-   "description": "Nom du brouillon Encaissement Paiement porteur du lot (Data et non Link : un brouillon peut être supprimé/renommé sans casser l'écart)"
+   "description": "Nom du brouillon Encaissement Paiement porteur du lot (Data et non Link : un brouillon peut être supprimé/renommé sans casser l'écart). Vide : le mouvement n'a de ligne dans aucun brouillon (bordereau dont aucun chèque n'a de pièce) ; l'écart s'affiche alors sur sa ligne bancaire."
   },
   {
    "fieldname": "reference_bancaire",
@@ -153,7 +152,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-02 09:31:46.043787",
+ "modified": "2026-10-22 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Ecart Encaissement",

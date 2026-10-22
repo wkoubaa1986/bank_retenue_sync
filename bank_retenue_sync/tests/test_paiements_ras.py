@@ -363,5 +363,24 @@ class TestSuppressionDuReglementAnnule(unittest.TestCase):
         self.assertFalse(P.suppression_permise(valide=True, demandee=False))
 
 
+class TestReglageRegularisationAuto(unittest.TestCase):
+    """Du 15 au 22/10/2026, CHAQUE passage des certificats RAS a echoue sur la lecture de ce reglage
+    (« Unknown column 'modified' in 'ORDER BY' ») et le rollback emportait le rapprochement."""
+
+    def setUp(self):
+        frappe.db.savepoint("reglage_brut")
+
+    def tearDown(self):
+        frappe.db.rollback(save_point="reglage_brut")
+
+    def test_lecture_brute_de_tabsingles(self):
+        from bank_retenue_sync import orchestrator as O
+        doctype, champ = "Bank Retenue Sync Settings", "ras_regularisation_auto"
+        frappe.db.sql("delete from `tabSingles` where doctype = %s and field = %s", (doctype, champ))
+        self.assertIsNone(O._valeur_brute_single(doctype, champ))          # jamais enregistre
+        frappe.db.sql("insert into `tabSingles` (doctype, field, value) values (%s, %s, '0')", (doctype, champ))
+        self.assertEqual(O._valeur_brute_single(doctype, champ), "0")      # decoche, et non « absent »
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -437,7 +437,8 @@ def etat_encaissements_par_cle() -> dict:
 
         {"docs":     {flux: {cle: nom de l'encaissement}},        # = documents_par_cle_bancaire
          "etats":    {nom: {"docstatus": 0|1, "ecarts_bloquants": n}},
-         "montants_brouillon": {flux: {cle: somme des lignes du brouillon}}}
+         "montants_brouillon": {flux: {cle: somme des lignes du brouillon}},
+         "sans_brouillon": {(flux, cle): [ecarts a traiter qu'aucun brouillon ne porte]}}
 
     Pourquoi les montants de brouillon : `montants_par_cle_bancaire` mesure les PAYMENT ENTRY
     postees sur le compte bancaire — or un encaissement encore en BROUILLON n'a rien poste. Pour
@@ -445,11 +446,15 @@ def etat_encaissements_par_cle() -> dict:
     utilisateur 2026-08-18), la seule source est la somme de ses lignes. Le risque de double
     ligne documente sur `montants_par_cle_bancaire` ne s'applique pas : on ne lit QUE des
     brouillons, dont les PE n'ont pas encore ete remplacees."""
+    from bank_retenue_sync.encaissement import ecarts
+
     docs = documents_par_cle_bancaire()
     noms = {n for par_cle in docs.values() for n in par_cle.values()}
     etats, montants = {}, {"cheque": {}, "traite": {}, "aramex": {}, "virement": {}}
+    sans_brouillon = ecarts.sans_brouillon_par_cle()
     if not noms:
-        return {"docs": docs, "etats": etats, "montants_brouillon": montants}
+        return {"docs": docs, "etats": etats, "montants_brouillon": montants,
+                "sans_brouillon": sans_brouillon}
 
     for d in frappe.get_all("Encaissement Paiement",
                             filters={"name": ["in", list(noms)]},
@@ -481,4 +486,5 @@ def etat_encaissements_par_cle() -> dict:
                     continue
                 montants[flux][cle] = round(
                     montants[flux].get(cle, 0.0) + flt(r[val_field]), 3)
-    return {"docs": docs, "etats": etats, "montants_brouillon": montants}
+    return {"docs": docs, "etats": etats, "montants_brouillon": montants,
+            "sans_brouillon": sans_brouillon}

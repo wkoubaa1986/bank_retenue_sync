@@ -173,6 +173,18 @@ def _signaler(flux: str, msg: dict, raison: str) -> None:
                      message="%s\nE-mail : %s (%s)" % (raison, (msg.get("subject") or "")[:200], msg.get("date")))
 
 
+def _valeur_brute_single(doctype: str, champ: str):
+    """Valeur ENREGISTREE d'un champ de Single, None s'il ne l'a jamais ete.
+
+    Pas `frappe.db.get_value("Singles", ...)` : il trie par `modified`, colonne que tabSingles
+    n'a pas — chaque passage des certificats RAS a echoue ainsi du 15 au 22/10/2026, rapprochement
+    compris (rollback de `_safe`).
+    """
+    rows = frappe.db.sql("select value from `tabSingles` where doctype = %s and field = %s",
+                         (doctype, champ))
+    return rows[0][0] if rows else None
+
+
 def _periode_debut_gestion() -> str:
     """Plancher 'AAAA-MM' des Settings : en dessous, les depenses email ne creent rien (les
     mois anterieurs sont saisis a la main — cas reel : la note d'honoraire « 05-06-2026 »
@@ -481,6 +493,8 @@ def process_honoraire(limit=None, depuis: str = None):
                 je = journal.create_honoraire_journal_entry(ext, pdf=(name, data), insert=True)
                 out.append({"flux": "honoraire", "ref": je.cheque_no, "status": "created", "je": je.name})
             except Exception as e:
+                # Sans trace, la note 09-2026 a echoue cinq fois par jour sans que personne le sache.
+                _signaler("honoraire", msg, "erreur : %s" % str(e)[:200])
                 out.append({"flux": "honoraire", "note": name, "status": "error", "error": str(e)[:120]})
     return out
 
@@ -687,44 +701,22 @@ def process_encaissements(insert=True, refresh=True, use_ai=True, movements=None
         out.update(cheques=len(chq_rows), traites=len(tra_rows), aramex=len(ara_rows),
                    virements=len(vir_lots), brouillons=noms,
                    encaissement=noms[0] if noms else None)
-        if insert:
-            # Les ecarts (frais Aramex, toleres, deltas, lignes sans piece) sont rattaches au
-            # brouillon QUI LES CONCERNE : un ecart de cheque suit son bordereau, les autres
-            # vont au brouillon commun. Les BLOQUANTS empechent la soumission tant qu'un humain
-            # n'a pas resolu (cf. encaissement/ecarts.py, decision utilisateur 2026-08-18).
-            from bank_retenue_sync.encaissement import ecarts as _ecarts
-            out["ecarts"] = []
-            couverts = set()
-            for d, bons in docs:
-                couverts |= bons
-                out["ecarts"] += _ecarts.persister(d.name, _ecarts_de_bordereaux(
-                    out["diagnostics"], bons))
-            restants = _ecarts_hors_bordereaux(out["diagnostics"], couverts)
-            if reste:
-                out["ecarts"] += _ecarts.persister(reste.name, restants)
-            elif restants and docs:
-                # Bordereau dont AUCUNE ligne n'a pu etre appariee : son ecart n'a pas de
-                # brouillon a lui. Le laisser tomber reviendrait a ne bloquer personne, donc
-                # il se rattache au premier brouillon — son champ `bon` dit d'ou il vient.
-                out["ecarts"] += _ecarts.persister(docs[0][0].name, restants)
+    if insert:
+        # Les ecarts (frais Aramex, toleres, deltas, lignes sans piece) vont au brouillon qui
+        # porte une ligne de LEUR mouvement ; un mouvement sans ligne dans aucun brouillon garde
+        # les siens SANS brouillon (cf. ecarts.SANS_BROUILLON). Les BLOQUANTS empechent la
+        # soumission tant qu'un humain n'a pas resolu (decision utilisateur 2026-08-18).
+        from bank_retenue_sync.encaissement import ecarts as _ecarts
+        par_cle = pending.documents_par_cle_bancaire()
+        crees = {d.name for d, _ in docs} | ({reste.name} if reste else set())
+        du_passage = {flux: {k: n for k, n in cles.items() if n in crees}
+                      for flux, cles in par_cle.items()}
+        out["ecarts"] = []
+        for enc, lot in _ecarts.repartir(out["diagnostics"], du_passage).items():
+            out["ecarts"] += _ecarts.persister(enc, lot)
+        out["ecarts_repris"] = _ecarts.fermer_sans_brouillon(par_cle)
     frappe.db.commit()
     return out
-
-
-def _est_ecart_cheque(e, bons):
-    return (e.get("type") == "ecart" and e.get("flux") == "cheque"
-            and (e.get("bon") or "") in bons)
-
-
-def _ecarts_de_bordereaux(diagnostics, bons):
-    """Ecarts de cheque appartenant a ces bordereaux."""
-    return [e for e in diagnostics or [] if _est_ecart_cheque(e, bons)]
-
-
-def _ecarts_hors_bordereaux(diagnostics, bons_traites):
-    """Tout le reste : Aramex, virements, et les bordereaux sans brouillon propre."""
-    return [e for e in diagnostics or []
-            if e.get("type") == "ecart" and not _est_ecart_cheque(e, bons_traites)]
 
 
 # ================================ ENTREES ================================
@@ -1281,7 +1273,7 @@ def run_certificats_ras(refresh=0, insert=1, pdf=1, limite_pdf=20, use_ai=0):
     # reglement. Le reste attend l'humain dans l'onglet.
     # Reglage jamais enregistre = valeur par defaut (coche) : un Single non sauvegarde ne porte aucune valeur —
     # et `get_single_value` la caste en 0 pour un Check, d'ou la lecture brute de tabSingles.
-    actif = frappe.db.get_value("Singles", {"doctype": "Bank Retenue Sync Settings", "field": "ras_regularisation_auto"}, "value")
+    actif = _valeur_brute_single("Bank Retenue Sync Settings", "ras_regularisation_auto")
     if actif is None or frappe.utils.cint(actif):
         from bank_retenue_sync.tej import paiements
 

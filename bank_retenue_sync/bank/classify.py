@@ -368,6 +368,14 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
             ctx.raison += " (%d pièces portent cette référence)" % len(pieces)
         return
 
+    # Ecarts qu'aucun brouillon ne porte (cf. encaissement/ecarts.SANS_BROUILLON) : c'est ICI,
+    # sur la ligne du depot, qu'ils doivent se lire — pas sur un lot voisin.
+    sans = ((context.encaissements or {}).get("sans_brouillon") or {}).get((rule.flux, cle)) if cle else None
+    if sans:
+        ctx.statut = STATUT_ORPHELIN
+        ctx.raison = _texte_sans_brouillon(sans)
+        return
+
     if rule.flux == "especes" and context.je_finder:
         montant = round(m.get("credit") or 0.0, 3)
         candidats = context.je_finder(m.get("date"), montant) or []
@@ -409,6 +417,35 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
     ctx.statut = STATUT_ORPHELIN
     ctx.raison = "%s non rapproche%s" % (rule.label.lower(),
                                          "" if numero else " (aucun n° dans le libelle)")
+
+
+def _texte_sans_brouillon(ecarts) -> str:
+    """« chèque 9416698 de Ste BIO AQUA (3000.0) absent d'ERPNext : saisir le paiement, … ».
+
+    Le depot attend une piece que personne n'a saisie : pour la saisir il faut le numero, le
+    client et le montant, lus sur la remise (demande utilisateur 22/10/2026).
+    """
+    quoi = {"cheque": "chèque", "traite": "traite", "aramex": "envoi Aramex"}
+    absents, autres = [], []
+    for e in ecarts[:3]:
+        bout = "%s %s" % (quoi.get(e.get("flux"), "pièce"), e.get("suivi") or "?")
+        if e.get("client"):
+            bout += " de %s" % e["client"]
+        if e.get("montant_advice"):
+            bout += " (%s)" % flt(e["montant_advice"], 3)
+        if e.get("type_ecart") == "Sans pièce":
+            absents.append(bout)
+        else:
+            autres.append("%s : %s" % (bout, (e.get("type_ecart") or "écart").lower()))
+    if len(ecarts) > 3:
+        autres.append("+ %d autre(s)" % (len(ecarts) - 3))
+    morceaux = []
+    if absents:
+        morceaux.append("%s absent%s d'ERPNext : saisir le paiement, l'encaissement sera créé au "
+                        "passage suivant" % (" ; ".join(absents), "s" if len(absents) > 1 else ""))
+    if autres:
+        morceaux.append(" ; ".join(autres))
+    return " — ".join(morceaux)
 
 
 def _texte_impaye(context: LinkContext, cle: str) -> str:

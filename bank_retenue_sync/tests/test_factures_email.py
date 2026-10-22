@@ -201,6 +201,55 @@ class TestProcessTotal(unittest.TestCase):
         signaler.assert_not_called()                                   # une recharge n'est pas une anomalie
 
 
+def _centre_de_cout(origine):
+    """Le centre de couts de la societe sans dependre de la base ; le reste passe (new_doc lit la base)."""
+    def get_value(doctype, *args, **kwargs):
+        return "Main - A&S" if doctype == "Company" else origine(doctype, *args, **kwargs)
+    return get_value
+
+
+class TestNoteHonoraireSansRetenue(unittest.TestCase):
+    """Note 09-2026 (recue le 21/10/2026) : pas de retenue a la source, net = TTC = 239. La ligne RS
+    a 0 faisait refuser l'ecriture par ERPNext ; l'erreur etait avalee, le virement de 239 restait
+    orphelin au releve."""
+
+    EXTRACTION = {"invoice_date": "2026-10-20", "total_ht": 200.0, "total_tva": 38.0,
+                  "timbre_fiscal": 1.0, "total_ttc": 239.0, "retenue_source": 0.0, "net_a_payer": 239.0}
+
+    def test_aucune_ligne_a_zero(self):
+        from bank_retenue_sync.expenses import journal as J
+        with patch.object(J, "_company_of", return_value="Aquaworld & Servicing"), \
+             patch.object(J.frappe.db, "get_value", side_effect=_centre_de_cout(J.frappe.db.get_value)):
+            je = J.create_honoraire_journal_entry(dict(self.EXTRACTION), insert=False)
+        lignes = [(a.account, a.debit_in_account_currency, a.credit_in_account_currency) for a in je.accounts]
+        self.assertEqual(lignes, [("Compte de découvert bancaire - A&S", 0.0, 239.0),
+                                  ("TVA 19% - A&S", 38.0, 0.0),
+                                  ("Charges Diverses - A&S", 201.0, 0.0)])
+        self.assertEqual(je.cheque_no, "Note d'honoraire comptable 09-2026")
+
+    def test_la_retenue_reste_quand_elle_existe(self):
+        from bank_retenue_sync.expenses import journal as J
+        ext = dict(self.EXTRACTION, retenue_source=7.14, net_a_payer=231.86)
+        with patch.object(J, "_company_of", return_value="Aquaworld & Servicing"), \
+             patch.object(J.frappe.db, "get_value", side_effect=_centre_de_cout(J.frappe.db.get_value)):
+            je = J.create_honoraire_journal_entry(ext, insert=False)
+        self.assertIn(("Retenue a la source achat - A&S", 7.14),
+                      [(a.account, a.credit_in_account_currency) for a in je.accounts])
+
+    def test_un_echec_laisse_une_trace(self):
+        msgs = [_msg("7", "DM septembre", [("NOTE D'HONORAIRE STE AQUA 09 2026.pdf", b"%PDF")])]
+        with patch.object(O.mail_config, "fetch", return_value=msgs), \
+             patch.object(O.mail_config, "get_source", return_value={}), \
+             patch.object(O, "_periode_debut_gestion", return_value="2026-07"), \
+             patch.object(O, "_exists", return_value=False), \
+             patch.object(O, "extract_honoraire", side_effect=RuntimeError("OpenAI indisponible")), \
+             patch.object(O, "_signaler") as signaler:
+            out = O.process_honoraire()
+        self.assertEqual([r["status"] for r in out], ["error"])
+        signaler.assert_called_once()
+        self.assertEqual(signaler.call_args.args[0], "honoraire")
+
+
 class TestSignaler(unittest.TestCase):
 
     def test_une_trace_par_email_et_par_semaine(self):

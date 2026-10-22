@@ -22,3 +22,4 @@ bank_retenue_sync.patches.initialiser_seuils_rapprochement
 bank_retenue_sync.patches.retablir_dette_fm_water_plus
 bank_retenue_sync.patches.depot_tej_piece_dynamique
 bank_retenue_sync.patches.restreindre_onglet_banque
+bank_retenue_sync.patches.detacher_ecarts_sans_brouillon
