@@ -456,6 +456,7 @@ def _reduire_dette(affectation: dict, valider: bool, supprimer: bool) -> dict:
         copie.remarks = ("%s\nRamenee a %s DT le %s : %s DT desormais couverts par un reglement "
                          "reel (retenue a la source)"
                          % (original.remarks or "", nouveau, frappe.utils.nowdate(), part))
+    original.flags.ignore_permissions = True       # geste de la page, ouverte a tous (28/10/2026)
     original.cancel()
     if copie:
         copie.insert(ignore_permissions=True)
@@ -730,6 +731,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
                          % (montant, ", ".join(a["name"] for a in affectations))) if affectations
                         else ("\nMontant inchange (argent compte) ; %s DT en avance non affectee"
                               % non_affecte) if reel else ""))
+    original.flags.ignore_permissions = True       # geste de la page, ouverte a tous (28/10/2026)
     original.cancel()
 
     # 1 bis. LES DETTES D'ABORD, ET C'EST UN ORDRE OBLIGATOIRE. La piece que porte une dette est

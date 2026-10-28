@@ -167,7 +167,9 @@ window.CertificatsRAS = class CertificatsRAS {
       <td>${badge}</td>
       <td>${lien("Payment Entry", l.payment_entry)}</td>
       <td>${lien("Sales Invoice", l.sales_invoice) }</td>
-      <td>${l.pdf_attached_to_pe ? `<span title="${frappe.utils.escape_html(l.pdf_attache_a || "")}">✔</span>` : "—"}</td>
+      <td>${l.pdf_file
+        ? `<a href="${frappe.utils.escape_html(l.pdf_file)}" target="_blank" rel="noopener" title="${frappe.utils.escape_html(l.pdf_attache_a || "")}">📄 ${__("ouvrir")}</a>`
+        : l.pdf_attached_to_pe ? `<span title="${frappe.utils.escape_html(l.pdf_attache_a || "")}">✔</span>` : "—"}</td>
       <td>${actions}</td>
     </tr>`;
   }

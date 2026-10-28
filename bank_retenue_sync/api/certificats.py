@@ -14,7 +14,19 @@ from frappe.utils import flt, getdate
 
 DOCTYPE = "Retenue Certificate"
 
-ROLES = ("System Manager", "Accounts Manager", "Accounts User")
+ROLES = ("System Manager", "Accounts Manager", "Accounts User")        # historique : les gardes par role ci-dessous
+
+
+def _acces(*roles):
+    """Qui peut appeler la page. Decision de l'utilisateur du 28/10/2026 : TOUS les utilisateurs connectes
+    ont acces a toutes les parties et tous les onglets du tableau de bord (Salma appelle, Nejib regularise,
+    chacun voit les PDF). Les anciens roles sont gardes en argument, en memoire de ce qui etait reserve ;
+    seul l'invite est refuse. Les ecritures que ces gestes posent passent en `ignore_permissions` (flag
+    `brs_acces_page`, lu par tej/paiements.py) : le tableau de bord ne doit pas dependre des droits
+    comptables de chacun."""
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Connexion requise"), frappe.PermissionError)
+    frappe.flags.brs_acces_page = True
 
 CHAMPS = ["name", "reference", "date_paiement", "declarant", "declarant_matricule", "customer",
           "total_ht", "total_tva", "total_brut", "montant_retenue", "taux", "etat_depot",
@@ -25,7 +37,7 @@ CHAMPS = ["name", "reference", "date_paiement", "declarant", "declarant_matricul
 
 
 def _lecture():
-    frappe.only_for(list(ROLES))
+    _acces(*ROLES)
 
 
 @frappe.whitelist()
@@ -110,7 +122,7 @@ def etat_synchronisation():
 @frappe.whitelist()
 def synchroniser(refresh=0, insert=0, pdf=0):
     """Lance la synchronisation. `insert=0` = essai a blanc, rien n'est ecrit."""
-    frappe.only_for("System Manager")
+    _acces("System Manager")
     from bank_retenue_sync import orchestrator
 
     return orchestrator.run_certificats_ras(refresh=refresh, insert=insert, pdf=pdf)
@@ -140,7 +152,7 @@ def trancher(reference, customer):
     Le certificat passe en « Manually Matched » : la machine ne repassera plus dessus, et le
     prochain certificat du meme declarant sera rapproche sans fuzzy ni IA.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    _acces(["System Manager", "Accounts Manager"])
     if not frappe.db.exists("Customer", customer):
         frappe.throw(_("Client inconnu : {0}").format(customer))
     doc = frappe.get_doc(DOCTYPE, reference)
@@ -173,7 +185,7 @@ def poser_facture(reference, sales_invoice):
     passe de rapprochement, qui recalcule `sales_invoice`, effacerait le choix de l'utilisateur.
     La facture doit appartenir au client du certificat — c'est le seul controle, mais il est le bon.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    _acces(["System Manager", "Accounts Manager"])
     from bank_retenue_sync.tej import rapprochement
 
     doc = frappe.get_doc(DOCTYPE, reference)
@@ -270,7 +282,7 @@ def factures_client(doctype, txt, searchfield, start, page_len, filters):
 def ignorer(reference, motif):
     """Ecarte definitivement un certificat. Motif obligatoire : un rejet sans raison ne se relit
     pas six mois plus tard."""
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    _acces(["System Manager", "Accounts Manager"])
     if not (motif or "").strip():
         frappe.throw(_("Le motif est obligatoire."))
     frappe.db.set_value(DOCTYPE, reference, {
@@ -283,7 +295,7 @@ def ignorer(reference, motif):
 @frappe.whitelist()
 def creer_paiements(references=None, insert=0):
     """Cree les ecritures manquantes (brouillons). `insert=0` = essai a blanc."""
-    frappe.only_for("System Manager")
+    _acces("System Manager")
     from bank_retenue_sync.tej import paiements
 
     if isinstance(references, str):
@@ -341,7 +353,7 @@ def ajuster(reference, insert=0, reglement=None):
 
     `reglement` : le choix de l'utilisateur quand la facture en compte plusieurs (voie « choix »).
     """
-    frappe.only_for("System Manager")
+    _acces("System Manager")
     from bank_retenue_sync.tej import paiements
 
     res = paiements.ajuster(reference, insert=frappe.utils.cint(insert),
@@ -372,7 +384,7 @@ def doublons_justificatifs(insert=0, garder="portail"):
     Chaque couple est confronte par son TEXTE : rien n'est supprime tant que les deux documents ne
     se sont pas reveles identiques. `insert=0` ne fait que montrer.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    _acces(["System Manager", "Accounts Manager"])
     from bank_retenue_sync.tej import pdf
 
     res = pdf.doublons(insert=frappe.utils.cint(insert), garder=garder)
@@ -384,7 +396,7 @@ def doublons_justificatifs(insert=0, garder="portail"):
 @frappe.whitelist()
 def telecharger_pdf(limite=10, insert=1):
     """Telecharge et range les PDF manquants."""
-    frappe.only_for("System Manager")
+    _acces("System Manager")
     from bank_retenue_sync.tej import pdf
 
     res = pdf.traiter(limite=frappe.utils.cint(limite), insert=frappe.utils.cint(insert))
@@ -406,7 +418,7 @@ def retenues_probables(from_date=None, to_date=None):
 @frappe.whitelist()
 def loger_retenue_probable(sales_invoice, dette_pe, insert=0, doctype="Sales Invoice"):
     """Deduit la retenue de la dette et la loge sur la piece — facture ou commande (essai a blanc sans insert)."""
-    frappe.only_for(("System Manager", "Accounts Manager"))
+    _acces(("System Manager", "Accounts Manager"))
     from bank_retenue_sync.tej import retenues_probables
 
     out = retenues_probables.loger(sales_invoice, dette_pe, insert=bool(frappe.utils.cint(insert)), doctype=doctype or "Sales Invoice")
@@ -418,7 +430,7 @@ def loger_retenue_probable(sales_invoice, dette_pe, insert=0, doctype="Sales Inv
 @frappe.whitelist()
 def bilan_hebdo(envoyer=0):
     """Le bilan du lundi, a la demande : apercu HTML, ou envoi immediat."""
-    frappe.only_for(("System Manager", "Accounts Manager"))
+    _acces(("System Manager", "Accounts Manager"))
     from bank_retenue_sync.tej import bilan_hebdo as B
 
     if frappe.utils.cint(envoyer):
@@ -434,7 +446,7 @@ ROLES_RECLAMER = ROLES + ("Sales Manager", "Sales User", "Appels")     # Salma a
 def a_reclamer():
     """Onglet « A reclamer » : les clients dont un certificat de retenue manque depuis plus de 45 jours, avec
     leurs pieces, leurs telephones et leur derniere relance."""
-    frappe.only_for(list(ROLES_RECLAMER))
+    _acces(list(ROLES_RECLAMER))
     from bank_retenue_sync.tej import liste_appels_ras as L
 
     lignes = L.clients_a_reclamer()
@@ -446,7 +458,7 @@ def a_reclamer():
 def pdf_certificat(certificat):
     """Onglet « A reclamer » : le PDF du certificat tel que le client l'a depose, telecharge a la demande s'il
     n'est pas encore la (certificat en anomalie ou sans piece, que le lot nocturne ecarte). -> {file_url}."""
-    frappe.only_for(list(ROLES_RECLAMER))
+    _acces(list(ROLES_RECLAMER))
     from bank_retenue_sync.tej import pdf
 
     return pdf.voir(certificat)
@@ -455,7 +467,7 @@ def pdf_certificat(certificat):
 @frappe.whitelist()
 def tracer_appel_ras(customer, resume=None, note=None):
     """L'appel passe depuis l'onglet « A reclamer » : trace [RELANCE-RAS] | Telephone | resume — note."""
-    frappe.only_for(list(ROLES_RECLAMER))
+    _acces(list(ROLES_RECLAMER))
     from bank_retenue_sync.tej import liste_appels_ras as L
 
     nom = L.tracer_appel(customer, resume or "", note or "")
@@ -466,7 +478,7 @@ def tracer_appel_ras(customer, resume=None, note=None):
 @frappe.whitelist()
 def regulariser_auto(insert=0):
     """Ce que la nuit ferait (essai a blanc), ou le faire maintenant."""
-    frappe.only_for(("System Manager", "Accounts Manager"))
+    _acces(("System Manager", "Accounts Manager"))
     from bank_retenue_sync.tej import paiements
 
     out = paiements.regulariser_auto(insert=bool(frappe.utils.cint(insert)))
