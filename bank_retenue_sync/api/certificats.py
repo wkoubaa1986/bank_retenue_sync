@@ -443,6 +443,16 @@ def a_reclamer():
 
 
 @frappe.whitelist()
+def pdf_certificat(certificat):
+    """Onglet « A reclamer » : le PDF du certificat tel que le client l'a depose, telecharge a la demande s'il
+    n'est pas encore la (certificat en anomalie ou sans piece, que le lot nocturne ecarte). -> {file_url}."""
+    frappe.only_for(list(ROLES_RECLAMER))
+    from bank_retenue_sync.tej import pdf
+
+    return pdf.voir(certificat)
+
+
+@frappe.whitelist()
 def tracer_appel_ras(customer, resume=None, note=None):
     """L'appel passe depuis l'onglet « A reclamer » : trace [RELANCE-RAS] | Telephone | resume — note."""
     frappe.only_for(list(ROLES_RECLAMER))

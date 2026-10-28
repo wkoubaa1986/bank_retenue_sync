@@ -197,6 +197,31 @@ def traiter_un(certificat: str, insert: bool = True) -> dict:
         return {"statut": "erreur", "reference": cert.reference, "message": str(e)[:160]}
 
 
+def voir(certificat: str, timeout: int = 100) -> dict:
+    """Le PDF d'un certificat QU'ON NE PEUT PAS RANGER (anomalie, aucune piece chez nous), a la demande.
+
+    Onglet « A reclamer » (28/10/2026) : avant d'appeler un client qui a declare un montant faux ou une
+    facture inconnue, Salma veut voir ce qu'il a depose. Le lot nocturne ecarte ces certificats a raison
+    (rien ou les ranger) ; ici le PDF est attache AU CERTIFICAT lui-meme, et `pdf_attached_to_pe` reste a 0 :
+    le jour ou la piece existe, le lot le rangera sur elle. Synchrone — l'utilisateur attend devant l'ecran,
+    une dizaine de secondes via le relais.
+    """
+    cert = frappe.db.get_value(DOCTYPE, certificat, CHAMPS + ["pdf_file"], as_dict=1)
+    if not cert:
+        frappe.throw("certificat inconnu : %s" % certificat)
+    if cert.pdf_file:
+        return {"statut": "deja la", "file_url": cert.pdf_file}
+    existant = _fichier_existant(DOCTYPE, cert.name, cert.reference)
+    if not existant:
+        contenu = telecharger(cert.reference, cert.declarant, timeout=timeout)
+        existant = attacher(cert, contenu, DOCTYPE, cert.name)
+    frappe.db.set_value(DOCTYPE, cert.name, {"pdf_file": existant["file_url"],
+                                             "pdf_attache_a": "%s: %s (a la demande)" % (DOCTYPE, cert.name)},
+                        update_modified=False)
+    frappe.db.commit()
+    return {"statut": "telecharge", "file_url": existant["file_url"]}
+
+
 def demander(certificat: str) -> dict:
     """Met le telechargement EN FILE plutot que de le faire tout de suite.
 

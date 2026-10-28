@@ -113,6 +113,12 @@ class TestAReclamer(unittest.TestCase):
         self.assertEqual([p["piece"] for p in g["A"]], ["SI-1", "SI-2"])
         self.assertIn("SI-1 du 09/07/2026 : retenue 34.14 DT", L._texte_piece(pieces[0]))
 
+    def test_liens_de_la_piece_ne_sortent_que_renseignes(self):
+        from bank_retenue_sync.tej import liste_appels_ras as L
+        self.assertEqual(L._liens(pdf="/private/files/c.pdf", facture=None, commande="SO-1", ecriture=""),
+                         {"pdf": "/private/files/c.pdf", "commande": "SO-1"})
+        self.assertEqual(L._liens(), {})
+
 
 class TestLaDetteDesigneLaFacture(unittest.TestCase):
     """BHM 08/09/2026 : 497,97 net pour 3 factures, 5,03 de dette sur l'une d'elles = la retenue déclarée."""

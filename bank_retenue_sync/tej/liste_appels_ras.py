@@ -32,6 +32,13 @@ MARQUEUR = "[RELANCE-RAS]"
 TYPES = {"manquant": "Certificat manquant", "a_rectifier": "Certificat a rectifier", "facture_inconnue": "Facture a preciser"}
 
 
+def _liens(pdf=None, facture=None, commande=None, ecriture=None) -> dict:
+    """Ce que la carte peut ouvrir d'un clic (28/10/2026) : le PDF du certificat tel que le client l'a depose,
+    la facture ou la commande qu'il vise, l'ecriture de retenue chez nous. Seules les cles renseignees sortent :
+    une carte « facture a preciser » n'a, par definition, pas de facture."""
+    return {k: v for k, v in (("pdf", pdf), ("facture", facture), ("commande", commande), ("ecriture", ecriture)) if v}
+
+
 def _texte_piece(p: dict) -> str:
     return "%s du %s : retenue %s DT — %s" % (p["piece"], getdate(p["date"]).strftime("%d/%m/%Y"), p["montant"], p["motif"])
 
@@ -60,24 +67,30 @@ def pieces_a_reclamer(today, jours: int = JOURS) -> list:
         if l.get("verdict") == "sans certificat" and l.get("posting_date") and getdate(l["posting_date"]) <= limite:
             out.append({"customer": l.get("customer"), "piece": l.get("sales_invoice") or l.get("sales_order") or l.get("name"),
                         "date": l["posting_date"], "montant": flt(l.get("montant"), 3), "type": "manquant",
-                        "motif": "retenue comptabilisee chez nous, aucun certificat au portail"})
+                        "motif": "retenue comptabilisee chez nous, aucun certificat au portail",
+                        **_liens(facture=l.get("sales_invoice"), commande=l.get("sales_order"), ecriture=l.get("name"))})
     for l in retenues_probables.detecter(depuis="%s-01-01" % today.year):
         if not l.get("declaree") and l.get("dette_date") and getdate(l["dette_date"]) <= limite:
             out.append({"customer": l["customer"], "piece": l["piece"], "date": l["dette_date"], "montant": flt(l["retenue"], 3),
-                        "type": "manquant", "motif": "1 %% du TTC laisse en dette (%s DT sur %s), retenue non declaree" % (l["retenue"], flt(l["grand_total"], 3))})
+                        "type": "manquant", "motif": "1 %% du TTC laisse en dette (%s DT sur %s), retenue non declaree" % (l["retenue"], flt(l["grand_total"], 3)),
+                        **_liens(facture=l["piece"] if l.get("piece_doctype") == "Sales Invoice" else None,
+                                 commande=l["piece"] if l.get("piece_doctype") == "Sales Order" else None,
+                                 ecriture=(l.get("dettes") or [{}])[0].get("dette_pe"))})
     for c in frappe.get_all("Retenue Certificate", filters={"hors_perimetre": 0, "etat_depot": ["in", ["Recue", "Rectifie"]]},
                             fields=["name", "numero_chez_declarant", "declarant", "declarant_matricule", "customer", "date_paiement",
-                                    "montant_retenue", "total_brut", "anomalie", "anomalie_raison", "match_status", "payment_entry", "sales_invoice", "sales_order"]):
+                                    "montant_retenue", "total_brut", "anomalie", "anomalie_raison", "match_status", "payment_entry", "sales_invoice", "sales_order", "pdf_file"]):
         if c.anomalie:
             out.append({"customer": c.customer or _client_du_matricule(c.declarant_matricule), "declarant": c.declarant,
                         "piece": "certificat %s" % (c.numero_chez_declarant or c.name[:8]), "date": c.date_paiement,
                         "montant": flt(c.montant_retenue, 3), "type": "a_rectifier", "certificat": c.name,
+                        **_liens(pdf=c.pdf_file, facture=c.sales_invoice, commande=c.sales_order, ecriture=c.payment_entry),
                         "motif": "certificat errone (%s) : assiette %s DT, retenue %s DT — le client doit le rectifier sur le portail"
                                  % ((c.anomalie_raison or "anomalie").split(":")[-1].strip()[:60], flt(c.total_brut, 3), flt(c.montant_retenue, 3))})
         elif c.match_status == "Sans piece" and not c.payment_entry and not c.sales_invoice and not c.sales_order:
             out.append({"customer": c.customer or _client_du_matricule(c.declarant_matricule), "declarant": c.declarant,
                         "piece": "certificat %s" % (c.numero_chez_declarant or c.name[:8]), "date": c.date_paiement,
                         "montant": flt(c.montant_retenue, 3), "type": "facture_inconnue", "certificat": c.name,
+                        **_liens(pdf=c.pdf_file),
                         "motif": "certificat declare sur une assiette de %s DT qui ne correspond a aucune de nos factures — lui demander laquelle"
                                  % flt(c.total_brut, 3)})
     return out
