@@ -229,8 +229,12 @@ def doublons_de_pieces(pieces: list) -> dict:
     """
     par_cle: dict = defaultdict(list)
     for p in pieces or []:
+        # ⚠️ DEUX FACTURES DISTINCTES DU MEME FOURNISSEUR, MEME JOUR, MEME MONTANT, ne sont pas
+        # un doublon : VODA MACHINES, factures 125/2026 et 127/2026, 901 DT chacune (30/10/2026).
+        # Le numero de facture ou de cheque cite dans la piece entre dans la cle : deux numeros
+        # differents = deux operations.
         par_cle[(str(p.get("posting_date")), p.get("sens"),
-                 round(flt(p.get("montant"), 3), 3))].append(p)
+                 round(flt(p.get("montant"), 3), 3), empreinte_piece(p.get("texte")))].append(p)
     out: dict = {}
     for jumelles in par_cle.values():
         if len(jumelles) < 2:
@@ -239,6 +243,16 @@ def doublons_de_pieces(pieces: list) -> dict:
             out[p["voucher_no"]] = [j["voucher_no"] for j in jumelles
                                     if j["voucher_no"] != p["voucher_no"]]
     return out
+
+
+_RX_EMPREINTE = re.compile(r"(?:Fact(?:ure)?\.?\s*n[°o]?\s*|Chq\s*N°\s*|Ch[eè]que\s*n[°o]?\s*)([A-Za-z0-9/\-]+)", re.I)
+
+
+def empreinte_piece(texte) -> str:
+    """Les numeros de facture / de cheque cites par une piece, normalises — "" s'il n'y en a pas.
+    Fonction pure."""
+    trouves = sorted({m.group(1).strip().upper() for m in _RX_EMPREINTE.finditer(str(texte or ""))})
+    return "|".join(trouves)
 
 
 def _indices_hors_fenetre(montant: float, sens: str, jour, autres: list, cle_date: str,

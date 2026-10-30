@@ -56,9 +56,20 @@ COMPTE_CARTE = "Carte technologique - A&S"
 
 _RX_LEASING = re.compile(r"^\s*LD\d{6,}", re.I)
 _RX_ECHEANCE_PRET = re.compile(r"Remboursement\s+\d+\s*/\s*\d+", re.I)
+# « Echeance Leasing Cenntro 09-2026 » : l'echeance saisie par le flux des contrats, dont la
+# reference LD… est dans la remarque et non en tete (demande utilisateur 30/10/2026).
+_RX_ECHEANCE_LEASING = re.compile(r"^\s*Ech[eé]ance\s+Leasing\b", re.I)
 
 COMPTES_EXEMPTES = {
     "Frais bancaire - A&S": "frais bancaires : la preuve est le relevé",
+    # Frais de lettre de credit affectes a un fournisseur depuis l'identification bancaire
+    # (30/10/2026) : meme preuve, le releve ; la TVA de l'ecriture est deductible.
+    "Frais de LC en attente - A&S": "frais de lettre de crédit : la preuve est le relevé",
+    # Salaires (demande utilisateur 30/10/2026) : la preuve est le bulletin de paie et le virement
+    # sur le relevé, pas une facture a joindre.
+    "Salaire - A&S": "salaire : la preuve est le bulletin de paie et le virement",
+    # Loyer (demande utilisateur 30/10/2026) : porte par le bail et le virement.
+    "Loyer du Bureau - A&S": "loyer : porté par le bail et le virement",
     "Frais bancaire Emprunt - A&S": "intérêts d'emprunt : portés par l'échéancier",
     "Prêts garantis - A&S": "principal d'un prêt : porté par l'échéancier",
     "Charges remboursement véhicules - A&S": "échéance de leasing : portée par le contrat",
@@ -78,7 +89,7 @@ def exemption(ligne: dict) -> str:
 
     if credite == COMPTE_CARTE:
         return "réglé par la carte technologique"
-    if _RX_LEASING.match(ref):
+    if _RX_LEASING.match(ref) or _RX_ECHEANCE_LEASING.match(ref):
         return "échéance de leasing : portée par le contrat"
     if _RX_ECHEANCE_PRET.search(ref):
         return "échéance de prêt : portée par l'échéancier"
@@ -286,7 +297,13 @@ def comptes_charges() -> list:
     """
     racine = _resoudre(RACINE_DEPENSES)
     achats = _resoudre(COMPTE_ACHATS)
-    return (_descendance(racine) if racine else []) + ([achats] if achats else [])
+    # Les frais de lettre de credit en attente (compte d'ACTIF, cf. expenses/frais_lc) : pas une
+    # charge du mois, mais leur TVA est deductible — le dossier les lit comme les autres pieces.
+    from bank_retenue_sync.expenses.frais_lc import compte_frais_lc
+
+    frais_lc = _resoudre(compte_frais_lc(creer=False))
+    return (_descendance(racine) if racine else []) + ([achats] if achats else []) \
+        + ([frais_lc] if frais_lc else [])
 
 
 def vouchers_charges_du_mois(mois: str, comptes: list | None = None) -> list:
@@ -558,8 +575,15 @@ def liste(mois: str) -> dict:
     absents = [n for n, r in ((RACINE_DEPENSES, racine), (COMPTE_ACHATS, achats),
                               (COMPTE_RETENUES, retenues)) if not r]
 
+    # Les frais de lettre de credit en attente (compte d'ACTIF, cf. expenses/frais_lc) vont dans
+    # le bloc des depenses : pas une charge du mois, mais leur TVA est deductible et le comptable
+    # doit les voir (30/10/2026).
+    from bank_retenue_sync.expenses.frais_lc import compte_frais_lc
+
+    frais_lc = _resoudre(compte_frais_lc(creer=False))
     blocs = sans_doublons_achats([
-        _bloc("depenses", "Dépenses", _descendance(racine) if racine else [], debut, fin),
+        _bloc("depenses", "Dépenses", (_descendance(racine) if racine else [])
+              + ([frais_lc] if frais_lc else []), debut, fin),
         _bloc("achats", "Achats", [achats] if achats else [], debut, fin),
         _bloc("retenues", "Retenues / Ventes", [retenues] if retenues else [], debut, fin),
     ])

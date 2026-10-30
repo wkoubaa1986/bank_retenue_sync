@@ -30,6 +30,9 @@ ACTION_AGREGAT = "agregat"         # NE JAMAIS comptabiliser a l'unite : regroup
 ACTION_INFORMATIF = "informatif"   # visible et categorise, aucune automatisation prevue
 ACTION_IGNORE = "ignore"           # bruit assume
 
+#: Categorie des frais de lettre de credit : affectes a la main a un fournisseur (30/10/2026).
+CATEGORIE_LC = "frais_lc"
+
 
 @dataclass(frozen=True)
 class BankRule:
@@ -143,6 +146,23 @@ RULES = (
         categorie="frais_bancaires", sous_categorie="commission",
         patterns=("COM", "VIR"),
         action=ACTION_AGREGAT, groupe="jour", priorite=20),
+    # FRAIS DE LETTRE DE CREDIT (decision utilisateur 30/10/2026). « COMM OUV - ANNUL LCI »,
+    # « COM PROJ LCI », « COMM SWIFT » et leurs TVA partagent une reference TF… le meme jour :
+    # c'est UNE operation (ouverture / annulation / projet de LC), pas des frais du mois. Ils ne
+    # tombent pas dans le cumul mensuel : ils sont AFFECTES A LA MAIN a un fournisseur (bouton de
+    # la page), en charge « Frais de LC » + TVA deductible, pour mesurer le poids des frais de LC
+    # par fournisseur. Groupe par (reference, jour) comme une echeance : la somme des lignes doit
+    # faire l'ecriture. Priorite 20 : avant « COMM » (commission_diverse, 25).
+    BankRule(
+        key="frais_lc", label="Frais de lettre de crédit", sens="debit",
+        categorie=CATEGORIE_LC, sous_categorie="commission",
+        patterns=("LCI",),
+        action=ACTION_JOURNAL, groupe="echeance", priorite=20),
+    BankRule(
+        key="frais_lc_swift", label="Commission SWIFT (lettre de crédit)", sens="debit",
+        categorie=CATEGORIE_LC, sous_categorie="commission",
+        patterns=("COMM", "SWIFT"),
+        action=ACTION_JOURNAL, groupe="echeance", priorite=20),
     # 'COMM' et non 'COMMISSION' : le releve abrege ('COMM PERQ DE CHANGE-GARANTIE',
     # 'COMM REMISE EFFET'). 'COM VIR' ne contient pas 'COMM' et reste pris par la regle ci-dessus.
     BankRule(

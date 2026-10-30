@@ -1,3 +1,8 @@
+// Même convention que bank/ecarts.tolerance : plancher 1 DT, 0,5 %, plafond 10 DT.
+function ib_tolerance(montant) {
+  return Math.min(Math.max(1, 0.005 * Math.abs(flt(montant || 0, 3))), 10);
+}
+
 frappe.pages["identification-bancaire"].on_page_load = function (wrapper) {
   const page = frappe.ui.make_app_page({
     parent: wrapper,
@@ -164,6 +169,16 @@ class IdentificationBancaire {
       this._reactiver($(e.currentTarget).attr("data-reactiver"))
     );
     // Rattachement manuel (06/10/2026) : désigner soi-même la ou les pièces d'un mouvement.
+    this.$root.on("click", "[data-completer]", (e) =>
+      this._completer_bordereau($(e.currentTarget).attr("data-completer")));
+    this.$root.on("click", "[data-frais-lc]", (e) =>
+      this._frais_lc($(e.currentTarget).attr("data-frais-lc")));
+    this.$root.on("click", "[data-defaire]", (e) =>
+      this._defaire($(e.currentTarget).attr("data-defaire")));
+    this.$root.on("click", "[data-dette-client]", (e) =>
+      this._dette_client($(e.currentTarget).attr("data-dette-client")));
+    this.$root.on("click", "[data-credit-fournisseur]", (e) =>
+      this._credit_fournisseur($(e.currentTarget).attr("data-credit-fournisseur")));
     this.$root.on("click", "[data-rattacher]", (e) =>
       this._rattacher($(e.currentTarget).attr("data-rattacher"))
     );
@@ -197,6 +212,7 @@ class IdentificationBancaire {
     // « Générer les règlements » ne réglait RIEN (il décrit la colonne Règlement) : renommé le 14/10/2026,
     // le vrai règlement des dettes a son bouton ci-dessous.
     this.page.add_menu_item(__("Décrire les règlements (colonne Règlement)"), () => this._reglements());
+    this.page.add_menu_item(__("Frais de LC par fournisseur (%)"), () => this._rapport_frais_lc());
     this.page.add_inner_button(__("Régler les dettes (Aramex / honoraires)"), () => this._regler_dettes());
     this.page.add_menu_item(__("Lancer la vérification bancaire maintenant"), () => this._lancer_verification());
     this.page.add_menu_item(__("Dernières vérifications bancaires"), () => this._verifications());
@@ -1298,17 +1314,75 @@ class IdentificationBancaire {
     )}">${alerte ? "⚠ " : ""}${signe}${format_number(e, null, 3)}</span>`;
   }
 
+  /** La ligne la plus grosse de son groupe (débit maximal ; à égalité, la première clé). */
+  _est_tete_lc(r) {
+    if (!r.groupe) return true;
+    const rows = ((this._data && this._data.rows) || []).filter((x) => x.groupe === r.groupe);
+    if (!rows.length) return true;
+    const tete = rows.reduce((a, x) => (flt(x.debit) > flt(a.debit) || (flt(x.debit) === flt(a.debit) && x.cle < a.cle)) ? x : a, rows[0]);
+    return tete.cle === r.cle;
+  }
+
+  _taille_groupe(r) {
+    return r.groupe ? ((this._data && this._data.rows) || []).filter((x) => x.groupe === r.groupe).length : 1;
+  }
+
   _actions_cell(r) {
     const esc = frappe.utils.escape_html;
     const b = [];
+    // ↩ Défaire un arbitrage (30/10/2026) : virement porté par un encaissement (bouton « Dette
+    // client » ou flux automatique), ou écart reporté en crédit fournisseur.
+    // Frais de LC : UN bouton par opération, sur sa ligne la plus grosse (demande utilisateur
+    // 30/10/2026) — il traite les six lignes du groupe (commissions + TVA).
+    const lc_tete = r.categorie === "frais_lc" && this._est_tete_lc(r);
+    const defaisable = !r.ignore_manuel && (
+      (r.statut === "Identifie" && r.document_type === "Encaissement Paiement" && r.regle === "vir_client")
+      || (r.lien_manuel && (r.lien_motif || "").includes("crédit fournisseur"))
+      || (lc_tete && r.statut === "Identifie" && r.document_type === "Journal Entry"));
+    if (defaisable) {
+      b.push(`<button data-defaire="${esc(r.cle)}" title="${esc(
+        __("Remettre les pièces en l'état : le mouvement redevient ce qu'il était avant l'arbitrage")
+      )}">↩ Défaire</button>`);
+    }
     if (r.ignore_manuel) {
       b.push(`<button data-reactiver="${esc(r.cle)}">Réactiver</button>`);
     } else if (r.lien_manuel) {
       b.push(`<button data-rattacher="${esc(r.cle)}">🔗 Modifier</button>`);
       b.push(`<button data-detacher="${esc(r.cle)}">Détacher</button>`);
     } else {
-      if (r.statut === "Orphelin" && r.categorie !== "frais_bancaires") {
+      // Bordereau crédité plus que l'encaissement ne porte : un chèque déposé jamais inscrit
+      // (30/10/2026). Le bouton l'inscrit dans un encaissement soumis sur ce bordereau.
+      if (r.statut === "A verifier" && r.sens === "Credit" && (r.raison || "").includes("bordereau ")
+          && (r.raison || "").includes("il manque")) {
+        b.push(`<button data-completer="${esc(r.cle)}" title="${esc(
+          __("Inscrire le chèque manquant dans un encaissement sur ce bordereau")
+        )}">➕ Compléter le bordereau</button>`);
+      }
+      if (r.categorie === "frais_lc") {
+        // Frais de lettre de crédit : affectés à la main à un fournisseur (30/10/2026), depuis
+        // la ligne la plus grosse de l'opération seulement.
+        if (lc_tete && r.statut !== "Identifie") {
+          b.push(`<button data-frais-lc="${esc(r.cle)}" title="${esc(
+            __("Choisir le fournisseur : écriture Frais de LC + TVA déductible pour toute l'opération ({0} lignes)", [this._taille_groupe(r)])
+          )}">🏭 Affecter à un fournisseur (LC)</button>`);
+        }
+      } else if (r.statut === "Orphelin" && r.categorie !== "frais_bancaires") {
         b.push(`<button data-creer="${esc(r.cle)}">Créer l'écriture</button>`);
+      }
+      // Virement client reçu que le libellé ne permet pas d'identifier : l'opérateur désigne la
+      // dette qu'il solde, l'encaissement est construit et soumis (30/10/2026).
+      if (r.statut === "Orphelin" && r.sens === "Credit" && r.regle === "vir_client") {
+        b.push(`<button data-dette-client="${esc(r.cle)}" title="${esc(
+          __("Désigner la dette client que ce virement solde : l'encaissement est créé et soumis")
+        )}">💳 Dette client</button>`);
+      }
+      // La banque a débité MOINS que l'écriture (erreur de saisie bancaire) : le manque part en
+      // crédit fournisseur, le mouvement est rattaché à l'écriture et à son correctif (30/10/2026).
+      if (r.statut === "Identifie" && r.sens === "Debit" && r.document_type === "Journal Entry"
+          && flt(r.ecart || 0, 3) < -ib_tolerance(r.montant)) {
+        b.push(`<button data-credit-fournisseur="${esc(r.cle)}" title="${esc(
+          __("La banque a débité moins que l'écriture : reporter le manque en crédit fournisseur")
+        )}">↪ Écart → crédit fournisseur</button>`);
       }
       if (r.statut !== "Identifie" && r.statut !== "Ignore") {
         b.push(`<button data-rattacher="${esc(r.cle)}" title="${esc(
@@ -1526,6 +1600,350 @@ class IdentificationBancaire {
       même sens à ± 10 jours — celles qui citent la référence d'abord —, ou toute autre pièce
       choisie à la main ; le total est comparé au mouvement en direct. Comme « Ignorer », c'est
       un arbitrage humain que la reclassification respecte. */
+  /** ➕ Compléter le bordereau : les chèques en portefeuille (montant manquant en tête), cochés,
+      partent dans un Encaissement Paiement soumis sur le bordereau du mouvement. */
+  async _completer_bordereau(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = await frappe.call({ method: this._m("cheques_manquants"), args: { cle }, freeze: true });
+    const m = r.message || {};
+    const mv = m.mouvement || {};
+    const cheques = m.cheques || [];
+    const choisis = new Map(cheques.filter((c) => c.exact).slice(0, 1).map((c) => [c.name, c]));
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const d = new frappe.ui.Dialog({
+      title: __("Compléter le bordereau {0}", [mv.bon || ""]),
+      size: "large",
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        { fieldtype: "HTML", fieldname: "liste" },
+        { fieldtype: "HTML", fieldname: "total" },
+        { fieldtype: "Small Text", fieldname: "motif", label: __("Précision (facultatif)") },
+        { fieldtype: "HTML", fieldname: "erreur" },
+      ],
+      primary_action_label: __("Inscrire dans un encaissement"),
+      primary_action: async (v) => {
+        if (!choisis.size) {
+          d.fields_dict.erreur.$wrapper.html(`<div style="color:var(--red-600);font-weight:600">${__("Cochez au moins un chèque.")}</div>`);
+          return;
+        }
+        const res = await frappe.call({
+          method: this._m("completer_bordereau"),
+          args: { cle, paiements: JSON.stringify([...choisis.keys()]), motif: v.motif || "" },
+          freeze: true, freeze_message: __("Encaissement et reclassement…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        frappe.show_alert({
+          message: __("Encaissement {0} soumis : {1} — mouvement {2}", [x.encaissement, money(x.total), IB_STATUT_LABEL[x.statut] || x.statut]),
+          indicator: x.statut === "Identifie" ? "green" : "orange",
+        }, 10);
+        this.load();
+      },
+    });
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt"><b>${esc(frappe.datetime.str_to_user(mv.date))}</b> · ${esc(mv.operation || "")}
+        · ${__("encaissement")} ${esc(mv.encaissement || "—")} · ${__("il manque")} <b>${money(mv.manque)}</b></div>
+      <div class="text-muted" style="font-size:12px;margin:4px 0 8px">${__("Chèques encore en portefeuille (« Chèques - A&S ») ; ceux du montant manquant sont en tête et pré-cochés.")}</div>`);
+    const rendre_total = () => {
+      const total = [...choisis.values()].reduce((a, p) => a + flt(p.montant || 0, 3), 0);
+      const ecart = flt(flt(mv.manque, 3) - total, 3);
+      d.fields_dict.total.$wrapper.html(`<div class="ib-rat-total" style="color:${!choisis.size ? "var(--text-muted)" : Math.abs(ecart) < 0.0005 ? "var(--green-600)" : "var(--red-600)"}">
+        ${__("Sélection")} : <b>${money(total)}</b> · ${__("manque")} <b>${money(mv.manque)}</b> · ${__("écart")} <b>${money(ecart)}</b>${choisis.size && Math.abs(ecart) < 0.0005 ? " ✅" : ""}</div>`);
+    };
+    d.fields_dict.liste.$wrapper.html(cheques.length ? `
+      <div class="ib-rat-wrap"><table class="ib-rat">
+        <thead><tr><th></th><th>${__("Client")}</th><th>${__("N° chèque")}</th><th>${__("Paiement")}</th><th>${__("Date")}</th><th class="num">${__("Montant")}</th></tr></thead>
+        <tbody>${cheques.map((c) => `<tr class="${choisis.has(c.name) ? "ib-rat-on" : ""}">
+          <td><input type="checkbox" data-cheque="${esc(c.name)}" ${choisis.has(c.name) ? "checked" : ""}></td>
+          <td>${c.exact ? "⭐ " : ""}${esc(c.client || "")}</td><td>${esc(c.n_cheque || "")}</td>
+          <td><a href="/app/payment-entry/${encodeURIComponent(c.name)}" target="_blank">${esc(c.name)}</a></td>
+          <td>${c.date ? esc(frappe.datetime.str_to_user(c.date)) : ""}</td><td class="num">${money(c.montant)}</td></tr>`).join("")}
+        </tbody></table></div>` : `<div class="text-muted">${__("Aucun chèque en portefeuille.")}</div>`);
+    d.fields_dict.liste.$wrapper.find("[data-cheque]").on("change", (e) => {
+      const nom = $(e.currentTarget).attr("data-cheque");
+      if (e.currentTarget.checked) choisis.set(nom, cheques.find((x) => x.name === nom)); else choisis.delete(nom);
+      $(e.currentTarget).closest("tr").toggleClass("ib-rat-on", e.currentTarget.checked);
+      rendre_total();
+    });
+    rendre_total();
+    d.show();
+  }
+
+  /** 🏭 Frais de LC -> fournisseur : montre l'opération (commissions + TVA de même référence), fait
+      choisir le fournisseur, et le serveur crée l'écriture Frais de LC + TVA / banque. */
+  async _frais_lc(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = await frappe.call({ method: this._m("frais_lc_groupe"), args: { cle }, freeze: true });
+    const g = r.message || {};
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const d = new frappe.ui.Dialog({
+      title: __("Affecter les frais de LC à un fournisseur"),
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        { fieldtype: "Link", fieldname: "supplier", options: "Supplier", label: __("Fournisseur"), reqd: 1 },
+        { fieldtype: "Small Text", fieldname: "motif", label: __("Précision (facultatif)"),
+          description: __("Ex. : LC n° …, commande d'achat …") },
+      ],
+      primary_action_label: __("Créer l'écriture"),
+      primary_action: async (v) => {
+        const res = await frappe.call({
+          method: this._m("affecter_frais_lc"), args: { cle, supplier: v.supplier, motif: v.motif || "" },
+          freeze: true, freeze_message: __("Écriture et reclassement…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        frappe.show_alert({
+          message: __("Frais de LC affectés à {0} : {1} ({2} HT + {3} TVA) — mouvement {4}",
+            [x.fournisseur, x.ecriture, money(x.ht), money(x.tva), IB_STATUT_LABEL[x.statut] || x.statut]),
+          indicator: x.statut === "Identifie" ? "green" : "orange",
+        }, 10);
+        this.load();
+      },
+    });
+    const mv = g.mouvement || {};
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt"><b>${esc(frappe.datetime.str_to_user(mv.date))}</b> · ${__("opération de LC")}
+        · <span class="text-muted">${esc(mv.reference || "")}</span></div>
+      <table class="ib-rat" style="margin:8px 0"><tbody>${(g.lignes || []).map((l) =>
+        `<tr><td>${esc(l.operation || "")}${l.regle === "tva_bancaire" ? ' <span class="text-muted">(TVA)</span>' : ""}</td>
+         <td class="num">${money(l.debit)}</td></tr>`).join("")}
+        <tr><td><b>${__("Hors-taxe")}</b> → ${esc(g.compte || "")}</td><td class="num"><b>${money(g.ht)}</b></td></tr>
+        <tr><td><b>${__("TVA déductible")}</b> → TVA 19 %</td><td class="num"><b>${money(g.tva)}</b></td></tr>
+        <tr><td><b>${__("Total débité")}</b></td><td class="num"><b>${money(g.total)}</b></td></tr>
+      </tbody></table>
+      <div class="text-muted" style="font-size:12px">${__(
+        "Une écriture de charge est créée et validée (pas une avance : elle est détectée par le dossier des charges et sa TVA part en déductible). Le fournisseur est inscrit dessus pour le suivi en pourcentage.")}</div>`);
+    d.show();
+  }
+
+  /** 📊 Frais de LC par fournisseur : frais HT affectés / achats du fournisseur, en %. */
+  async _rapport_frais_lc() {
+    const esc = frappe.utils.escape_html;
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const charger = async (date_from, date_to) => {
+      const r = await frappe.call({ method: this._m("frais_lc_par_fournisseur"),
+        args: { date_from: date_from || null, date_to: date_to || null }, freeze: true });
+      return r.message || {};
+    };
+    let x = await charger();
+    const d = new frappe.ui.Dialog({
+      title: __("Frais de LC par fournisseur"),
+      size: "large",
+      fields: [
+        { fieldtype: "Date", fieldname: "date_from", label: __("Du"), default: x.date_from },
+        { fieldtype: "Column Break" },
+        { fieldtype: "Date", fieldname: "date_to", label: __("Au"), default: x.date_to },
+        { fieldtype: "Section Break" },
+        { fieldtype: "HTML", fieldname: "tableau" },
+      ],
+      primary_action_label: __("Actualiser"),
+      primary_action: async (v) => { x = await charger(v.date_from, v.date_to); rendre(); },
+    });
+    const rendre = () => {
+      const lignes = x.lignes || [];
+      d.fields_dict.tableau.$wrapper.html(lignes.length ? `
+        <div class="ib-rat-wrap"><table class="ib-rat">
+          <thead><tr><th>${__("Fournisseur")}</th><th class="num">${__("Frais LC HT")}</th><th class="num">${__("TVA")}</th>
+            <th class="num">${__("Achats TTC")}</th><th class="num">${__("% des achats")}</th><th>${__("Écritures")}</th></tr></thead>
+          <tbody>${lignes.map((l) => `<tr><td>${esc(l.fournisseur)}</td><td class="num">${money(l.frais_ht)}</td>
+            <td class="num">${money(l.tva)}</td><td class="num">${money(l.achats)}</td>
+            <td class="num"><b>${l.pourcentage === null ? "—" : l.pourcentage + " %"}</b></td>
+            <td>${(l.ecritures || []).map((n) => `<a href="/app/journal-entry/${encodeURIComponent(n)}" target="_blank">${esc(n)}</a>`).join(", ")}</td></tr>`).join("")}
+          </tbody><tfoot><tr><td><b>${__("Total")}</b></td><td class="num"><b>${money(x.total_ht)}</b></td>
+            <td class="num"><b>${money(x.total_tva)}</b></td><td colspan="3"></td></tr></tfoot></table></div>
+        <div class="text-muted" style="font-size:12px;margin-top:6px">${__("Compte de charge : {0}. Achats = factures d'achat validées du fournisseur sur la période.", [esc(x.compte || "")])}</div>`
+        : `<div class="text-muted">${__("Aucun frais de LC affecté sur la période.")}</div>`);
+    };
+    rendre();
+    d.show();
+  }
+
+  /** ↩ Défaire : explique ce qui va être remis en l'état, demande un motif, et laisse le
+      serveur tout faire dans une seule transaction. */
+  _defaire(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = ((this._data && this._data.rows) || []).find((x) => x.cle === cle) || {};
+    const virement = r.document_type === "Encaissement Paiement";
+    const d = new frappe.ui.Dialog({
+      title: __("Défaire l'arbitrage"),
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        { fieldtype: "Small Text", fieldname: "motif", label: __("Motif"), reqd: 1,
+          description: __("Pourquoi ce rattachement était faux (ex. : mauvais client, mauvaise dette).") },
+      ],
+      primary_action_label: __("Défaire"),
+      primary_action: async (v) => {
+        if (!(v.motif || "").trim()) return;
+        const res = await frappe.call({
+          method: this._m("defaire_rattachement"), args: { cle, motif: v.motif },
+          freeze: true, freeze_message: __("Remise en l'état…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        frappe.msgprint({
+          title: __("Arbitrage défait"), indicator: "green",
+          message: `<ul style="margin:6px 0 0 18px">${(x.trace || []).map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+            <div style="margin-top:6px">${__("Mouvement : {0}", [esc(IB_STATUT_LABEL[x.statut] || x.statut || "")])}</div>`,
+        });
+        this.load();
+      },
+    });
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt"><b>${esc(frappe.datetime.str_to_user(r.date))}</b> · ${esc(r.operation || "")}
+        · <span class="text-muted">${esc(r.reference || "")}</span></div>
+      <div style="font-size:12.5px;margin:8px 0">${virement
+        ? __("Les paiements bancaires nés de l'encaissement {0} pour ce virement seront annulés, le paiement de dette d'origine reviendra de la corbeille, l'échéancier de la commande retrouvera sa ligne « Dette non payée », et l'encaissement sera annulé (ou allégé de ce virement s'il en porte d'autres). Le mouvement redeviendra orphelin.", [esc(r.document_name || "")])
+        : r.categorie === "frais_lc"
+          ? __("L'écriture Frais de LC {0} sera annulée : l'opération (toutes ses lignes) redeviendra à affecter.", [esc(r.document_name || "")])
+          : __("L'écriture correctif (crédit fournisseur) sera annulée et le rattachement manuel retiré. Le mouvement retrouvera son écart.")}</div>`);
+    d.show();
+  }
+
+  /** Écart bancaire -> crédit fournisseur : la banque a débité moins que l'écriture. On montre
+      les montants, on demande un motif, et le serveur crée l'écriture Dr banque / Cr fournisseur
+      du manque puis rattache le mouvement aux deux pièces (écart nul). */
+  async _credit_fournisseur(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = ((this._data && this._data.rows) || []).find((x) => x.cle === cle) || {};
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const manque = flt(flt(r.montant_document, 3) - flt(r.montant, 3), 3);
+    const d = new frappe.ui.Dialog({
+      title: __("Reporter l'écart en crédit fournisseur"),
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        {
+          fieldtype: "Small Text", fieldname: "motif", label: __("Motif"),
+          description: __("Ex. : erreur de saisie de la banque (841,100 débités pour 4 841,000), chèque partiellement honoré…"),
+        },
+      ],
+      primary_action_label: __("Créer le crédit fournisseur"),
+      primary_action: async (v) => {
+        const res = await frappe.call({
+          method: this._m("basculer_ecart_credit_fournisseur"),
+          args: { cle, motif: v.motif || "" },
+          freeze: true, freeze_message: __("Écriture et rattachement…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        frappe.show_alert({
+          message: __("{0} reporté en crédit fournisseur {1} ({2}) — mouvement {3}, écart {4}",
+            [money(x.manque), x.fournisseur, x.ecriture, IB_STATUT_LABEL[x.statut] || x.statut, money(x.ecart)]),
+          indicator: Math.abs(flt(x.ecart, 3)) < 0.005 ? "green" : "orange",
+        }, 10);
+        this.load();
+      },
+    });
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt"><b>${esc(frappe.datetime.str_to_user(r.date))}</b> · ${esc(r.operation || "")}
+        · <span class="text-muted">${esc(r.reference || "")}</span></div>
+      <table class="ib-rat" style="margin:8px 0"><tbody>
+        <tr><td>${__("Débité par la banque")}</td><td class="num"><b>${money(r.montant)}</b></td></tr>
+        <tr><td>${__("Comptabilisé")} (${esc(r.document_name || "")})</td><td class="num">${money(r.montant_document)}</td></tr>
+        <tr><td>${__("Manque à reporter en crédit fournisseur")}</td><td class="num" style="color:var(--red-600)"><b>${money(manque)}</b></td></tr>
+      </tbody></table>
+      <div class="text-muted" style="font-size:12px">${__(
+        "Une écriture Dr banque / Cr fournisseur de ce montant est créée et validée, puis le mouvement est rattaché à l'écriture d'origine et à ce correctif : ensemble ils font le débit du relevé. Le crédit fournisseur sera soldé quand la banque corrigera, ou par un nouveau paiement.")}</div>`);
+    d.show();
+  }
+
+  /** Virement client orphelin -> dette client : liste des dettes en attente (client suggéré par
+      le libellé en tête), sélection, total comparé au crédit, puis le serveur construit et
+      soumet l'Encaissement Paiement. */
+  async _dette_client(cle) {
+    const esc = frappe.utils.escape_html;
+    const r = await frappe.call({
+      method: this._m("dettes_clients_en_attente"), args: { cle },
+      freeze: true, freeze_message: __("Dettes en attente…"),
+    });
+    const m = r.message || {};
+    const mv = m.mouvement || {};
+    const dettes = m.dettes || [];
+    const choisies = new Map();
+    const money = (v) => format_number(flt(v || 0, 3), null, 3);
+    const d = new frappe.ui.Dialog({
+      title: __("Rattacher le virement à une dette client"),
+      size: "extra-large",
+      fields: [
+        { fieldtype: "HTML", fieldname: "entete" },
+        { fieldtype: "Data", fieldname: "filtre", label: __("Filtrer par client") },
+        { fieldtype: "HTML", fieldname: "liste" },
+        { fieldtype: "HTML", fieldname: "total" },
+        {
+          fieldtype: "Small Text", fieldname: "motif", label: __("Motif (facultatif)"),
+          description: __("Ex. : libellé bancaire « U S D O SYMBOL » = American Embassy Tunis."),
+        },
+        { fieldtype: "HTML", fieldname: "erreur" },
+      ],
+      primary_action_label: __("Encaisser la dette par ce virement"),
+      primary_action: async (v) => {
+        const err = (t) => d.fields_dict.erreur.$wrapper.html(
+          `<div style="color:var(--red-600);font-weight:600">${esc(t)}</div>`);
+        if (!choisies.size) return err(__("Cochez au moins une dette."));
+        const clients = new Set([...choisies.values()].map((x) => x.client));
+        if (clients.size > 1) return err(__("Un virement solde les dettes d'un seul client."));
+        const res = await frappe.call({
+          method: this._m("rattacher_dette_client"),
+          args: { cle, dettes: JSON.stringify([...choisies.keys()]), motif: v.motif || "" },
+          freeze: true, freeze_message: __("Encaissement et reclassement…"),
+        });
+        const x = res.message || {};
+        d.hide();
+        frappe.show_alert({
+          message: __("Encaissement {0} soumis pour {1} : {2} — mouvement {3}", [x.encaissement, x.client,
+            money(x.total), IB_STATUT_LABEL[x.statut] || x.statut])
+            + (flt(x.reliquat) ? " — " + __("reliquat {0} resté en dette", [money(x.reliquat)]) : ""),
+          indicator: x.statut === "Identifie" ? "green" : "orange",
+        }, 10);
+        this.load();
+      },
+    });
+    d.fields_dict.entete.$wrapper.html(`
+      <div class="ib-rat-mvt"><b>${esc(frappe.datetime.str_to_user(mv.date))}</b> · ${esc(mv.operation || "")}
+        · <span class="text-muted">${esc(mv.reference || "")}</span> · <b>${money(mv.montant)}</b> (${__("crédit")})</div>
+      <div class="text-muted" style="font-size:12px;margin:4px 0 8px">${m.client_suggere
+        ? __("Client suggéré par le libellé : {0}.", [esc(m.client_suggere)])
+        : __("Aucun client reconnu dans le libellé : choisissez la dette à la main.")}
+        ${__("Les dettes du montant exact sont en tête.")}</div>`);
+    const rendre_liste = () => {
+      const f = (d.get_value("filtre") || "").trim().toLowerCase();
+      const lignes = dettes.filter((x) => !f || (x.client || "").toLowerCase().includes(f) || choisies.has(x.name));
+      d.fields_dict.liste.$wrapper.html(lignes.length ? `
+        <div class="ib-rat-wrap"><table class="ib-rat">
+          <thead><tr><th></th><th>${__("Client")}</th><th>${__("Dette")}</th><th>${__("Commande")}</th><th>${__("Date")}</th><th class="num">${__("Montant")}</th><th class="num">${__("Écart")}</th></tr></thead>
+          <tbody>${lignes.slice(0, 150).map((c) => `<tr class="${choisies.has(c.name) ? "ib-rat-on" : ""}">
+            <td><input type="checkbox" data-dette="${esc(c.name)}" ${choisies.has(c.name) ? "checked" : ""}></td>
+            <td>${c.suggere ? "⭐ " : ""}${esc(c.client || "")}</td>
+            <td><a href="/app/payment-entry/${encodeURIComponent(c.name)}" target="_blank">${esc(c.name)}</a></td>
+            <td>${esc(c.sales_order || c.reference_no || "")}</td>
+            <td>${c.date ? esc(frappe.datetime.str_to_user(c.date)) : ""}</td>
+            <td class="num">${money(c.montant)}</td>
+            <td class="num" style="color:${Math.abs(c.ecart) < 0.0005 ? "var(--green-600)" : "inherit"}">${money(c.ecart)}</td>
+          </tr>`).join("")}</tbody></table></div>`
+        : `<div class="text-muted">${__("Aucune dette client en attente.")}</div>`);
+      d.fields_dict.liste.$wrapper.find("[data-dette]").on("change", (e) => {
+        const nom = $(e.currentTarget).attr("data-dette");
+        const c = dettes.find((x) => x.name === nom);
+        if (e.currentTarget.checked) choisies.set(nom, c); else choisies.delete(nom);
+        $(e.currentTarget).closest("tr").toggleClass("ib-rat-on", e.currentTarget.checked);
+        rendre_total();
+      });
+    };
+    const rendre_total = () => {
+      const total = [...choisies.values()].reduce((a, p) => a + flt(p.montant || 0, 3), 0);
+      const ecart = flt(flt(mv.montant, 3) - total, 3);
+      const couleur = !choisies.size ? "var(--text-muted)" : Math.abs(ecart) < 0.0005 ? "var(--green-600)"
+        : Math.abs(ecart) <= flt(m.tolerance || 1, 3) ? "var(--orange-600)" : "var(--red-600)";
+      d.fields_dict.total.$wrapper.html(`<div class="ib-rat-total" style="color:${couleur}">
+        ${__("Sélection")} : ${choisies.size} ${__("dette(s)")} = <b>${money(total)}</b>
+        · ${__("virement")} <b>${money(mv.montant)}</b> · ${__("écart")} <b>${money(ecart)}</b>${
+        choisies.size && Math.abs(ecart) < 0.0005 ? " ✅" : ""}</div>`);
+    };
+    d.fields_dict.filtre.$input.on("input", rendre_liste);
+    rendre_liste();
+    rendre_total();
+    d.show();
+  }
+
   async _rattacher(cle) {
     const esc = frappe.utils.escape_html;
     const r = await frappe.call({

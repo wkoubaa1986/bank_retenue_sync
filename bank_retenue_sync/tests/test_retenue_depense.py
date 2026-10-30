@@ -686,3 +686,77 @@ class TestPastilleEnVueListe(unittest.TestCase):
 
         self.assertEqual(hooks.doctype_list_js.get("Journal Entry"),
                          "public/js/journal_entry_list.js")
+
+
+class TestControleSaisie(unittest.TestCase):
+    """Partir du PAIEMENT (30/10/2026). Modèle : chèque 4001060, Ste HEDI RIAHI — facture
+    4 713,400 TTC, chèque émis à 4 666,266 (net de 1 %), écriture passée au brut faute de
+    retenue proposée ; écart −47,134 à l'identification bancaire."""
+
+    def test_la_retenue_se_deduit_du_montant_paye(self):
+        self.assertEqual(D.retenue_deduite(4713.4, 4666.266), 47.134)
+
+    def test_un_paiement_qui_n_est_pas_un_net_ne_deduit_rien(self):
+        self.assertIsNone(D.retenue_deduite(100.0, 100.0))
+        self.assertIsNone(D.retenue_deduite(100.0, 150.0))
+        self.assertIsNone(D.retenue_deduite(100.0, 0))
+
+    def test_plausible_sur_le_ttc_hors_timbre_ou_brut(self):
+        self.assertTrue(D.retenue_plausible(4713.4, 47.134))
+        # Chèque 4001053 (SOUTD) : 16,129 sur 1 613,969 TTC avec timbre de 1 DT.
+        self.assertTrue(D.retenue_plausible(1613.969, 16.129, timbre=1.0))
+        # Timbre présent sur la facture mais non lu : l'assiette TTC − 1 reste admise.
+        self.assertTrue(D.retenue_plausible(1613.969, 16.13))
+
+    def test_pas_plausible_quand_ce_n_est_pas_le_taux(self):
+        self.assertFalse(D.retenue_plausible(4891.0, 4049.9))      # chèque 4001056 : 841,100 payés
+        self.assertFalse(D.retenue_plausible(1613.969, 17.131))
+        self.assertFalse(D.retenue_plausible(1613.969, 0))
+
+    def test_le_paiement_net_donne_la_retenue_sans_alerte(self):
+        c = D.controle("Facture d'achat", 4713.4, paye=4666.266)
+        self.assertEqual((c["retenue"], c["net"], c["origine"]), (47.134, 4666.266, "paiement"))
+        self.assertTrue(c["assujettie"])
+        self.assertFalse(c["alerte_sans_retenue"])
+        self.assertEqual(c["avertissements"], [])
+
+    def test_le_paiement_prime_sur_la_retenue_saisie(self):
+        c = D.controle("Facture d'achat", 4713.4, retenue=10.0, paye=4666.266)
+        self.assertEqual(c["retenue"], 47.134)
+
+    def test_sans_rien_c_est_la_proposition(self):
+        c = D.controle("Facture d'achat", 4713.4)
+        self.assertEqual((c["retenue"], c["origine"]), (47.134, "proposition"))
+
+    def test_assujettie_sans_retenue_declenche_l_alerte(self):
+        """C'est exactement le cas 4001060 : « 0 » envoyé par défaut, écriture au brut."""
+        c = D.controle("Facture d'achat", 4713.4, retenue=0)
+        self.assertTrue(c["alerte_sans_retenue"])
+        self.assertEqual(c["retenue"], 0.0)
+        self.assertEqual(len(c["avertissements"]), 1)
+        self.assertIn("aucune retenue", c["avertissements"][0])
+
+    def test_un_paiement_qui_n_est_pas_un_pour_cent_est_signale_sans_bloquer(self):
+        """Chèque 4001056 (MAYAR) : 841,100 payés sur 4 891,000 — ce n'est pas une retenue."""
+        c = D.controle("Dépense avec facture", 4891.0, paye=841.1)
+        self.assertEqual(c["retenue"], 4049.9)
+        self.assertFalse(c["alerte_sans_retenue"])
+        self.assertEqual(len(c["avertissements"]), 1)
+        self.assertIn("n'est pas", c["avertissements"][0])
+
+    def test_un_paiement_superieur_au_ttc_est_signale(self):
+        c = D.controle("Facture d'achat", 100.0, paye=150.0)
+        self.assertEqual(c["retenue"], 0.0)
+        self.assertFalse(c["alerte_sans_retenue"])          # 100 DT : sous le seuil
+        self.assertIn("dépasse", c["avertissements"][0])
+
+    def test_une_depense_non_facturee_n_est_jamais_alertee(self):
+        c = D.controle("Dépense non facturée", 3000.0)
+        self.assertEqual(c["retenue"], 0.0)
+        self.assertFalse(c["assujettie"])
+        self.assertFalse(c["alerte_sans_retenue"])
+        self.assertEqual(c["avertissements"], [])
+
+    def test_le_timbre_sort_de_l_assiette_de_la_proposition(self):
+        c = D.controle("Facture d'achat", 4595.022, timbre=1.0)
+        self.assertEqual(c["retenue"], 45.94)      # JEGHAM FA-2026-0153

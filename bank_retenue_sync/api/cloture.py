@@ -29,6 +29,14 @@ def _guard(ecriture: bool = False):
     frappe.only_for(ROLES_ECRITURE if ecriture else ROLES_LECTURE)
 
 
+def _refuser_mois_en_cours(mois: str) -> None:
+    """Un mois en cours se consulte (frais de LC, charges du jour) mais ne se clot pas : le
+    dossier serait incomplet et « Envoyé » figerait des rattachements encore mouvants."""
+    if periode.est_en_cours(mois):
+        frappe.throw(_("{0} est en cours : le dossier se génère et s'envoie une fois le mois "
+                       "terminé.").format(periode.libelle(mois)))
+
+
 @frappe.whitelist()
 def get_contexte() -> dict:
     """Ce dont la page a besoin a l'ouverture : les mois offerts et celui propose par defaut."""
@@ -37,7 +45,7 @@ def get_contexte() -> dict:
     return {
         "mois": mois,
         "libelle": periode.libelle(mois),
-        "mois_offerts": periode.derniers(24),
+        "mois_offerts": periode.derniers(24, avec_courant=True),
         "peut_generer": any(r in frappe.get_roles() for r in ROLES_ECRITURE),
     }
 
@@ -393,6 +401,7 @@ def generer_dossier(mois=None, avec_pdf=1, avec_releve=0) -> dict:
     """
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
+    _refuser_mois_en_cours(mois)
     etat = M_dossier.lancer(mois, avec_pdf=bool(frappe.utils.cint(avec_pdf)),
                             avec_releve=bool(frappe.utils.cint(avec_releve)))
     return {"mois": mois, "etat": etat,
@@ -560,6 +569,7 @@ def marquer_envoye(mois=None) -> dict:
     """Fige le mois comme envoye au comptable. Idempotent : deja envoye -> aucune modification."""
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
+    _refuser_mois_en_cours(mois)
     doc = _dossier_doc(mois, creer=True)
     if (doc.statut or "Brouillon") != "Envoyé":
         doc.statut = "Envoyé"

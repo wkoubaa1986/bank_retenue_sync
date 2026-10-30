@@ -110,6 +110,11 @@ class LinkContext:
     # impayes, pour que l'ecran dise QUEL cheque de QUEL client est revenu, pas seulement combien.
     impayes_detail: dict = field(default_factory=dict)
     cheque_no_index: dict = field(default_factory=dict)
+    # Les cheques encore en PORTEFEUILLE (« Chèques - A&S », pas encore dans un encaissement) :
+    # c'est parmi eux qu'on nomme celui qui manque a un bordereau credite plus que son
+    # encaissement ne porte (cas reel 27/10/2026 : bordereau 09028865, 141 + 609 credites, seul
+    # le cheque de 141 inscrit — le 609 etait le cheque WTS 0000061-BH, jamais saisi).
+    portefeuille_cheques: list = field(default_factory=list)
     # Payment Entry soumises touchant le compte bancaire, dans les deux sens. Sans elles, un
     # reglement fournisseur (Payment Entry `Pay`, 154 sur Zitouna) ressort « orphelin » alors
     # qu'il est parfaitement saisi.
@@ -198,6 +203,7 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
         impayes_par_cle={c: e["total"] for c, e in _impayes.items()},
         impayes_detail=_impayes,
         encaissements=pending.etat_encaissements_par_cle(),
+        portefeuille_cheques=pending.get_pending_cheques(),
         je_brouillons=set(frappe.get_all("Journal Entry", filters={"docstatus": 0},
                                          pluck="name")),
         banque_par_cle=banque_par_cle,
@@ -205,10 +211,29 @@ def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
     )
 
 
-def _montant_bancaire(doctype: str, name: str):
+def montant_oriente(debit, credit, sens=None):
+    """Ce qu'une ecriture fait passer par la banque, VU DU MOUVEMENT. Fonction pure.
+
+    Sans `sens` : la valeur absolue (comportement historique). Avec le sens du mouvement, le
+    montant est SIGNE : une ecriture qui va dans le sens du mouvement compte positif, une
+    ecriture qui le CORRIGE compte negatif. C'est ce qui permet a un rattachement manuel de
+    porter l'ecriture d'origine ET son correctif — cas reel du 30/10/2026 : cheque 4001056,
+    4 841,000 comptabilises, 841,100 debites par la banque (erreur de saisie bancaire) ; le
+    manque est reporte en credit fournisseur par une ecriture Dr banque / Cr fournisseur de
+    3 999,900, et les deux pieces font ensemble 841,100 = le releve, ecart nul."""
+    debit, credit = flt(debit, 3), flt(credit, 3)
+    if sens == "Debit":
+        return round(credit - debit, 3)      # sortie d'argent : la banque est creditee
+    if sens == "Credit":
+        return round(debit - credit, 3)
+    return round(abs(debit - credit), 3)
+
+
+def _montant_bancaire(doctype: str, name: str, sens: str = None):
     """Ce que la piece fait passer par la banque : cumul de ses lignes sur le compte bancaire
-    (une ecriture), montant paye (un paiement). Une ecriture qui ne touche pas la banque rend
-    son total : le rattachement est un choix humain, on mesure quand meme l'ecart."""
+    (une ecriture, oriente par `sens` quand il est donne — cf. `montant_oriente`), montant paye
+    (un paiement). Une ecriture qui ne touche pas la banque rend son total : le rattachement
+    est un choix humain, on mesure quand meme l'ecart."""
     from bank_retenue_sync.encaissement.pending import BANK_ACCOUNT
 
     if doctype == "Payment Entry":
@@ -218,7 +243,7 @@ def _montant_bancaire(doctype: str, name: str):
                       (name, BANK_ACCOUNT))
     debit, credit = (flt(r[0][0], 3), flt(r[0][1], 3)) if r else (0.0, 0.0)
     if debit or credit:
-        return round(abs(debit - credit), 3)
+        return montant_oriente(debit, credit, sens)
     return flt(frappe.db.get_value(doctype, name, "total_debit"), 3)
 
 
@@ -226,11 +251,13 @@ def liens_manuels_enrichis(liens: dict) -> dict:
     """Ajoute a chaque piece rattachee son etat (docstatus, None = supprimee) et son montant."""
     out = {}
     for cle, lien in (liens or {}).items():
+        # Le sens du mouvement oriente le montant de chaque piece (cf. `montant_oriente`).
+        sens = frappe.db.get_value(registry.DOCTYPE, cle, "sens")
         pieces = []
         for p in lien.get("pieces") or []:
             docstatus = frappe.db.get_value(p["doctype"], p["name"], "docstatus")
             pieces.append(dict(p, docstatus=docstatus,
-                               montant=(_montant_bancaire(p["doctype"], p["name"])
+                               montant=(_montant_bancaire(p["doctype"], p["name"], sens)
                                         if docstatus is not None else None)))
         out[cle] = dict(lien, pieces=pieces)
     return out
@@ -305,6 +332,37 @@ def _mesurer_ecart(ctx: Classification, m: dict, montant_document):
     ctx.ecart = round(banque - ctx.montant_document, 3)
 
 
+def _expliquer_manque(ctx: Classification, rule, cle: str, context: LinkContext) -> None:
+    """La banque a credite PLUS que l'encaissement ne porte : un cheque du bordereau n'y est pas.
+
+    Jusqu'ici la ligne restait « Identifie » avec un ecart muet (+609 sur le bordereau 09028865
+    le 27/10/2026), et l'utilisateur ne voyait pas QUEL cheque manquait. Au-dela de la
+    tolerance, la ligne passe A VERIFIER et la raison nomme le ou les cheques en portefeuille du
+    montant manquant, avec le document ou les inscrire. Fonction pure."""
+    from bank_retenue_sync.bank import ecarts as E
+
+    if rule.flux not in ("cheque", "traite") or ctx.statut != STATUT_IDENTIFIE:
+        return
+    ecart = flt(ctx.ecart, 3)
+    if ecart <= E.tolerance(flt(ctx.montant_document) or ecart):
+        return
+    ctx.statut = STATUT_A_VERIFIER
+    tete = ("bordereau %s : la banque a crédité %s pour %s inscrits à l'encaissement %s — il manque %s"
+            % (cle, flt(flt(ctx.montant_document) + ecart, 3), flt(ctx.montant_document, 3),
+               ctx.document_name or "", ecart))
+    candidats = [p for p in (context.portefeuille_cheques or [])
+                 if abs(flt(p.get("paid_amount"), 3) - ecart) < 0.0005]
+    if candidats:
+        noms = " ; ".join("%s n° %s (%s)" % (p.get("party") or "?", p.get("reference_no") or "?", p.get("name"))
+                          for p in candidats[:4])
+        texte = "%s — chèque(s) en portefeuille de ce montant : %s → à ajouter à l'encaissement" % (tete, noms)
+    else:
+        texte = "%s — aucun chèque de ce montant en portefeuille : chèque jamais saisi ?" % tete
+    # Un impaye partiel a deja explique une part de l'ecart (`_expliquer_impaye`) : on garde son
+    # mot (quel cheque est revenu), le manque restant vient apres.
+    ctx.raison = (ctx.raison + " — " + texte) if ctx.raison else texte
+
+
 def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
     """Statut d'un mouvement pris en charge par un flux d'encaissement deja code."""
     cle = _cle_bancaire(rule, m, numero)
@@ -349,6 +407,7 @@ def _resoudre_flux(rule, m, numero, ctx: Classification, context: LinkContext):
         else:
             _mesurer_ecart(ctx, m, montant)
         _expliquer_impaye(ctx, cle, context)
+        _expliquer_manque(ctx, rule, cle, context)
         return
 
     ref = (m.get("reference") or "").strip()
@@ -606,9 +665,13 @@ def apparier_echeances(movements: list, context: LinkContext, rules=None) -> dic
         rule = R.find_rule(m, rules)
         if not rule or rule.groupe != "echeance":
             continue
-        g = groupes.setdefault(cle_echeance(m), {"total": 0.0, "nb": 0, "date": m.get("date")})
+        g = groupes.setdefault(cle_echeance(m), {"total": 0.0, "nb": 0, "date": m.get("date"),
+                                                 "lc": False})
         g["total"] = round(g["total"] + flt(m.get("debit"), 3) + flt(m.get("credit"), 3), 3)
         g["nb"] += 1
+        # Un groupe qui contient une commission de LC est une operation de LC : ses TVA aussi.
+        if rule.categorie == R.CATEGORIE_LC:
+            g["lc"] = True
 
     consommees: set = set()
     out: dict = {}
@@ -641,7 +704,7 @@ def apparier_echeances(movements: list, context: LinkContext, rules=None) -> dic
         out[cle] = {"voucher": best["voucher_no"] if best else None,
                     "montant": best["montant"] if best else 0.0,
                     "ecart": round(total - best["montant"], 3) if best else 0.0,
-                    "nb": g["nb"], "total": total}
+                    "nb": g["nb"], "total": total, "lc": g.get("lc", False)}
     return out
 
 
@@ -666,6 +729,18 @@ def _resoudre_echeance(rule, m, ctx: Classification, context: LinkContext):
         return
 
     ctx.groupe = "echeance-%s-%s" % cle
+    if ap and ap.get("lc"):
+        # Operation de lettre de credit (commissions + TVA de meme reference) : la categorie du
+        # groupe s'impose a chaque ligne, TVA comprise, et le groupe se nomme comme tel.
+        ctx.categorie = R.CATEGORIE_LC
+        ctx.groupe = "lc-%s-%s" % cle
+        if not ap["voucher"]:
+            ctx.statut = STATUT_ORPHELIN
+            ctx.document_type = None
+            ctx.document_name = None
+            ctx.raison = ("frais de lettre de crédit non affectés (%s lignes, %s) : choisissez le "
+                          "fournisseur avec « Affecter à un fournisseur (LC) »" % (ap["nb"], ap["total"]))
+            return
     if ap and ap["voucher"]:
         ctx.document_type = "Journal Entry"
         ctx.document_name = ap["voucher"]
