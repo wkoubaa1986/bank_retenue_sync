@@ -44,9 +44,16 @@ function poser_css_certificat() {
 }
 
 function bouton_certificat(frm) {
+  // Le serveur (tej.emis.preparer) n'ouvre le certificat qu'à ces deux rôles : pour les autres (un employé qui
+  // valide sa facture d'achat, Sadok le 31/10/2026), l'appel finissait en « Pas permis » répété à chaque
+  // rafraîchissement. On ne demande rien à qui n'y a pas droit.
+  if (!(frappe.user.has_role("System Manager") || frappe.user.has_role("Accounts Manager"))) return;
+  if (frm._certificat_en_cours) return;
+  frm._certificat_en_cours = true;
   frappe.call({
     method: "bank_retenue_sync.tej.emis.preparer",
     args: { facture: frm.doc.name },
+    always: () => { frm._certificat_en_cours = false; },
     callback: (r) => {
       const ctx = r.message || {};
       // Aucune retenue : rien à déclarer, et un bouton inerte ferait douter.
