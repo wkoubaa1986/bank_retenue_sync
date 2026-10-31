@@ -39,6 +39,11 @@ from bank_retenue_sync.achat import regles
 from bank_retenue_sync.tej import depot as M_depot
 from bank_retenue_sync.tej import matricule, pdf
 
+
+#: Qui prépare, soumet, répète et suit un certificat de retenue : la comptabilité, et depuis le 31/10/2026 les
+#: employés qui saisissent les factures d'achat (décision utilisateur ; la même liste partout, cf. `preparer`).
+ROLES_CERTIFICAT = ["System Manager", "Accounts Manager", "Purchase Manager", "Purchase User"]
+
 ROUTE_CREER = "/jobs/tej/certificats-emis"
 ROUTE_JOB_PDF_EMIS = "/jobs/tej/certificats-emis/pdf"
 ROUTE_JOB_EXPORT = "/jobs/tej/certificats-emis/export"
@@ -810,7 +815,7 @@ def verifier_concordance(facture, reference):
     - un scan sans couche texte ne prouve rien -> « inverifiable », avec les deux liens pour
       trancher a l'oeil.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     from bank_retenue_sync.bank import movements
 
     atteste = _certificat_attache(facture)
@@ -869,7 +874,7 @@ def verifier_concordances(paires):
     du service — paralleliser reviendrait a se faire la queue a soi-meme. Une paire en erreur
     n'arrete pas les suivantes.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     paires = frappe.parse_json(paires) if isinstance(paires, str) else paires
     out = []
     for paire in paires or []:
@@ -893,7 +898,7 @@ def voir_certificat_orphelin(reference):
     ni facture ni piece ou cliquer. Le PDF est range en File prive non attache ; s'il a deja
     ete telecharge (meme nom, suffixe d'homonymie compris), on le rend tel quel plutot que de
     refaire un job de generation sur le worker unique."""
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     from frappe.utils.file_manager import save_file
 
     from bank_retenue_sync.bank import movements
@@ -917,7 +922,7 @@ def attacher_certificat(facture, reference):
 
     L'attachement EST l'identification : une fois le PDF sur la facture, elle passe
     « Certificat émis ✓ » et le certificat sort de la liste des orphelins."""
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     res = attacher_pdf(facture, reference)
     frappe.db.commit()
     return res
@@ -952,7 +957,7 @@ def preparer(facture):
     refus au clic. Un ecran qui propose un geste interdit est pire qu'un ecran qui ne le propose
     pas — ce n'est pas de la lecture, c'est la preparation d'une declaration fiscale.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     ctx = contexte(facture)
     ctx["charge_utile"] = charge_utile(ctx) if not ctx["manques"] else None
     # Sans rafraichir : l'ecran doit s'ouvrir tout de suite. Ce qu'on trouve ici est donc un
@@ -1051,7 +1056,7 @@ def etats(factures):
 @frappe.whitelist()
 def repeter(facture):
     """Remplit le formulaire TEJ sans le valider, et rend ce que le portail a calculé."""
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     return emettre(facture, dry_run=True)
 
 
@@ -1069,7 +1074,7 @@ def soumettre(facture, date_paiement=None):
     attendre de savoir ce que le portail répondra — c'est justement entre l'envoi et la réponse
     qu'un second clic coûte le plus cher.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
 
     # Les contrôles locaux restent synchrones : ils sont instantanés, et un refus doit se voir
     # tout de suite plutôt que d'arriver par une notification trois minutes plus tard.
@@ -1147,7 +1152,7 @@ def executer_soumission(facture, date_paiement=None, depot_nom=None) -> dict:
 @frappe.whitelist()
 def reprendre_pdf(facture, reference):
     """Rattrape un PDF qui n'a pas pu etre telecharge juste apres la soumission."""
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     res = attacher_pdf(facture, reference)
     frappe.db.commit()
     return res
@@ -1371,7 +1376,7 @@ def suivre(facture):
     « Vérifier maintenant » repondait « aucun dépôt en attente » — alors que c'est precisement la
     ligne a relire, et que le suivi sait maintenant la conclure depuis l'export.
     """
-    frappe.only_for(["System Manager", "Accounts Manager"])
+    frappe.only_for(ROLES_CERTIFICAT)
     ligne = M_depot.en_cours(facture) or M_depot.dernier_incertain(facture)
     if not ligne:
         return {"statut": "aucun depot en analyse"}
