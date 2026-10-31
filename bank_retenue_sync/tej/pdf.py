@@ -238,6 +238,42 @@ def demander(certificat: str) -> dict:
     return {"statut": "demande"}
 
 
+JOB_LOT = "brs-tej-pdf-lot"
+EVENEMENT_LOT = "brs_pdf_lot_termine"
+
+
+def traiter_en_fond(limite: int = None, user: str = None) -> dict:
+    """Le lot de PDF en TACHE DE FOND, l'utilisateur prevenu a la fin (evenement temps reel).
+
+    Depuis l'ecran, le lot ne peut pas tourner dans la requete : chaque PDF est une session de
+    scraping du portail (jusqu'a deux minutes), et la passerelle coupe la requete bien avant.
+    31/10/2026 en prod : « La requete a expire » sur « Appliquer », alors que certificats et
+    rapprochement etaient deja ecrits — seul le lot de PDF avait ete interrompu, sans un mot.
+    """
+    out = traiter(limite=limite, insert=True)
+    out["deplaces"] = deplacer_vers_facture(insert=True)["deplaces"]
+    frappe.db.commit()
+    if user:
+        frappe.publish_realtime(EVENEMENT_LOT, {k: v for k, v in out.items() if k != "detail"},
+                                user=user)
+    return out
+
+
+def demander_lot(limite: int = None) -> dict:
+    """Met le lot en file et dit ce qui l'attend. -> {statut, a_telecharger}.
+
+    Un seul lot a la fois (`deduplicate`) : deux clics, ou un clic pendant le passage planifie,
+    ne doivent pas demander deux fois le meme certificat au portail.
+    """
+    a_faire = len(a_traiter(limite))
+    if not a_faire:
+        return {"statut": "rien a faire", "a_telecharger": 0}
+    frappe.enqueue("bank_retenue_sync.tej.pdf.traiter_en_fond", queue="long", timeout=3600,
+                   enqueue_after_commit=True, job_id=JOB_LOT, deduplicate=True,
+                   limite=limite, user=frappe.session.user)
+    return {"statut": "en file", "a_telecharger": a_faire}
+
+
 def traiter(limite: int = None, insert: bool = True) -> dict:
     """Telecharge et range les PDF manquants. -> {traites, attaches, erreurs, detail}."""
     limite = limite or LIMITE_PAR_PASSAGE

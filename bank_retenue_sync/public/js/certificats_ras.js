@@ -203,6 +203,7 @@ window.CertificatsRAS = class CertificatsRAS {
 
   _bind() {
     this.$root.on("change", "[data-role='hors-perimetre']", () => this.refresh());
+    this._ecouter_pdf();
     this.$root.on("click", "[data-act='sync']", () => this._synchroniser());
     this.$root.on("click", "[data-act='pdf']", () => this._pdf());
     this.$root.on("click", "[data-act='doublons']", () => this._doublons());
@@ -280,8 +281,34 @@ window.CertificatsRAS = class CertificatsRAS {
       <tr><td>${__("Rapprochés automatiquement")}</td><td>${r.auto ?? 0}</td></tr>
       <tr><td>${__("Sans écriture")}</td><td>${r.sans_piece ?? 0}</td></tr>
       <tr><td>${__("À trancher")}</td><td>${(r.ambigus ?? 0) + (r.non_identifies ?? 0)}</td></tr>
-      <tr><td>${__("PDF rangés")}</td><td>${p.attaches ?? 0}${p.erreurs ? ` (${p.erreurs} ${__("en erreur")})` : ""}</td></tr>
+      <tr><td>${__("PDF rangés")}</td><td>${
+        p.statut === "en file"
+          ? __("{0} à télécharger en arrière-plan — vous serez prévenu", [p.a_telecharger])
+          : `${p.attaches ?? 0}${p.erreurs ? ` (${p.erreurs} ${__("en erreur")})` : ""}`
+      }</td></tr>
     </table>`;
+  }
+
+  // Le lot de PDF tourne en tâche de fond (chaque certificat = une session du portail, plusieurs
+  // minutes) : l'écran est prévenu à la fin et se rafraîchit, au lieu de rester figé jusqu'au timeout.
+  _ecouter_pdf() {
+    if (this._pdf_ecoute) return;
+    this._pdf_ecoute = true;
+    frappe.realtime.on("brs_pdf_lot_termine", (m) => {
+      m = m || {};
+      frappe.show_alert(
+        {
+          message: __("Certificats PDF : {0} rangés, {1} déjà justifiés à la main, {2} en erreur", [
+            m.attaches || 0,
+            m.deja_justifies || 0,
+            m.erreurs || 0,
+          ]),
+          indicator: m.erreurs ? "orange" : "green",
+        },
+        10
+      );
+      this.refresh();
+    });
   }
 
   _pdf() {
@@ -290,22 +317,19 @@ window.CertificatsRAS = class CertificatsRAS {
         method: "bank_retenue_sync.api.certificats.telecharger_pdf",
         args: { limite: 10, insert: 1 },
         freeze: true,
-        freeze_message: __("Téléchargement des certificats…"),
+        freeze_message: __("Mise en file des certificats à télécharger…"),
       })
       .then((r) => {
         const m = r.message || {};
         frappe.show_alert(
           {
-            message: __("{0} PDF rangés, {1} déjà justifiés à la main, {2} en erreur", [
-              m.attaches || 0,
-              m.deja_justifies || 0,
-              m.erreurs || 0,
-            ]),
-            indicator: m.erreurs ? "orange" : "green",
+            message: m.a_telecharger
+              ? __("{0} PDF à télécharger : le lot tourne en arrière-plan, vous serez prévenu ici.", [m.a_telecharger])
+              : __("Aucun PDF à télécharger"),
+            indicator: m.a_telecharger ? "blue" : "green",
           },
           7
         );
-        this.refresh();
       });
   }
 

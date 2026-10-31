@@ -125,7 +125,15 @@ def synchroniser(refresh=0, insert=0, pdf=0):
     _acces("System Manager")
     from bank_retenue_sync import orchestrator
 
-    return orchestrator.run_certificats_ras(refresh=refresh, insert=insert, pdf=pdf)
+    # Les PDF ne se telechargent JAMAIS dans la requete : un lot de dix, c'est dix sessions de
+    # scraping du portail, bien plus que ce que la passerelle laisse passer (31/10/2026 : « La
+    # requete a expire » en prod). Ingestion et rapprochement, eux, tiennent en quelques secondes.
+    out = orchestrator.run_certificats_ras(refresh=refresh, insert=insert, pdf=0)
+    if frappe.utils.cint(pdf) and frappe.utils.cint(insert) and out.get("statut") != "desactive":
+        from bank_retenue_sync.tej import pdf as pdf_module
+
+        out["pdf"] = pdf_module.demander_lot()
+    return out
 
 
 def _demander_pdf(reference, decision=None) -> str:
@@ -395,14 +403,16 @@ def doublons_justificatifs(insert=0, garder="portail"):
 
 @frappe.whitelist()
 def telecharger_pdf(limite=10, insert=1):
-    """Telecharge et range les PDF manquants."""
+    """Telecharge et range les PDF manquants — en tache de fond, l'ecran est prevenu a la fin.
+
+    `insert=0` reste un essai a blanc immediat : il ne touche pas le portail, il liste.
+    """
     _acces("System Manager")
     from bank_retenue_sync.tej import pdf
 
-    res = pdf.traiter(limite=frappe.utils.cint(limite), insert=frappe.utils.cint(insert))
-    if frappe.utils.cint(insert):
-        frappe.db.commit()
-    return res
+    if not frappe.utils.cint(insert):
+        return pdf.traiter(limite=frappe.utils.cint(limite), insert=False)
+    return pdf.demander_lot(limite=frappe.utils.cint(limite))
 
 
 @frappe.whitelist()

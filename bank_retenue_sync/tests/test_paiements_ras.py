@@ -337,6 +337,74 @@ class TestRangementDuPdf(unittest.TestCase):
         self.assertTrue("certificat_ras_abc-123101352.pdf".startswith(motif[:-1]))
 
 
+class TestLotDePdfEnTacheDeFond(unittest.TestCase):
+    """Depuis l'ecran, le lot de PDF est mis en FILE, jamais telecharge dans la requete : dix
+    sessions du portail ne tiennent pas dans le delai de la passerelle (31/10/2026 en prod : « La
+    requete a expire » sur Appliquer, alors que certificats et rapprochement etaient deja ecrits)."""
+
+    def _patch(self, a_faire, enqueues):
+        self._orig = (PDF.a_traiter, frappe.enqueue)
+        PDF.a_traiter = lambda limite=None: [{"name": "C-%d" % i} for i in range(a_faire)]
+        frappe.enqueue = lambda *a, **k: enqueues.append((a, k))
+        self.addCleanup(self._restaurer)
+
+    def _restaurer(self):
+        PDF.a_traiter, frappe.enqueue = self._orig
+
+    def test_le_lot_part_en_file_une_seule_fois(self):
+        enqueues = []
+        self._patch(3, enqueues)
+        res = PDF.demander_lot(limite=10)
+        self.assertEqual(res, {"statut": "en file", "a_telecharger": 3})
+        self.assertEqual(len(enqueues), 1)
+        a, k = enqueues[0]
+        self.assertEqual(a[0], "bank_retenue_sync.tej.pdf.traiter_en_fond")
+        self.assertEqual(k["queue"], "long")
+        self.assertTrue(k["deduplicate"] and k["job_id"] == PDF.JOB_LOT)
+        self.assertTrue(k["enqueue_after_commit"])
+        self.assertEqual(k["limite"], 10)
+        self.assertEqual(k["user"], frappe.session.user)
+
+    def test_rien_a_faire_ne_met_rien_en_file(self):
+        enqueues = []
+        self._patch(0, enqueues)
+        self.assertEqual(PDF.demander_lot(), {"statut": "rien a faire", "a_telecharger": 0})
+        self.assertEqual(enqueues, [])
+
+    def test_l_api_de_synchronisation_ne_telecharge_pas_dans_la_requete(self):
+        """`Appliquer` : l'orchestrateur tourne SANS pdf, puis le lot est demande en fond."""
+        from bank_retenue_sync import orchestrator
+        from bank_retenue_sync.api import certificats as API
+
+        appels = []
+        orig = (orchestrator.run_certificats_ras, PDF.demander_lot, API._acces)
+        orchestrator.run_certificats_ras = lambda **k: appels.append(k) or {"statut": "ok"}
+        PDF.demander_lot = lambda limite=None: {"statut": "en file", "a_telecharger": 2}
+        API._acces = lambda *a, **k: None
+        try:
+            res = API.synchroniser(refresh=0, insert=1, pdf=1)
+            self.assertEqual(appels, [{"refresh": 0, "insert": 1, "pdf": 0}])
+            self.assertEqual(res["pdf"], {"statut": "en file", "a_telecharger": 2})
+            appels.clear()
+            res = API.synchroniser(refresh=0, insert=0, pdf=0)          # essai a blanc : rien en file
+            self.assertNotIn("pdf", res)
+        finally:
+            orchestrator.run_certificats_ras, PDF.demander_lot, API._acces = orig
+
+    def test_le_flux_desactive_ne_demande_aucun_pdf(self):
+        from bank_retenue_sync import orchestrator
+        from bank_retenue_sync.api import certificats as API
+
+        orig = (orchestrator.run_certificats_ras, PDF.demander_lot, API._acces)
+        orchestrator.run_certificats_ras = lambda **k: {"statut": "desactive", "detail": "x"}
+        PDF.demander_lot = lambda limite=None: self.fail("aucun lot ne doit partir")
+        API._acces = lambda *a, **k: None
+        try:
+            self.assertEqual(API.synchroniser(insert=1, pdf=1)["statut"], "desactive")
+        finally:
+            orchestrator.run_certificats_ras, PDF.demander_lot, API._acces = orig
+
+
 class TestArgentCompteOuDette(unittest.TestCase):
     """⚠️ LA REGLE QUI EMPECHE DE FAIRE DISPARAITRE DE L'ARGENT RECU.
 
