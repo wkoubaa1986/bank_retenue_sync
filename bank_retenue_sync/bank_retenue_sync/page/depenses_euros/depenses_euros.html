@@ -1,0 +1,44 @@
+<style>
+  .de-wrap { padding: 12px 16px 40px; max-width: 1100px; }
+  .de-bar { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color, #e6e9ee); }
+  .de-bar .f { display: flex; flex-direction: column; gap: 3px; }
+  .de-bar label, .de-tbl th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+                              color: var(--text-muted, #6b7683); margin: 0; }
+  .de-bar select, .de-bar input, .de-tbl select, .de-tbl input { height: 30px; font-size: 13px; padding: 2px 8px;
+            border-radius: 6px; border: 1px solid var(--border-color, #d5dae1); background: var(--control-bg, #fff); color: inherit; }
+  .de-src { font-size: 11.5px; color: var(--text-muted, #6b7683); }
+  .de-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  .de-tbl th, .de-tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #e6e9ee); vertical-align: middle; }
+  .de-tbl td.n, .de-tbl th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .de-tbl input[type=number] { width: 110px; text-align: right; }
+  .de-tbl input[type=date] { width: 140px; }
+  .de-tbl input.lib { width: 100%; min-width: 220px; }
+  .de-tbl select { min-width: 220px; }
+  .de-x { cursor: pointer; color: #b91c1c; font-weight: 700; padding: 0 6px; }
+  .de-tot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+  .de-tot .t { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .de-titre { margin: 22px 0 6px; font-size: 13px; font-weight: 700; color: var(--text-muted, #6b7683); text-transform: uppercase; letter-spacing: .04em; }
+  .de-hist { font-size: 12.5px; }
+  .de-hist td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .de-ok { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 12px; margin-top: 10px; font-size: 13px; }
+</style>
+<div class="de-wrap">
+  <div class="de-bar">
+    <div class="f"><label>{{ __("Compte en euros") }}</label><select data-f="compte_euros"></select></div>
+    <div class="f"><label>{{ __("Taux EUR → TND") }}</label><input type="number" step="0.000001" min="0" data-f="taux" placeholder="3.36"></div>
+    <button type="button" class="btn btn-default btn-sm" data-action="taux">🌐 {{ __("Taux du jour (internet)") }}</button>
+    <span class="de-src" data-src></span>
+  </div>
+  <table class="de-tbl"><thead><tr>
+    <th>{{ __("Date") }}</th><th>{{ __("Libellé") }}</th><th class="n">{{ __("Montant €") }}</th><th>{{ __("Compte de charge") }}</th><th class="n">{{ __("Dinars") }}</th><th></th>
+  </tr></thead><tbody data-lignes></tbody></table>
+  <div class="de-tot">
+    <button type="button" class="btn btn-default btn-sm" data-action="ajouter">＋ {{ __("Ajouter une ligne") }}</button>
+    <span class="t" data-total></span>
+    <button type="button" class="btn btn-primary" data-action="valider">✅ {{ __("Valider et passer les écritures") }}</button>
+  </div>
+  <div data-resultat></div>
+  <div class="de-titre">{{ __("Dernières dépenses en euros") }}</div>
+  <table class="de-tbl de-hist"><thead><tr><th>{{ __("Date") }}</th><th>{{ __("Écriture") }}</th><th>{{ __("Libellé") }}</th><th class="n">€</th><th class="n">{{ __("Taux") }}</th><th class="n">DT</th><th>{{ __("Compte de charge") }}</th></tr></thead><tbody data-hist></tbody></table>
+</div>

@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"bq_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Identification bancaire</b></span>\", \"col\": 12}}, {\"id\": \"bq_sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Identification bancaire\", \"col\": 4}}, {\"id\": \"bq_sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Mouvements bancaires\", \"col\": 4}}, {\"id\": \"bq_sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Reglages\", \"col\": 4}}, {\"id\": \"cartetechno1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Carte technologique\", \"col\": 4}}, {\"id\": \"paiementsafaire1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a faire\", \"col\": 4}}, {\"id\": \"paiementsavenir1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a venir\", \"col\": 4}}, {\"id\": \"11f42982a7\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Cl\\u00f4ture mensuelle</b></span>\", \"col\": 12}}, {\"id\": \"20194f6b4e\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Facturation mensuelle\", \"col\": 4}}, {\"id\": \"rapprochementClientRac\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Rapprochement client\", \"col\": 3}}]",
+ "content": "[{\"id\": \"bq_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Identification bancaire</b></span>\", \"col\": 12}}, {\"id\": \"bq_sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Identification bancaire\", \"col\": 4}}, {\"id\": \"bq_sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Mouvements bancaires\", \"col\": 4}}, {\"id\": \"bq_sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Reglages\", \"col\": 4}}, {\"id\": \"cartetechno1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Carte technologique\", \"col\": 4}}, {\"id\": \"paiementsafaire1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a faire\", \"col\": 4}}, {\"id\": \"paiementsavenir1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Paiements a venir\", \"col\": 4}}, {\"id\": \"11f42982a7\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Cl\\u00f4ture mensuelle</b></span>\", \"col\": 12}}, {\"id\": \"20194f6b4e\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Facturation mensuelle\", \"col\": 4}}, {\"id\": \"rapprochementClientRac\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Rapprochement client\", \"col\": 3}}, {\"id\": \"48713d6935\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Economiq Aqua Solution\", \"col\": 4}}, {\"id\": \"rapportPrimeRac\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Rapport Prime\", \"col\": 3}}, {\"id\": \"8d1d11abbb\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>D\\u00e9penses</b></span>\", \"col\": 12}}, {\"id\": \"7f3b101af4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"D\\u00e9penses en euros\", \"col\": 4}}]",
  "creation": "2026-08-12 11:39:03.851761",
  "custom_blocks": [],
  "docstatus": 0,
@@ -12,7 +12,7 @@
  "is_hidden": 0,
  "label": "Banque",
  "links": [],
- "modified": "2026-09-16 14:00:00.000000",
+ "modified": "2026-11-02 16:15:10.901171",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Banque",
@@ -83,6 +83,27 @@
    "doc_view": "",
    "label": "Rapprochement client",
    "link_to": "rapprochement-client",
+   "type": "Page"
+  },
+  {
+   "color": "Purple",
+   "doc_view": "",
+   "label": "Economiq Aqua Solution",
+   "link_to": "partenaire-economiq",
+   "type": "Page"
+  },
+  {
+   "color": "Green",
+   "doc_view": "",
+   "label": "Rapport Prime",
+   "link_to": "rapport-prime",
+   "type": "Page"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "",
+   "label": "D\u00e9penses en euros",
+   "link_to": "depenses-euros",
    "type": "Page"
   }
  ],

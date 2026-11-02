@@ -83,6 +83,9 @@ def _ajouter_entete(ws, texte: str) -> bool:
 
 PAGE_RAPPROCHEMENT = "rapprochement-client"
 LABEL_RAPPROCHEMENT = "Rapprochement client"
+PAGE_DEPENSES_EUROS = "depenses-euros"
+LABEL_DEPENSES_EUROS = "Dépenses en euros"
+ENTETE_DEPENSES = "Dépenses"
 
 
 def _ajouter_raccourci_a_venir():
@@ -126,6 +129,12 @@ def _ajouter_raccourci_rapprochement():
     du 04/09/2026 n etaient visibles nulle part — il fallait ouvrir chaque fiche.
     """
     return _poser_raccourci(PAGE_RAPPROCHEMENT, LABEL_RAPPROCHEMENT, ENTETE_CLOTURE, "Blue")
+
+
+def _ajouter_raccourci_depenses_euros():
+    """Raccourci « Dépenses en euros » (api.depenses_euros) : pub Google et autres réglées depuis le compte en euros,
+    saisies en lot au taux du jour, une écriture multi-devises par ligne (02/11/2026)."""
+    return _poser_raccourci(PAGE_DEPENSES_EUROS, LABEL_DEPENSES_EUROS, ENTETE_DEPENSES, "Orange")
 
 
 def _poser_raccourci(page: str, label: str, entete: str, couleur: str):
@@ -200,6 +209,7 @@ def after_migrate():
     _ajouter_raccourci_cloture()
     _ajouter_raccourci_partenaire()
     _ajouter_raccourci_rapprochement()
+    _ajouter_raccourci_depenses_euros()
 
 
 def _champ_sans_retenue():
