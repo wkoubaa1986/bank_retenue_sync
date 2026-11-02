@@ -88,6 +88,10 @@ def contexte():
 def taux_eur_tnd():
     """Le taux du jour : Currency Exchange ERPNext daté d'aujourd'hui, sinon open.er-api.com."""
     _acces()
+    return _taux()
+
+
+def _taux() -> dict:
     jour = nowdate()
     ce = frappe.db.get_value("Currency Exchange", {"from_currency": "EUR", "to_currency": "TND", "date": jour},
                              "exchange_rate", order_by="creation desc")
@@ -128,6 +132,12 @@ def creer_depenses(lignes, taux, compte_euros=None, source=None):
     """Une écriture de journal multi-devises SOUMISE par ligne : débit charge (TND), crédit compte euros (EUR × taux).
     Tout ou rien : une ligne refusée annule les précédentes."""
     _acces()
+    return _creer(lignes, taux, compte_euros, source)
+
+
+def _creer(lignes, taux, compte_euros=None, source=None, saisi_par=None, ignorer_permissions=False) -> dict:
+    """Le cœur, sans contrôle de rôle : aussi appelé par l'assistant ChatGPT (customization_app.assistant_chatgpt),
+    dont l'utilisateur technique n'a aucun droit sur les écritures (`ignorer_permissions`)."""
     lignes = json.loads(lignes) if isinstance(lignes, str) else (lignes or [])
     taux = flt(taux)
     compte_euros = compte_euros or COMPTE_EUROS
@@ -144,14 +154,15 @@ def creer_depenses(lignes, taux, compte_euros=None, source=None):
         je = frappe.get_doc({
             "doctype": "Journal Entry", "voucher_type": "Journal Entry", "company": COMPANY, "posting_date": getdate(l["date"]),
             "multi_currency": 1, "cheque_no": libelle[:140], "cheque_date": getdate(l["date"]),
-            "user_remark": _("Dépense en euros : {0} — {1} € × {2} = {3} DT{4}").format(
-                libelle, eur, taux, tnd, (" (" + source + ")") if source else ""),
+            "user_remark": _("Dépense en euros : {0} — {1} € × {2} = {3} DT{4}{5}").format(
+                libelle, eur, taux, tnd, (" (" + source + ")") if source else "", ("\n" + saisi_par) if saisi_par else ""),
             "accounts": [
                 {"account": l["compte_charge"], "debit_in_account_currency": tnd, "cost_center": COST_CENTER,
                  "user_remark": libelle},
                 {"account": compte_euros, "credit_in_account_currency": eur, "exchange_rate": taux, "cost_center": COST_CENTER,
                  "user_remark": libelle},
             ]})
+        je.flags.ignore_permissions = bool(ignorer_permissions)
         je.insert()
         je.submit()
         crees.append({"name": je.name, "date": str(je.posting_date), "libelle": libelle, "eur": eur, "tnd": tnd,
