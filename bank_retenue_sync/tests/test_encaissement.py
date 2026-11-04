@@ -25,6 +25,29 @@ class TestPendingNumberExtraction(unittest.TestCase):
         self.assertEqual(pending._extract_number("4001710-Banque Zitouna"), "4001710")
         self.assertEqual(pending._extract_number("011289089405"), "011289089405")
 
+    def test_traite_number_ignores_aramex_tracking(self):
+        # Cas reel 03/11/2026 (ACC-PAY-2026-07075) : le suivi Aramex vient en premier.
+        ref = "Aramex N: 51330111851 / Traite N° 011644580146 - Al Baraka Bank"
+        self.assertEqual(pending._extract_traite_number(ref), "011644580146")
+        self.assertEqual(pending._extract_traite_number("Traite / Aramex N: 51330111851 / 011644580146"),
+                         "011644580146")
+
+    def test_traite_number_usual_formats_unchanged(self):
+        for ref, attendu in (("011644584802 / RE:FT26293YKQ61", "011644584802"),
+                             ("011289089405", "011289089405"),
+                             ("Effet 011289089405", "011289089405"),
+                             ("Traite bancaire LC N° 011791623416", "011791623416")):
+            with self.subTest(ref=ref):
+                self.assertEqual(pending._extract_traite_number(ref), attendu)
+                if not any(c.isalpha() for c in ref.split("/")[0]):
+                    # meme resultat que la regle generique quand le n° vient en tete
+                    self.assertEqual(pending._extract_traite_number(ref), pending._extract_number(ref))
+
+    def test_traite_sans_numero_de_traite(self):
+        self.assertIsNone(pending._extract_traite_number("Aramex N: 51330111851"))
+        self.assertIsNone(pending._extract_traite_number(""))
+        self.assertIsNone(pending._extract_traite_number(None))
+
     def test_aramex_number_requires_explicit_pattern(self):
         self.assertEqual(pending._extract_aramex_number("Aramex N: 48812240654"), "48812240654")
         # commande web sur le meme compte d'attente : surtout PAS '007803'
@@ -110,6 +133,19 @@ class TestTraiteMatching(unittest.TestCase):
         self.assertEqual(rows[0]["ref_paiement"], "ACC-PAY-1")
         self.assertEqual(rows[0]["statut"], "Versé")
         self.assertEqual(rows[0]["n_cheque"], "011289089405")
+
+    def test_effet_apparie_malgre_le_suivi_aramex_en_tete(self):
+        """Cas reel du 03/11/2026 : la traite de Sté EGES-PLUS est trouvee, et l'ecart de 6 DT
+        (PE 687,885, banque 693,885) ressort en « Delta paiement » au lieu d'un faux orphelin."""
+        ref = "Aramex N: 51330111851 / Traite N° 011644580146 - Al Baraka Bank"
+        pes = [{"name": "ACC-PAY-2026-07075", "numero": pending._extract_traite_number(ref),
+                "paid_amount": 687.885, "party": "Sté EGES-PLUS"}]
+        movements = [{"credit": 693.885, "debit": 0, "operation": "ENCAISSEMENT EFFET 011644580146",
+                      "reference": "FT26307YX9VX", "date": None}]
+        rows, diag = matching.match_traites(movements, pes, consumed=set())
+        self.assertEqual([r["ref_paiement"] for r in rows], ["ACC-PAY-2026-07075"])
+        ecarts = [d for d in diag if d.get("type") == "ecart"]
+        self.assertEqual([(e["sous_type"], e["ecart"]) for e in ecarts], [("Delta paiement", -6.0)])
 
     def test_effet_no_pending_is_diagnostic(self):
         # depuis la politique d'ecart du 2026-08-18, le credit sans PE produit le diagnostic

@@ -33,6 +33,8 @@ _ENCAISSEMENT_CHILD_TABLES = ("Liste Cheque", "Liste Aramex", "Liste Traite Banc
 
 _LEADING_NUM_RE = re.compile(r"(\d{5,})")
 _ARAMEX_NUM_RE = re.compile(r"ARAMEX\s*N\s*:?\s*(\d{6,})", re.I)
+# N° annonce explicitement : « Traite N° 011644580146 », « Effet 011289089405 ».
+_TRAITE_NUM_RE = re.compile(r"(?:TRAITE|EFFET)\D{0,20}?(\d{5,})", re.I)
 
 
 def _extract_number(reference_no: str):
@@ -41,6 +43,22 @@ def _extract_number(reference_no: str):
     '011644584802' -> '011644584802'."""
     m = _LEADING_NUM_RE.search(reference_no or "")
     return m.group(1) if m else None
+
+
+def _extract_traite_number(reference_no: str):
+    """N° de traite d'une PE du compte 'Traite Bancaire' : celui qu'annonce « Traite » / « Effet »,
+    sinon le premier nombre HORS suivi Aramex. Fonction pure.
+
+    ⚠️ LE PREMIER NOMBRE N'EST PAS TOUJOURS LA TRAITE. Les traites de Sté EGES-PLUS sont saisies
+    « Aramex N: 51330111851 / Traite N° 011644580146 - Al Baraka Bank ». La regle generique prenait
+    le suivi Aramex : l'encaissement « ENCAISSEMENT EFFET 011644580146 » (693,885 le 03/11/2026)
+    ressortait orphelin « absent d'ERPNext » alors que la piece existait (ACC-PAY-2026-07075), et
+    deux autres traites du meme client attendaient le meme sort (ACC-PAY-2026-07074 et -07077).
+    Le suivi est retire AVANT de chercher : « Traite / Aramex N: … » ne doit pas rendre le suivi.
+    """
+    ref = _ARAMEX_NUM_RE.sub(" ", reference_no or "")
+    m = _TRAITE_NUM_RE.search(ref)
+    return m.group(1) if m else _extract_number(ref)
 
 
 def _extract_aramex_number(reference_no: str):
@@ -310,7 +328,8 @@ def get_pending_cheques(exclude: set = None) -> list:
 
 def get_pending_traites(exclude: set = None) -> list:
     """PE traite bancaire en attente (paid_to = 'Traite Bancaire - A&S')."""
-    return _pending_pes(TRAITE_ACCOUNT, exclude if exclude is not None else already_encaissed_refs())
+    return _pending_pes(TRAITE_ACCOUNT, exclude if exclude is not None else already_encaissed_refs(),
+                        extractor=_extract_traite_number)
 
 
 def get_pending_aramex(exclude: set = None) -> list:
