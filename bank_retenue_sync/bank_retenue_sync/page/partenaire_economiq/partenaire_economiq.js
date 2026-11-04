@@ -86,6 +86,7 @@ class PartenaireEconomiq {
     }
     this.cache = {};
     this.controle_bl = null;    // le périmètre des ventes Economiq suit la règle du bilan
+    this.analyse = null;        // les ventes Economiq de chaque mois aussi
     this._charger();
   }
 
@@ -111,6 +112,7 @@ class PartenaireEconomiq {
       this._recalculer_apercu();
       this._charger_consolide();
       this._charger_controle_bl();
+      this._charger_analyse();
       return;
     }
     $c.html('<div class="pe-chargement">Chargement…</div>');
@@ -126,6 +128,7 @@ class PartenaireEconomiq {
       this._recalculer_apercu();
       this._charger_consolide();
       this._charger_controle_bl();
+      this._charger_analyse();
     } catch (e) {
       $c.html(this._erreur(e));
     }
@@ -156,8 +159,12 @@ class PartenaireEconomiq {
       ["Bénéfice Aqua World", this._m(a.benefice), `ventes ${this._m(a.ventes)}`, ""],
       ["Bénéfice Economiq", this._m(p.benefice), `ventes ${this._m(p.ventes)}`, ""],
       ["Achats Economiq", this._m(p.achats), "coût des commandes", ""],
-      ["Ajustement", this._m(d.ajustement), "solde net + charges, déduit de l’échéancier",
-        d.ajustement > 0 ? "warn" : "ok"],
+      // Le SENS d’abord : un ajustement positif est dû par Aqua World (bénéfice Aqua World dû à
+      // Economiq − bénéfice Economiq dû à Aqua World), et c’est pour cela qu’il RÉDUIT ce que
+      // le partenaire doit. Le rapport court disait l’inverse jusqu’au 04/11/2026.
+      ["Ajustement", this._m(d.ajustement), d.ajustement > 0
+        ? "dû par Aqua World — déduit de l’échéancier"
+        : "solde net + charges, déduit de l’échéancier", d.ajustement > 0 ? "warn" : "ok"],
       ["Commandes du mois", tc.nombre, `${this._m(tc.total)} au total`, ""],
       ["Non payé", this._m(tc.non_paye), "dettes réelles", tc.non_paye > 0 ? "bad" : "ok"],
     ]);
@@ -216,19 +223,27 @@ class PartenaireEconomiq {
       <thead><tr><th>Échéance</th><th class="num">Brut</th><th class="num">Absorbé</th>
         <th class="num">Dû</th><th>Statut</th><th>Note</th></tr></thead>
       <tbody>${(d.echeancier || []).map((e) => {
-        const absorbee = (e.statut || "") === "absorbé";
-        return `<tr class="${absorbee ? "pe-absorbee" : ""}">
+        // ⚠️ UN MOIS NON ENREGISTRÉ N’A PAS DE STATUT, ET UNE ÉCHÉANCE NULLE N’EST PAS IMPAYÉE.
+        // Le calcul à l’instant ne porte pas `statut` : une échéance absorbée s’affichait
+        // « non_payé » en rouge. Sans commande du mois (octobre 2026), les trois échéances
+        // valent 0 : rien à payer, rien d’absorbé — « néant ».
+        const brut = (e.montant || 0) + (e.deduit || 0);
+        const neant = Math.abs(brut) < 0.0005;
+        const absorbee = !neant && ((e.statut || "") === "absorbé"
+          || (!e.statut && (e.montant || 0) <= 0.0005 && (e.deduit || 0) > 0));
+        const statut = neant ? "néant" : absorbee ? "absorbé" : (e.statut || "non_payé");
+        return `<tr class="${neant || absorbee ? "pe-absorbee" : ""}">
           <td>${e.date}</td>
-          <td class="num">${this._m((e.montant || 0) + (e.deduit || 0))}</td>
+          <td class="num">${this._m(brut)}</td>
           <td class="num">${e.deduit ? this._m(e.deduit) : "—"}</td>
           <td class="num"><b>${this._m(e.montant)}</b></td>
-          <td><span class="pe-badge ${e.statut === "payé" ? "ok"
-            : absorbee ? "neutre" : "bad"}">${this._esc(e.statut || "non_payé")}</span></td>
+          <td><span class="pe-badge ${statut === "payé" ? "ok"
+            : neant || absorbee ? "neutre" : "bad"}">${this._esc(statut)}</span></td>
           <td class="muted">${this._esc(e.note || "")}</td></tr>`;
       }).join("")}</tbody>
       <tfoot><tr><td colspan="3">Report au consolidé</td>
         <td class="num">${this._m(d.report)}</td><td colspan="2"></td></tr></tfoot>
-      </table></div>`;
+      </table></div>${this._note_report(d)}`;
 
     const commandes = (d.commandes || []).length
       ? `<div class="pe-scroll"><table class="pe-tbl"><thead><tr>
@@ -262,7 +277,29 @@ class PartenaireEconomiq {
       + this._sous("Échéancier") + ech
       + this._sous("Solde consolidé inter-mois")
       + `<div data-role="consolide"><div class="pe-chargement">Chargement…</div></div>`
+      + this._sous("Analyse du compte Economiq Aqua Solution - A&S")
+      + `<div data-role="analyse-compte"><div class="pe-chargement">Chargement…</div></div>`
       + this._sous("Commandes du partenaire") + commandes;
+  }
+
+  /** Où va ce que l’échéancier du mois n’a pas pu absorber.
+   *
+   * ⚠️ UN REPORT SANS EXPLICATION SE LIT COMME UNE ERREUR. Octobre 2026 : aucune commande
+   * d’Economiq, trois échéances à 0, et 425,070 dus par Aqua World qui « disparaissaient » —
+   * ils descendent au consolidé, mais seulement une fois le mois enregistré.
+   */
+  _note_report(d) {
+    if (!(d.report > 0.0005)) return "";
+    const tete = (d.total_commandes || 0) > 0.0005
+      ? `L’ajustement (<b>${this._m(d.ajustement)}</b>) dépasse l’échéancier du mois`
+      : "Aucune commande d’Economiq ce mois-ci : l’échéancier est vide et n’absorbe rien";
+    const quand = d.enregistre
+      ? ""
+      : ` Ils n’y comptent qu’une fois le mois <b>enregistré</b> — la projection est affichée
+         sous « Solde consolidé inter-mois ».`;
+    return `<div class="pe-note">${tete}. <b>${this._m(d.report)}</b> dus par Aqua World
+      descendent au consolidé, sur les échéances encore ouvertes, de la plus ancienne à la plus
+      récente.${quand}</div>`;
   }
 
   /** L’écriture de bilan du mois — celle qui fixe l’ajustement.
@@ -446,6 +483,7 @@ class PartenaireEconomiq {
                         [frappe.utils.get_form_link("Journal Entry", r.journal_entry, true),
                          this._m(r.ajustement), detruites, refaites]) });
           delete this.cache[this.mois];
+          this.analyse = null;      // l’écriture crédite le compte du partenaire
           this._charger();
         } catch (e) {
           frappe.msgprint({ title: __("Création impossible"), message: String(e),
@@ -485,6 +523,7 @@ class PartenaireEconomiq {
             Tu as modifié les montants : la répartition ci-dessus vise
             ${this._m(p.equilibre)}, pas ${this._m(eq)}. La création sera refusée — relance la
             préparation après avoir corrigé le bilan.</td></tr>` : ""}
+          ${this._apres_ecriture(v.ventes_partenaire || 0)}
           <tr><td colspan="2" style="color:var(--text-muted);font-size:11px;">
             écriture datée du ${this._esc(p.date)} · ${this._esc(p.societe)}</td></tr>
         </table>`);
@@ -810,9 +849,11 @@ class PartenaireEconomiq {
     if (!$c.length) return;
     try {
       const c = (await frappe.call({
-        method: "bank_retenue_sync.api.partenaire.get_consolide" })).message || {};
+        method: "bank_retenue_sync.api.partenaire.get_consolide",
+        args: { mois: this.mois } })).message || {};
       if (!(c.lignes || []).length) {
-        $c.html('<div class="pe-vide">Aucun mois enregistré : le consolidé est vide.</div>');
+        $c.html('<div class="pe-vide">Aucun mois enregistré : le consolidé est vide.</div>'
+                + this._note_projection(c));
         return;
       }
       const excedent = c.excedent > 0.001
@@ -830,7 +871,8 @@ class PartenaireEconomiq {
         <span class="muted" style="font-size:11.5px;">tu indiques où l’argent est arrivé et
           combien ; la pièce est créée dans ERPNext et les dettes ajustées. Le consolidé
           l’impute au prochain chargement.</span></div>`;
-      $c.html(saisie + excedent + dettes + `<div class="pe-scroll"><table class="pe-tbl">
+      $c.html(saisie + this._note_projection(c) + excedent + dettes
+        + `<div class="pe-scroll"><table class="pe-tbl">
         <thead><tr><th>Échéance</th><th class="num">Dû</th><th class="num">Payé</th>
           <th class="num">Reste</th><th>Statut</th><th>Règlements</th>
           <th>D’où ça vient</th></tr></thead>
@@ -853,6 +895,231 @@ class PartenaireEconomiq {
     } catch (e) {
       $c.html(this._erreur(e));
     }
+  }
+
+  /** Ce que deviendrait le consolidé si le mois affiché était enregistré.
+   *
+   * ⚠️ LE CONSOLIDÉ NE LIT QUE LES MOIS EN BASE. Sans cette projection, le report d’un mois non
+   * enregistré n’apparaît nulle part : octobre 2026 annonçait 425,070 « au consolidé » et le
+   * reste dû ne bougeait pas.
+   */
+  _note_projection(c) {
+    const p = c && c.projection;
+    if (!p) return "";
+    const lignes = (p.changements || []).map((x) => (x.nouvelle
+      ? `nouvelle échéance du ${this._esc(x.date)} : <b>${this._m(x.montant_apres)}</b>`
+      : `échéance du ${this._esc(x.date)} : reste ${this._m(x.reste_avant)} →
+         <b>${this._m(x.reste_apres)}</b>${Math.abs(x.montant_apres - x.montant_avant) > 0.0005
+          ? ` <span class="muted">(dû ${this._m(x.montant_avant)} → ${this._m(x.montant_apres)})</span>`
+          : ""}`));
+    const report = p.report > 0.0005
+      ? ` Le report de <b>${this._m(p.report)}</b> dû par Aqua World s’impute sur les échéances
+         encore ouvertes, de la plus ancienne à la plus récente.`
+      : "";
+    return `<div class="pe-note">Projection avec <b>${this._esc(p.libelle)}</b> (mois non
+      enregistré) : reste dû <b>${this._m(c.reste)}</b> → <b>${this._m(p.reste)}</b>.${report}
+      ${lignes.length ? `<br>${lignes.join("<br>")}` : ""}
+      ${p.excedent > 0.0005 ? `<br>Excédent non imputé : <b>${this._m(p.excedent)}</b>.` : ""}
+      <br><span class="muted">Enregistre le mois pour l’acter : le tableau ci-dessous ne compte que
+      les mois enregistrés.</span></div>`;
+  }
+
+  /** Le compte « Economiq Aqua Solution - A&S » revient-il à zéro une fois les écritures passées ?
+   *
+   * Il est débité de ce qu’Economiq encaisse chez nos clients et crédité, chaque mois, des ventes
+   * Economiq du bilan par l’écriture de bilan. L’analyse est globale (tous les mois depuis mai
+   * 2026) : lue une fois, gardée tant que la règle du bilan ou les écritures ne changent pas.
+   */
+  async _charger_analyse() {
+    const $c = this.$root.find('[data-role="analyse-compte"]');
+    if (!$c.length) return;
+    if (!this.analyse) {
+      try {
+        this.analyse = (await frappe.call({
+          method: "bank_retenue_sync.api.partenaire.get_analyse_compte" })).message || {};
+      } catch (e) {
+        $c.html(this._erreur(e));
+        return;
+      }
+    }
+    $c.html(this._rendre_analyse(this.analyse));
+  }
+
+  _rendre_analyse(a) {
+    if (!a.disponible) {
+      return `<div class="pe-note alerte">${this._esc(a.message || "Analyse indisponible.")}</div>`;
+    }
+    const passer = a.a_passer || [];
+    const noms = passer.map((x) => x.libelle + (x.en_cours ? " (en cours)" : "")).join(", ");
+    const zero = Math.abs(a.projete || 0) <= 0.0005;
+    const somme = (liste, cle) => (liste || []).reduce((s, x) => s + (x[cle] || 0), 0);
+
+    const intro = `<div class="pe-note">Ce compte est <b>débité</b> de ce qu’Economiq encaisse chez
+      nos clients sur les ventes qu’il réalise pour Aqua World, et <b>crédité</b> chaque mois par
+      l’écriture de bilan (« Ventes Economiq »). Une fois l’écriture passée, il doit revenir à
+      <b>zéro</b>. Rapproché depuis ${this._esc(a.debut_libelle)}, solde d’ouverture
+      ${this._m(a.ouverture)}.</div>`;
+
+    const kpis = this._kpis([
+      [`Solde au ${a.date}`, this._m(a.solde), "encaissé par Economiq, pas encore repris", ""],
+      ["À créditer", this._m(a.a_crediter),
+        passer.length ? `écriture à passer : ${noms}` : "aucune écriture en attente", ""],
+      ["Solde projeté", this._m(a.projete), "après ces écritures — doit valoir 0",
+        zero ? "ok" : "bad"],
+    ]);
+
+    const pc = a.par_cause || {};
+    const nb = (code) => (a.commandes || []).filter((c) => (c.cause || {}).code === code).length;
+    const causes = [];
+    if (pc.taxes) {
+      causes.push(`<b>${this._m(pc.taxes)}</b> de taxes en sus du prix (timbre fiscal, TVA d’un
+        prix hors taxe) encaissées par Economiq sur ${nb("taxes")} commande(s) : l’écriture
+        crédite la vente du bilan, qui ne les compte pas`);
+    }
+    if (pc.trop_percu) {
+      causes.push(`<b>${this._m(pc.trop_percu)}</b> encaissés au-delà de la vente du bilan`);
+    }
+    if (pc.ailleurs) {
+      causes.push(`<b>${this._m(pc.ailleurs)}</b> de ventes Economiq réglées ailleurs que chez
+        Economiq : l’écriture les crédite quand même au compte`);
+    }
+    const pasEncaisse = (pc.non_encaisse || 0) + (pc.partiel || 0);
+    if (Math.abs(pasEncaisse) > 0.0005) {
+      causes.push(`<b>${this._m(pasEncaisse)}</b> de ventes Economiq pas (encore) encaissées sur
+        ce compte`);
+    }
+    if (pc.ecriture) {
+      causes.push(`<b>${this._m(pc.ecriture)}</b> d’écart entre ce que les écritures ont crédité
+        et les ventes du bilan recalculé`);
+    }
+    if (pc.hors_bilan) {
+      causes.push(`<b>${this._m(pc.hors_bilan)}</b> de mouvements hors des ventes Economiq
+        (détail ci-dessous)`);
+    }
+    if (pc.ouverture) causes.push(`<b>${this._m(pc.ouverture)}</b> de solde d’ouverture`);
+
+    const apres = passer.length
+      ? `une fois l’écriture de bilan ${this._de(noms)} passée (<b>${this._m(a.a_crediter)}</b>
+         au crédit), `
+      : "";
+    let verdict;
+    if (!a.coherent) {
+      verdict = `<div class="pe-note alerte">Rapprochement incomplet : le solde projeté
+        (<b>${this._m(a.projete)}</b>) n’est expliqué qu’à hauteur de
+        <b>${this._m(a.explique)}</b>. Un mouvement du compte n’a pas pu être classé — à regarder
+        dans le grand livre.</div>`;
+    } else if (zero) {
+      verdict = `<div class="pe-note">✓ Projection : ${apres || "toutes les écritures sont passées, "}le
+        compte revient à zéro — tout ce qu’Economiq a encaissé est repris par le bilan.</div>`;
+    } else {
+      // ⚠️ UN CONSTAT, PAS UNE CONSIGNE DE SAISIE. Reprendre l’écart au partenaire ramène le
+      // compte à zéro et baisse l’ajustement d’autant (ligne d’équilibre de l’écriture) ; mais
+      // la boîte de l’écriture confirme les pièces de dette à supprimer sur les montants
+      // PROPOSÉS, pas sur ceux saisis : y gonfler « Ventes Economiq » à la main ferait
+      // supprimer d’autres pièces que celles montrées. La reprise est une décision de règlement
+      // avec le partenaire, à porter dans l’écriture elle-même — pas une correction à la main.
+      const reprise = a.projete > 0
+        ? `<br>Pour revenir à zéro, ces <b>${this._m(a.projete)}</b> sont à reprendre au
+           partenaire — ils baisseraient d’autant l’ajustement dû par Aqua World. L’écriture de
+           bilan ne le fait pas encore.`
+        : "";
+      verdict = `<div class="pe-note alerte">✗ Projection : ${apres}le compte restera à
+        <b>${this._m(a.projete)}</b> — il ne revient pas à zéro.${causes.length
+          ? `<br>${causes.map((x) => `• ${x}`).join("<br>")}` : ""}${reprise}</div>`;
+    }
+
+    const lignes = (a.mois || []).map((l) => {
+      const ecart = Math.abs(l.ecart || 0) > 0.0005;
+      const credite = l.credite == null
+        ? `<span class="muted">${l.a_passer ? `à passer : ${this._m(l.ventes)}` : "—"}</span>`
+        : this._m(l.credite) + (Math.abs(l.ecart_ecriture || 0) > 0.0005
+          ? `<br><span class="muted" style="font-size:11px;">bilan recalculé :
+             ${this._m(l.ventes)}</span>` : "");
+      const piece = (l.ecritures || []).length
+        ? l.ecritures.map((n) => this._lien("Journal Entry", n)).join("<br>")
+        : (l.en_cours ? '<span class="pe-badge neutre">mois en cours</span>'
+          : l.a_passer ? '<span class="pe-badge bad">à passer</span>'
+            : '<span class="muted">—</span>');
+      return `<tr><td>${this._esc(l.libelle)}</td><td class="num">${this._m(l.ventes)}</td>
+        <td class="num">${this._m(l.encaisse)}</td><td class="num">${credite}</td>
+        <td class="num">${ecart ? `<span class="pe-badge bad">${this._m(l.ecart)}</span>` : "—"}</td>
+        <td>${piece}</td></tr>`;
+    }).join("");
+    const parMois = `<div class="pe-scroll"><table class="pe-tbl">
+      <thead><tr><th>Mois du bilan</th><th class="num">Ventes Economiq</th>
+        <th class="num">Encaissé sur le compte</th><th class="num">Crédité par l’écriture</th>
+        <th class="num">Écart</th><th>Écriture</th></tr></thead>
+      <tbody>${lignes}</tbody>
+      <tfoot><tr><td>${(a.mois || []).length} mois</td>
+        <td class="num">${this._m(somme(a.mois, "ventes"))}</td>
+        <td class="num">${this._m(somme(a.mois, "encaisse"))}</td>
+        <td class="num">${this._m(somme(a.mois, "credite"))}</td>
+        <td class="num">${this._m(somme(a.mois, "ecart"))}</td><td></td></tr></tfoot>
+      </table></div>`;
+
+    const titre = (t) => `<div style="font-size:11px;font-weight:600;text-transform:uppercase;
+      letter-spacing:.04em;color:var(--text-muted);margin:12px 0 6px;">${this._esc(t)}</div>`;
+    const commandes = (a.commandes || []).length
+      ? titre("Écarts par commande") + `<div class="pe-scroll"><table class="pe-tbl">
+        <thead><tr><th>Commande</th><th>Client</th><th>Bilan</th><th class="num">Vente au bilan</th>
+          <th class="num">Encaissé</th><th class="num">Écart</th><th>Cause</th></tr></thead>
+        <tbody>${a.commandes.map((c) => `<tr>
+          <td>${this._lien("Sales Order", c.sales_order)}</td>
+          <td>${this._esc(c.customer || "")}</td><td class="muted">${this._esc(c.libelle)}</td>
+          <td class="num">${this._m(c.vente)}</td>
+          <td class="num">${this._m(c.encaisse)}${(c.pieces || []).length
+            ? `<br><span style="font-size:11px;">${c.pieces.map((p) =>
+                this._lien("Payment Entry", p.payment_entry)).join(", ")}</span>` : ""}</td>
+          <td class="num"><b>${this._m(c.ecart)}</b></td>
+          <td class="muted" style="font-size:11.5px;">${this._esc((c.cause || {}).texte || "")}</td>
+        </tr>`).join("")}</tbody>
+        <tfoot><tr><td colspan="5">${a.commandes.length} commande(s)</td>
+          <td class="num">${this._m(somme(a.commandes, "ecart"))}</td><td></td></tr></tfoot>
+        </table></div>`
+      : "";
+    const hors = (a.hors_bilan || []).length
+      ? titre("Mouvements hors des ventes Economiq") + `<div class="pe-scroll"><table class="pe-tbl">
+        <thead><tr><th>Date</th><th>Pièce</th><th class="num">Montant</th><th>Nature</th>
+          <th>Commande</th></tr></thead>
+        <tbody>${a.hors_bilan.map((h) => `<tr><td class="muted">${this._esc(h.date)}</td>
+          <td>${this._lien(h.voucher_type, h.voucher_no)}</td>
+          <td class="num">${this._m(h.montant)}</td>
+          <td class="muted" style="font-size:11.5px;">${this._esc(h.texte || "")}</td>
+          <td>${h.sales_order ? this._lien("Sales Order", h.sales_order) : "—"}</td>
+        </tr>`).join("")}</tbody>
+        <tfoot><tr><td colspan="2">${a.hors_bilan.length} mouvement(s)</td>
+          <td class="num">${this._m(somme(a.hors_bilan, "montant"))}</td><td colspan="2"></td>
+        </tr></tfoot></table></div>`
+      : "";
+    return intro + kpis + verdict + parMois + commandes + hors;
+  }
+
+  /** Dans la boîte de l’écriture : où en sera le compte du partenaire une fois celle-ci passée.
+   *
+   * ⚠️ C’EST À CE MOMENT-LÀ QUE L’ÉCART SE CORRIGE, PAS APRÈS. L’écriture crédite le compte des
+   * ventes saisies ; si le compte ne revient pas à zéro, on le dit avant de créer la pièce.
+   */
+  _apres_ecriture(ventes) {
+    const a = this.analyse;
+    if (!a || !a.disponible) return "";
+    const ici = (a.a_passer || []).find((x) => x.mois === this.mois);
+    if (!ici) return "";
+    const apres = (a.solde || 0) - (ventes || 0);
+    const autres = (a.a_passer || []).filter((x) => x.mois !== this.mois);
+    const fin = apres - autres.reduce((s, x) => s + (x.ventes || 0), 0);
+    const ok = Math.abs(fin) <= 0.0005;
+    return `<tr><td colspan="2" style="padding-top:6px;font-size:11.5px;
+      color:${ok ? "var(--text-muted)" : "#a93226"};">Compte ${this._esc(a.compte)} :
+      ${this._m(a.solde)} aujourd’hui, crédité de ${this._m(ventes)} par cette écriture →
+      <b>${this._m(apres)}</b>${autres.length ? ` (${this._m(fin)} une fois passées celles ${this._de(
+        autres.map((x) => x.libelle).join(", "))})` : ""}.
+      ${ok ? "Il revient à zéro." : "Il ne revient pas à zéro — voir « Analyse du compte »."}</td></tr>`;
+  }
+
+  /** « de octobre » → « d’octobre ». Les libellés de mois commencent par une minuscule. */
+  _de(texte) {
+    const t = String(texte || "");
+    return /^[aeiouyàâéèêîïôûœ]/i.test(t) ? `d’${t}` : `de ${t}`;
   }
 
   /** Le rapport mensuel : on le RELIT avant de le faire rédiger, et avant qu il ne soit posé.

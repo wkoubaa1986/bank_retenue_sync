@@ -274,6 +274,15 @@ class TestEcheancier(unittest.TestCase):
         self.assertEqual([x["montant"] for x in ajuste], [0.0, 0.0, 0.0])
         self.assertEqual(report, 200.0)
 
+    def test_un_mois_sans_commande_n_absorbe_rien(self):
+        """Octobre 2026 : aucune commande, trois echeances a 0 — « néant », pas « absorbée »."""
+        ajuste, report = echeancier.ajuster(echeancier.brut(0.0, 2026, 10), 425.070)
+        self.assertEqual([x["montant"] for x in ajuste], [0.0, 0.0, 0.0])
+        self.assertEqual([x["deduit"] for x in ajuste], [0.0, 0.0, 0.0])
+        self.assertEqual([x["note"] for x in ajuste],
+                         ["M (fin du mois) — néant", "M+1 — néant", "M+2 — néant"])
+        self.assertEqual(report, 425.070)
+
     def test_solde_net_et_ajustement(self):
         """L'ajustement vient EN DÉDUCTION de l'échéancier ; il n'en est pas la base.
 
@@ -328,13 +337,70 @@ class TestConsolideEconomiq(unittest.TestCase):
         self.assertEqual([l["date"] for l in r], ["2026-07-31"])
 
     def test_le_report_s_impute_sur_la_plus_ancienne(self):
-        from bank_retenue_sync.partenaire.echeancier import consolider
-        r = consolider([
+        from bank_retenue_sync.partenaire.echeancier import etat
+        r = etat([
             self._mois("2026-05", [self._e("2026-06-30", 100.0),
                                    self._e("2026-07-31", 100.0)]),
             self._mois("2026-06", [], report=150.0),
-        ])
-        self.assertEqual([(l["date"], l["montant"]) for l in r], [("2026-07-31", 50.0)])
+        ], [])
+        self.assertEqual([(l["date"], l["montant"], l["reste"]) for l in r["lignes"]],
+                         [("2026-07-31", 50.0, 50.0)])
+        self.assertEqual(r["reste"], 50.0)
+
+    def test_consolider_ne_deduit_plus_le_report(self):
+        """Le report s'impute APRES les reglements (`reporter`), plus ici."""
+        from bank_retenue_sync.partenaire.echeancier import consolider
+        r = consolider([self._mois("2026-05", [self._e("2026-07-31", 100.0)]),
+                        self._mois("2026-06", [], report=40.0)])
+        self.assertEqual([(l["date"], l["montant"]) for l in r], [("2026-07-31", 100.0)])
+
+    def test_le_report_saute_une_echeance_deja_payee(self):
+        """Octobre 2026 : le report reduit l'echeance OUVERTE (31/10), pas celle du 31/07 payee.
+
+        Le reste du est le meme ; mais reecrire au partenaire le montant d'une echeance qu'il a
+        deja reglee ferait mentir le rapport suivant.
+        """
+        from bank_retenue_sync.partenaire.echeancier import etat
+        r = etat([self._mois("2026-07", [self._e("2026-07-31", 100.0),
+                                         self._e("2026-10-31", 100.0)]),
+                  self._mois("2026-10", [], report=30.0)],
+                 [{"payment_entry": "PE-1", "date": "2026-08-02", "montant": 100.0}])
+        juillet, octobre = r["lignes"]
+        self.assertEqual((juillet["montant"], juillet["paye"], juillet["statut"]),
+                         (100.0, 100.0, "payé"))
+        self.assertNotIn("Report", juillet["detail"])
+        self.assertEqual((octobre["montant"], octobre["reste"]), (70.0, 70.0))
+        self.assertIn("↓ Report 2026-10 : −30.000", octobre["detail"])
+        self.assertEqual(r["reste"], 70.0)
+
+    def test_un_report_au_dela_des_echeances_ouvertes_va_en_excedent(self):
+        from bank_retenue_sync.partenaire.echeancier import etat
+        r = etat([self._mois("2026-07", [self._e("2026-07-31", 100.0)]),
+                  self._mois("2026-10", [], report=150.0)], [])
+        self.assertEqual(r["lignes"], [])          # eteinte par le report, rien de paye
+        self.assertEqual(r["excedent"], 50.0)      # le surplus n'est pas perdu
+
+    def test_une_echeance_eteinte_par_paiement_et_report_est_payee(self):
+        from bank_retenue_sync.partenaire.echeancier import etat
+        r = etat([self._mois("2026-07", [self._e("2026-07-31", 100.0)]),
+                  self._mois("2026-08", [], report=60.0)],
+                 [{"payment_entry": "PE-1", "date": "2026-07-31", "montant": 40.0}])
+        (l,) = r["lignes"]
+        self.assertEqual((l["montant"], l["paye"], l["reste"], l["statut"]),
+                         (40.0, 40.0, None, "payé"))
+
+    def test_changements_d_une_projection(self):
+        from bank_retenue_sync.partenaire.echeancier import changements
+        avant = [{"date": "2026-07-31", "montant": 100.0, "reste": None},
+                 {"date": "2026-10-31", "montant": 100.0, "reste": 100.0}]
+        apres = [{"date": "2026-07-31", "montant": 100.0, "reste": None},
+                 {"date": "2026-10-31", "montant": 70.0, "reste": 70.0},
+                 {"date": "2026-11-30", "montant": 20.0, "reste": 20.0}]
+        self.assertEqual(changements(avant, apres), [
+            {"date": "2026-10-31", "nouvelle": False, "montant_avant": 100.0,
+             "montant_apres": 70.0, "reste_avant": 100.0, "reste_apres": 70.0},
+            {"date": "2026-11-30", "nouvelle": True, "montant_avant": 0.0,
+             "montant_apres": 20.0, "reste_avant": 0.0, "reste_apres": 20.0}])
 
     def test_statut_selon_le_paiement(self):
         from bank_retenue_sync.partenaire.echeancier import consolider

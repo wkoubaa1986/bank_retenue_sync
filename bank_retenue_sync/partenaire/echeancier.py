@@ -48,11 +48,20 @@ def ajuster(echeancier: list, ajustement: float) -> tuple[list, float]:
 
     Rend (echeancier ajuste, report). Le report est ce que l'ajustement n'a pas pu absorber
     faute d'echeances : il descend au consolide au lieu de disparaitre.
+
+    ⚠️ UNE ECHEANCE NULLE N'ABSORBE RIEN. Un mois sans commande du partenaire a trois echeances
+    a 0 : les dire « absorbées » faisait croire que l'ajustement y avait ete impute, alors qu'il
+    descend en entier au consolide — octobre 2026 : trois lignes « absorbée » a 0,000 et
+    425,070 de report (signale par l'utilisateur le 04/11/2026).
     """
     reste = _arr(ajustement)
     ajuste = []
     for e in echeancier or []:
         montant = _arr(e.get("montant"))
+        if montant <= 0:
+            ajuste.append({**e, "montant": 0.0, "deduit": 0.0,
+                           "note": "%s — néant" % e.get("note", "")})
+            continue
         if reste <= 0:
             ajuste.append({**e, "montant": montant, "deduit": 0.0})
         elif reste >= montant:
@@ -92,9 +101,11 @@ def consolider(historique: list) -> list:
     ⚠️ UNE ECHEANCE ABSORBEE N'EXISTE PAS AU CONSOLIDE. L'ajustement du mois l'a deja effacee ;
     la reporter reviendrait a reclamer deux fois la meme somme.
 
-    ⚠️ ET LE REPORT SE DEDUIT DES ECHEANCES LES PLUS ANCIENNES. Ce que l'ajustement d'un mois
-    n'a pas pu absorber faute d'echeances descend ici et s'impute par ordre de date : c'est la
-    dette la plus vieille qui s'eteint la premiere, pas la plus commode.
+    ⚠️ LE REPORT NE S'IMPUTE PAS ICI, MAIS DANS `reporter`, APRES LES REGLEMENTS. Le deduire
+    ici, avant les reglements, l'inscrivait sur l'echeance la plus ancienne meme payee : le
+    report d'octobre 2026 (425,070 dus par Aqua World) aurait « réduit » l'echeance du 31/07,
+    reglee depuis aout, et le rapport suivant aurait reecrit au partenaire un montant qu'il a deja
+    paye. Le reste du par echeance etait le meme ; c'est ce qu'on affiche qui mentait.
     """
     from collections import defaultdict
 
@@ -129,20 +140,6 @@ def consolider(historique: list) -> list:
                                                     else montant))
             statuts[date].add(e.get("statut") or "non_payé")
 
-        report = _arr(mois.get("report"))
-        for date in sorted(totaux):
-            if report <= 0:
-                break
-            if totaux[date] >= report:
-                totaux[date] = _arr(totaux[date] - report)
-                restes[date] = max(0.0, _arr(restes[date] - report))
-                details[date].append("↓ Report %s : −%.3f" % (cle, report))
-                report = 0.0
-            else:
-                absorbe = totaux[date]
-                report = _arr(report - absorbe)
-                totaux[date], restes[date] = 0.0, 0.0
-                details[date].append("↓ Report %s : −%.3f (partiel)" % (cle, absorbe))
 
     out = []
     for date in sorted(totaux):
@@ -153,6 +150,82 @@ def consolider(historique: list) -> list:
                     "paye": paye or None, "reste": reste or None,
                     "statut": _statut(statuts[date], paye, reste),
                     "detail": "  |  ".join(details[date])})
+    return out
+
+
+def reporter(lignes: list, historique: list) -> tuple[list, float]:
+    """Impute le report de chaque mois sur les echeances ENCORE OUVERTES. Fonction pure.
+
+    Rend (lignes, report non impute). `lignes` sort d'`imputer` : les reglements y sont deja.
+
+    ⚠️ LA PLUS ANCIENNE ECHEANCE OUVERTE, PAS LA PLUS ANCIENNE TOUT COURT. Le report est ce que
+    l'ajustement d'un mois n'a pas pu absorber faute d'echeances — un mois sans commande, comme
+    octobre 2026. C'est la dette la plus vieille qui s'eteint la premiere ; une echeance deja
+    payee n'en est plus une. Il reduit le DU de l'echeance qu'il touche, comme l'absorption
+    reduit celui de l'echeancier du mois, et le detail le dit.
+
+    ⚠️ CE QUI DEPASSE TOUTES LES ECHEANCES OUVERTES N'EST PAS PERDU. Il revient a l'appelant,
+    qui l'ajoute a l'excedent : c'est une avance du partenaire, pas une somme qui disparait.
+    """
+    out = [dict(l) for l in sorted(lignes or [], key=lambda l: l.get("date") or "")]
+    non_impute = 0.0
+    for mois in sorted(historique or [], key=lambda m: m.get("mois") or ""):
+        report = _arr(mois.get("report"))
+        if report <= 0:
+            continue
+        cle = mois.get("mois") or ""
+        for l in out:
+            if report <= 0.0005:
+                break
+            ouvert = _arr(l.get("reste"))
+            if ouvert <= 0.001:
+                continue
+            pris = min(ouvert, report)
+            l["montant"] = _arr(_arr(l.get("montant")) - pris)
+            reste = _arr(ouvert - pris)
+            l["reste"] = reste or None
+            l["report"] = _arr(_arr(l.get("report")) + pris)
+            l["detail"] = "  |  ".join(x for x in (l.get("detail"), "↓ Report %s : −%.3f%s" % (
+                cle, pris, "" if pris >= report - 0.0005 else " (partiel)")) if x)
+            paye = _arr(l.get("paye"))
+            l["statut"] = (("payé" if paye > 0.001 else "absorbé") if reste <= 0.001
+                           else ("partiel" if paye > 0.001 else "non_payé"))
+            report = _arr(report - pris)
+        non_impute = _arr(non_impute + max(0.0, report))
+    # Une echeance entierement eteinte par un report, sans rien de paye, n'existe plus au
+    # consolide — comme une echeance absorbee (cf. `consolider`).
+    out = [l for l in out if _arr(l.get("montant")) > 0.001 or _arr(l.get("paye")) > 0.001]
+    return out, non_impute
+
+
+def etat(historique: list, versements: list) -> dict:
+    """Le consolide et ses totaux. Fonction pure — `consolider`, `imputer`, puis `reporter`."""
+    lignes, excedent = imputer(consolider(historique), versements)
+    lignes, non_impute = reporter(lignes, historique)
+    excedent = _arr(excedent + non_impute)
+    return {"lignes": lignes, "excedent": excedent,
+            "total": _arr(sum(_arr(l.get("montant")) for l in lignes)),
+            "paye": _arr(sum(_arr(l.get("paye")) for l in lignes)),
+            "reste": _arr(sum(_arr(l.get("reste")) for l in lignes))}
+
+
+def changements(avant: list, apres: list) -> list:
+    """Ce qu'une projection change au consolide, echeance par echeance. Fonction pure.
+
+    Rend les seules echeances dont le du ou le reste bouge, avec l'avant et l'apres : c'est la
+    reponse a « ou s'impute le report de ce mois ? » — en octobre 2026, sur l'echeance du 31/10,
+    la plus ancienne encore ouverte.
+    """
+    a = {l.get("date"): l for l in avant or []}
+    p = {l.get("date"): l for l in apres or []}
+    out = []
+    for date in sorted(set(a) | set(p)):
+        la, lp = a.get(date) or {}, p.get(date) or {}
+        ma, mp = _arr(la.get("montant")), _arr(lp.get("montant"))
+        ra, rp = _arr(la.get("reste")), _arr(lp.get("reste"))
+        if abs(ma - mp) > 0.0005 or abs(ra - rp) > 0.0005:
+            out.append({"date": date, "nouvelle": date not in a, "montant_avant": ma,
+                        "montant_apres": mp, "reste_avant": ra, "reste_apres": rp})
     return out
 
 

@@ -45,6 +45,19 @@ def get_controle_bl() -> dict:
     return controle_bl.controle()
 
 
+@frappe.whitelist()
+def get_analyse_compte() -> dict:
+    """Le compte « Economiq Aqua Solution - A&S » rapproche du bilan, avec sa projection.
+
+    Repond a « une fois les ecritures de bilan passees, le compte revient-il a zero ? » —
+    et sinon, commande par commande, pourquoi. Lecture seule.
+    """
+    _guard()
+    from bank_retenue_sync.partenaire import compte
+
+    return compte.analyse()
+
+
 ROLES_ECRITURE = ["System Manager", "Accounts Manager"]
 
 
@@ -80,31 +93,47 @@ def enregistrer(mois=None, charges=None, valide=0) -> dict:
 
 
 @frappe.whitelist()
-def get_consolide() -> dict:
+def get_consolide(mois=None) -> dict:
     """Le solde consolide inter-mois : ce que le partenaire doit, echeance par echeance.
 
     ⚠️ LES REGLEMENTS NE SE POINTENT PAS, ILS SE LISENT. Les Payment Entry encaissees depuis
     l'ancrage sont imputees ici, de l'echeance la plus ancienne a la plus recente. Stocker un
     pointage a cote des pieces creerait une seconde comptabilite qui divergerait au premier
     reglement saisi directement dans ERPNext.
+
+    `mois` : le mois affiche. S'il n'est pas encore enregistre, `projection` dit ce que le
+    consolide deviendrait a son enregistrement — sans rien ecrire. C'est la reponse a « ou va
+    le report de ce mois ? » : octobre 2026, sans commande, reportait 425,070 que le consolide
+    affiche ne montrait nulle part.
     """
     _guard()
     from bank_retenue_sync.partenaire import amorce, echeancier, encaissements, historique
 
-    mois = [m for m in historique.tous() if m]
+    tableau = M_economiq.tableau(mois) if mois else None
+    enregistres, projete = historique.pour_le_consolide(tableau)
     versements = encaissements.recus(amorce.DEPUIS)
-    lignes, excedent = echeancier.imputer(echeancier.consolider(mois), versements)
-    return {
-        "mois_enregistres": [m["mois"] for m in mois],
-        "lignes": lignes,
+    base = echeancier.etat(enregistres, versements)
+    out = {
+        "mois_enregistres": [m["mois"] for m in enregistres],
+        "lignes": base["lignes"],
         "depuis": amorce.DEPUIS,
         "versements": versements,
         "dettes": encaissements.dettes(amorce.DEPUIS),
-        "excedent": excedent,
-        "total": frappe.utils.flt(sum(l["montant"] for l in lignes), 3),
-        "reste": frappe.utils.flt(sum(l["reste"] or 0 for l in lignes), 3),
-        "paye": frappe.utils.flt(sum(l["paye"] or 0 for l in lignes), 3),
+        "excedent": base["excedent"],
+        "total": base["total"],
+        "reste": base["reste"],
+        "paye": base["paye"],
     }
+    if projete:
+        apres = echeancier.etat(enregistres + [projete], versements)
+        changes = echeancier.changements(base["lignes"], apres["lignes"])
+        if changes or abs(apres["excedent"] - base["excedent"]) > 0.0005:
+            out["projection"] = {
+                "mois": projete["mois"], "libelle": projete["libelle"],
+                "ajustement": projete["ajustement"], "report": projete["report"],
+                "total": apres["total"], "reste": apres["reste"], "paye": apres["paye"],
+                "excedent": apres["excedent"], "changements": changes}
+    return out
 
 
 @frappe.whitelist()

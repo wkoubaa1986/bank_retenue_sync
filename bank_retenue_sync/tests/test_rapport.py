@@ -488,6 +488,12 @@ class TestReserves(unittest.TestCase):
     def test_sans_reserve_aucun_bandeau(self):
         self.assertNotIn("> ⚠️", rapport.rendre(donnees_juin()))
 
+    def test_un_mois_non_enregistre_le_dit_sous_le_consolide(self):
+        self.assertNotIn("*Projection*", rapport.rendre(donnees_juin()))
+        d = donnees_juin()
+        d["projete"] = True
+        self.assertIn("*Projection* : ce mois n’est pas encore enregistré", rapport.rendre(d))
+
 
 class TestProseDeterministe(unittest.TestCase):
     """La prose de secours : celle qui part si OpenAI est muet."""
@@ -502,6 +508,33 @@ class TestProseDeterministe(unittest.TestCase):
         d["ajustement"] = 0.0
         d["echeancier_corrige"] = [{**e, "deduit": 0.0} for e in d["echeancier_corrige"]]
         self.assertIn("Aucune absorption", rapport.prose_deterministe(d)["absorption"])
+
+    def test_un_mois_sans_commande_reporte_et_ne_dit_pas_nul(self):
+        """Octobre 2026 : « l’ajustement est nul » sous « Ajustement retenu : 425,070 TND »."""
+        d = donnees_juin()
+        d.update(ajustement=425.07, report=425.07, echeancier_corrige=[
+            {"date": "2026-10-31", "montant": 0.0, "deduit": 0.0, "note": "M (fin du mois) — néant"},
+            {"date": "2026-11-30", "montant": 0.0, "deduit": 0.0, "note": "M+1 — néant"},
+            {"date": "2026-12-31", "montant": 0.0, "deduit": 0.0, "note": "M+2 — néant"}])
+        texte = rapport.prose_deterministe(d)["absorption"]
+        self.assertNotIn("nul", texte)
+        self.assertIn("425,070", texte)
+        self.assertIn("AQUA WORLD", texte)
+        self.assertIn("reportés sur les échéances encore ouvertes", texte)
+
+    def test_absorption_partielle_et_report(self):
+        d = donnees_juin()
+        d.update(ajustement=500.0, report=100.0, echeancier_corrige=[
+            {"date": "2026-06-30", "montant": 0.0, "deduit": 400.0, "note": "M — absorbée"}])
+        texte = rapport.prose_deterministe(d)["absorption"]
+        self.assertIn("400,000 TND ont été absorbés", texte)
+        self.assertIn("surplus de 100,000 TND", texte)
+
+    def test_un_ajustement_non_nul_sans_absorption_ne_se_dit_pas_nul(self):
+        d = donnees_juin()
+        d["echeancier_corrige"] = [{**e, "deduit": 0.0} for e in d["echeancier_corrige"]]
+        self.assertEqual(rapport.prose_deterministe(d)["absorption"],
+                         "Aucune absorption ce mois-ci.")
 
     def test_les_echeances_couvertes_sont_enumerees(self):
         d = donnees_juin()
@@ -639,11 +672,18 @@ class TestRapportCourt(unittest.TestCase):
         self.assertIn("doit", lignes[1])
 
     def test_le_sens_de_la_dette_suit_le_signe_du_solde(self):
-        positif = self.court(solde_net=147.64)
-        self.assertIn("%s doit" % rapport.CLIENT, positif)
-        negatif = self.court(solde_net=-147.64)
-        self.assertIn("AQUA WORLD doit", negatif)
-        self.assertIn("147,640", negatif)
+        """Solde net positif = benefice Aqua World (du a Economiq) > benefice Economiq : c'est
+        AQUA WORLD qui doit, et c'est pour cela que l'echeancier du partenaire est reduit.
+
+        La premiere version inversait : les rapports d'aout et de septembre 2026 annonçaient
+        « ECONOMIQ doit 147,640 TND à AQUA WORLD » (signale le 04/11/2026)."""
+        tete = lambda texte: [l for l in texte.splitlines() if l.strip()][1]  # noqa: E731
+        positif = tete(self.court(solde_net=147.64))
+        self.assertTrue(positif.startswith("**AQUA WORLD doit 147,640 TND à %s**"
+                                           % rapport.CLIENT), positif)
+        negatif = tete(self.court(solde_net=-147.64))
+        self.assertTrue(negatif.startswith("**%s doit 147,640 TND à AQUA WORLD**"
+                                           % rapport.CLIENT), negatif)
 
     def test_un_solde_nul_ne_reclame_rien(self):
         """Annoncer « doit 0,000 TND » serait une reclamation vide."""

@@ -161,6 +161,55 @@ def tous() -> list:
                                                  limit_page_length=0)]
 
 
+def projete(tableau: dict) -> dict | None:
+    """Le mois affiche TEL QU'IL SERAIT ENREGISTRE, pour le consolide — None s'il l'est deja.
+
+    Fonction pure : meme forme que `lire`, memes statuts que `enregistrer`, rien n'est ecrit.
+
+    ⚠️ SANS ELLE, LE REPORT D'UN MOIS NON ENREGISTRE N'APPARAIT NULLE PART. Le consolide ne lit
+    que les mois en base : en octobre 2026, les 425,070 dus par Aqua World etaient annonces
+    « reportés sur les échéances les plus anciennes » alors que le reste du affiche (6 427,660)
+    ne bougeait pas — le rapport du mois se contredisait lui-meme. On montre donc ce que
+    deviendrait le consolide, en le disant : c'est une projection tant que le mois n'est pas
+    enregistre.
+    """
+    if not tableau or not tableau.get("disponible") or tableau.get("enregistre"):
+        return None
+
+    def arr(v):
+        return round(float(v or 0), PRECISION)
+
+    echeances = []
+    for e in tableau.get("echeancier") or []:
+        montant, deduit = arr(e.get("montant")), arr(e.get("deduit"))
+        echeances.append({
+            "date": str(e.get("date")), "montant_brut": arr(montant + deduit), "deduit": deduit,
+            "montant": montant, "note": e.get("note") or "", "paye": 0.0, "reste": montant,
+            "statut": "absorbé" if montant <= 0.001 and deduit > 0 else "non_payé"})
+    return {"mois": tableau.get("mois"), "libelle": tableau.get("libelle"), "valide": False,
+            "projete": True, "ajustement": arr(tableau.get("ajustement")),
+            "report": arr(tableau.get("report")), "echeances": echeances}
+
+
+def pour_le_consolide(tableau: dict | None = None) -> tuple[list, dict | None]:
+    """Les mois du consolide : ceux en base, et le mois affiche en projection s'il ne l'est pas.
+
+    -> (mois enregistres, mois projete ou None).
+
+    ⚠️ ON NE PROJETTE QUE LE MOIS QUI SUIT LE DERNIER ENREGISTRE. Projeter un mois anterieur
+    deverserait son report sur des echeances deja arretees ; en projeter un apres un trou
+    (`continuite`) montrerait un consolide ampute des mois manquants, que l'ecran signale deja
+    comme faux.
+    """
+    enregistres = [m for m in tous() if m]
+    projection = projete(tableau) if tableau else None
+    if projection and enregistres and projection["mois"] <= enregistres[-1]["mois"]:
+        projection = None
+    if projection and continuite(projection["mois"]):
+        projection = None
+    return enregistres, projection
+
+
 def continuite(mois: str) -> str:
     """Les mois manquants entre le dernier enregistre et celui-ci, ou "" si la suite est intacte.
 

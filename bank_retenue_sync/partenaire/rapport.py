@@ -139,8 +139,13 @@ def donnees(mois: str = None) -> dict:
     brut = echeancier.brut(tableau["total_commandes"], annee, numero)
 
     versements = encaissements.recus(amorce.DEPUIS)
-    lignes, avance = echeancier.imputer(
-        echeancier.consolider([m for m in historique.tous() if m]), versements)
+    # ⚠️ LE MOIS DU RAPPORT EST DANS SON CONSOLIDE, MEME NON ENREGISTRE. Sinon le §3 annonce un
+    # report « sur les échéances les plus anciennes » que le reste du ne montre pas : octobre
+    # 2026 reportait 425,070 dus par Aqua World et le rapport gardait 6 427,660 de reste du.
+    # L'ecran demande d'enregistrer le mois avant d'envoyer ; le rapport, lui, ne se contredit plus.
+    enregistres, projete = historique.pour_le_consolide(tableau)
+    etat = echeancier.etat(enregistres + ([projete] if projete else []), versements)
+    lignes, avance = etat["lignes"], etat["excedent"]
 
     # Les reglements du MOIS, et les echeances que ces reglements-la ont eteintes. L'imputation est
     # globale (la dette la plus ancienne d'abord) : on ne la refait pas, on la relit.
@@ -226,6 +231,7 @@ def donnees(mois: str = None) -> dict:
 
     return {
         "mois": mois,
+        "projete": bool(projete),
         "libelle": maj(tableau["libelle"]),
         "nom_du_mois": maj((tableau["libelle"] or "").split(" ")[0]),
         "mois_suivant": maj(periode.libelle(periode.cle(annee_s, numero_s))),
@@ -278,8 +284,21 @@ def prose_deterministe(d: dict) -> dict:
     dont on ne peut pas verifier le commentaire.
     """
     absorbees = [e for e in (d["echeancier_corrige"] or []) if flt(e.get("deduit"))]
-    if not absorbees:
-        absorption = "Aucune absorption ce mois-ci : l’ajustement est nul."
+    report = flt(d.get("report"))
+    # ⚠️ « L'AJUSTEMENT EST NUL » N'EST VRAI QUE S'IL L'EST. Un mois sans commande n'a rien a
+    # absorber, mais son ajustement descend en entier au consolide : octobre 2026 annonçait
+    # « l'ajustement est nul » juste sous « Ajustement retenu : 425,070 TND ».
+    if not absorbees and report > 0.001:
+        absorption = ("Aucune échéance ce mois-ci pour l’absorber : les %s TND dus par AQUA "
+                      "WORLD sont reportés sur les échéances encore ouvertes, de la plus "
+                      "ancienne à la plus récente." % montant(report))
+    elif not absorbees:
+        absorption = ("Aucune absorption ce mois-ci : l’ajustement est nul."
+                      if abs(flt(d["ajustement"])) < 0.001 else "Aucune absorption ce mois-ci.")
+    elif report > 0.001:
+        absorption = ("%s TND ont été absorbés sur l’échéancier du mois ; le surplus de %s TND "
+                      "est reporté sur les échéances encore ouvertes, de la plus ancienne à la "
+                      "plus récente." % (montant(flt(d["ajustement"]) - report), montant(report)))
     else:
         absorption = ("Le montant de %s TND a été absorbé pour réduire l’échéance du %s."
                       % (montant(d["ajustement"]), absorbees[0].get("date") or ""))
@@ -602,14 +621,20 @@ def rendre_court(d: dict, prose: dict = None) -> str:
     # defaut du rapport long.
     aqua, part = d["bilan"]["aqua"], d["bilan"]["partenaire"]
     solde = flt(d["solde_net"])
+    # ⚠️ UN SOLDE POSITIF EST DU PAR AQUA WORLD, PAS PAR LE PARTENAIRE. Solde net = benefice
+    # Aqua World (du a Economiq) − benefice Economiq (du a Aqua World) — le rapport complet le
+    # dit en toutes lettres, l'ecriture de bilan le credite au debiteur du partenaire, et
+    # l'echeancier s'en trouve REDUIT. La premiere version inversait le sens : les rapports
+    # d'aout et de septembre 2026 annonçaient « ECONOMIQ doit 147,640 / 1 252,220 TND à AQUA
+    # WORLD » (signale par l'utilisateur le 04/11/2026).
     if abs(solde) < 0.001:
         L += ["**Les deux activités s’équilibrent ce mois-ci.**", ""]
     elif solde > 0:
-        L += ["**%s doit %s TND à AQUA WORLD** au titre de l’activité du mois."
-              % (CLIENT, montant(solde)), ""]
-    else:
         L += ["**AQUA WORLD doit %s TND à %s** au titre de l’activité du mois."
-              % (montant(abs(solde)), CLIENT), ""]
+              % (montant(solde), CLIENT), ""]
+    else:
+        L += ["**%s doit %s TND à AQUA WORLD** au titre de l’activité du mois."
+              % (CLIENT, montant(abs(solde))), ""]
 
     L += _tableau(["Activité", "Ventes (TND)", "Achats (TND)", "Bénéfice (TND)"],
                   [["Aqua World pour %s" % CLIENT, montant(aqua["ventes"]),
@@ -824,7 +849,8 @@ def rendre(d: dict, prose: dict = None) -> str:
     L += ["", "- *Explication de l’absorption* : %s" % p["absorption"]]
     if flt(d["report"]):
         L += ["- *Report* : %s TND — l’ajustement dépasse l’échéancier du mois ; le surplus "
-              "descend sur les échéances les plus anciennes du consolidé" % montant(d["report"])]
+              "descend sur les échéances encore ouvertes du consolidé, de la plus ancienne à la "
+              "plus récente" % montant(d["report"])]
 
     # 4 — paiements recus
     L += ["", "## 4. 💰 Paiements Reçus", "", "### Tableau des Paiements Reçus", ""]
@@ -870,6 +896,9 @@ def rendre(d: dict, prose: dict = None) -> str:
                   [[l["date"], montant(l["montant"]), _ou_null(l.get("paye")),
                     _ou_null(l.get("reste")), l.get("statut") or "",
                     franciser(l.get("detail"))] for l in d["consolide"]])
+    if d.get("projete"):
+        L += ["", "- *Projection* : ce mois n’est pas encore enregistré ; le consolidé l’inclut "
+              "tel qu’il est calculé aujourd’hui."]
 
     # 6 — avance reportee
     L += ["", "## 6. 🧾 Calcul de l’Avance Reportée", "",
