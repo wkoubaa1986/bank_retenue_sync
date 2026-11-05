@@ -1192,9 +1192,16 @@ class FacturationMensuelle {
          ${this._esc(d.comptes_absents.join(", "))}. Le bloc correspondant est vide — ce n'est
          pas une absence de charges, c'est un compte qui a changé de nom.</div>` : "";
 
+    // Écritures écartées du dossier (sortie de charge, dépense financée par un compte hors dossier) :
+    // jamais en silence — leur liste suit le bloc, avec la raison (05/11/2026).
+    const ecartees = (b) => (b.ecartees || []).length
+      ? `<div class="fm-note" style="margin-top:6px"><b>${b.ecartees.length} écriture(s) hors dossier</b>, non comptée(s) :
+         ${b.ecartees.map((e) => `${this._lien(e.document_type, e.document_name)} ${this._m(e.ttc)} — ${this._esc(e.raison)}`).join(" · ")}
+         <span class="muted">(réglage : Bank Retenue Sync Settings › Dossier mensuel)</span></div>` : "";
+
     const blocs = d.blocs.map((b) => {
       if (!b.lignes.length) {
-        return this._sous(b.titre) + '<div class="fm-vide">Aucune ligne sur ce mois.</div>';
+        return this._sous(b.titre) + '<div class="fm-vide">Aucune ligne sur ce mois.</div>' + ecartees(b);
       }
       const corps = b.lignes.map((l) => {
         const c = l.controle;
@@ -1234,7 +1241,7 @@ class FacturationMensuelle {
               <td class="num">${this._m(b.totaux.retenue)}</td>
               <td colspan="6">${b.totaux.sans_justificatif} sans pièce exigible ·
                 ${b.totaux.exemptes} exemptée(s)</td></tr></tfoot>
-           </table></div>`;
+           </table></div>` + ecartees(b);
     }).join("");
 
     return kpis + absents + controle + this._encart_rattrapage(d) + blocs

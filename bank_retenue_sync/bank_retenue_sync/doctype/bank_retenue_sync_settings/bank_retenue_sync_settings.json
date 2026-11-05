@@ -71,7 +71,10 @@
   "section_rapprochement_client",
   "tolerance_ecart_montant",
   "column_break_rapprochement",
-  "tolerance_ecart_bl"
+  "tolerance_ecart_bl",
+  "section_dossier_mensuel",
+  "ecarter_sorties_de_charge",
+  "comptes_hors_dossier"
  ],
  "fields": [
   {
@@ -101,7 +104,8 @@
   {
    "fieldname": "section_service",
    "fieldtype": "Section Break",
-   "label": "Service TEJ"
+   "label": "Service TEJ",
+   "collapsible": 1
   },
   {
    "default": "http://tej-bank-service:8080",
@@ -149,7 +153,8 @@
   {
    "fieldname": "section_secrets",
    "fieldtype": "Section Break",
-   "label": "Signature des push"
+   "label": "Signature des push",
+   "collapsible": 1
   },
   {
    "description": "Cle HMAC verifiant les push entrants. Doit correspondre a PUSH_SECRET cote conteneur.",
@@ -175,7 +180,8 @@
   {
    "fieldname": "section_ecritures",
    "fieldtype": "Section Break",
-   "label": "Ecritures"
+   "label": "Ecritures",
+   "collapsible": 1
   },
   {
    "default": "0",
@@ -208,7 +214,8 @@
   {
    "fieldname": "section_sources",
    "fieldtype": "Section Break",
-   "label": "Sources email"
+   "label": "Sources email",
+   "collapsible": 1
   },
   {
    "description": "Boites d'ou proviennent les factures et avis traites automatiquement. C'est la source unique de verite : l'orchestrateur lit cette table, il ne contient plus aucun expediteur en dur.",
@@ -220,7 +227,8 @@
   {
    "fieldname": "section_contrats",
    "fieldtype": "Section Break",
-   "label": "Contrats de financement"
+   "label": "Contrats de financement",
+   "collapsible": 1
   },
   {
    "description": "Prets et leasings, avec leur echeancier. Les deux prets partagent le meme libelle bancaire : c'est le total mensuel constant qui les distingue.",
@@ -232,7 +240,8 @@
   {
    "fieldname": "section_depenses",
    "fieldtype": "Section Break",
-   "label": "Depenses recurrentes"
+   "label": "Depenses recurrentes",
+   "collapsible": 1
   },
   {
    "description": "Depenses declenchees par leur apparition sur le releve bancaire. Modifier un montant ici suffit : aucune modification de code n'est necessaire.",
@@ -244,7 +253,8 @@
   {
    "fieldname": "section_tej",
    "fieldtype": "Section Break",
-   "label": "Certificats TEJ"
+   "label": "Certificats TEJ",
+   "collapsible": 1
   },
   {
    "default": "1",
@@ -324,7 +334,8 @@
   {
    "fieldname": "section_ouverture",
    "fieldtype": "Section Break",
-   "label": "Point de depart du rapprochement"
+   "label": "Point de depart du rapprochement",
+   "collapsible": 1
   },
   {
    "description": "Date a partir de laquelle l'ecart est suivi. Tout ce qui precede est repute acquis et neutralise par le montant ci-contre : la page n'affiche alors que l'ecart CREE depuis cette date. Sans date, l'ecart reste brut.",
@@ -370,7 +381,8 @@
   {
    "fieldname": "section_achat",
    "fieldtype": "Section Break",
-   "label": "Achats locaux"
+   "label": "Achats locaux",
+   "collapsible": 1
   },
   {
    "default": "1",
@@ -455,7 +467,8 @@
   {
    "fieldname": "section_tej_emis",
    "fieldtype": "Section Break",
-   "label": "Certificats de retenue emis (TEJ)"
+   "label": "Certificats de retenue emis (TEJ)",
+   "collapsible": 1
   },
   {
    "default": "Acquisitions des marchandises, matériel équipements et de services",
@@ -479,7 +492,8 @@
   {
    "fieldname": "section_rapprochement_client",
    "fieldtype": "Section Break",
-   "label": "Rapprochement client"
+   "label": "Rapprochement client",
+   "collapsible": 1
   },
   {
    "default": "1",
@@ -498,11 +512,31 @@
    "fieldname": "tolerance_ecart_bl",
    "fieldtype": "Currency",
    "label": "Écart de livraison accepté"
+  },
+  {
+   "fieldname": "section_dossier_mensuel",
+   "fieldtype": "Section Break",
+   "label": "Dossier mensuel (facturation)",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "ecarter_sorties_de_charge",
+   "fieldtype": "Check",
+   "default": "1",
+   "label": "Écarter les sorties de charge",
+   "description": "Cochée : une écriture qui SORT une somme d’un compte de charge (crédit net sur les comptes de charge, ex. un transfert de Charges Diverses vers un compte en euros) ne figure pas dans la liste des charges ni dans l’export."
+  },
+  {
+   "fieldname": "comptes_hors_dossier",
+   "fieldtype": "Table MultiSelect",
+   "label": "Comptes de financement hors dossier",
+   "options": "BRS Compte Hors Dossier",
+   "description": "Une dépense payée par l’un de ces comptes (l’écriture le crédite) ne figure pas dans la liste des charges de la facturation mensuelle ni dans son export. Exemple : Compte Wassim Euros - A&S."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-08-12 16:00:00.000000",
+ "modified": "2026-11-05 21:30:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",

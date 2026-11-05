@@ -99,6 +99,83 @@ def exemption(ligne: dict) -> str:
 # ------------------------------------------------------------------ reference d'export
 
 
+# ------------------------------------------------------------------ hors dossier (05/11/2026)
+#
+# ⚠️ TOUTE ECRITURE QUI TOUCHE UN COMPTE DE CHARGE N'EST PAS UNE CHARGE DU MOIS. Deux cas sortent de la
+# liste (demande utilisateur du 05/11/2026), ecran comme export comme retardataires :
+#   - la SORTIE de charge (case « Écarter les sorties de charge » du reglage, cochee par defaut) :
+#     l'ecriture CREDITE au net les comptes de charge du dossier. Cas reel :
+#     ACC-JV-2026-01034, 29 902,400 sortis de « Charges Diverses » vers le Compte Wassim Euros (devises
+#     d'une AVA) — elle remontait comme une depense de 29 902,400 de plus ;
+#   - la depense FINANCEE par un compte hors dossier : l'ecriture credite un compte du reglage
+#     « Comptes de financement hors dossier » (Bank Retenue Sync Settings), ex. le Compte Wassim Euros.
+# Les lignes ecartees ne disparaissent pas en silence : le bloc les rend dans `ecartees`, avec la raison.
+
+CHAMP_HORS_DOSSIER = "comptes_hors_dossier"
+CHAMP_SORTIES = "ecarter_sorties_de_charge"
+REGLAGE = "Bank Retenue Sync Settings"
+RAISON_SORTIE = "sortie de charge (crédit net sur les comptes de charge)"
+
+
+def comptes_hors_dossier() -> set:
+    """Les comptes de financement du reglage. Ensemble vide si le reglage n'existe pas encore."""
+    try:
+        return set(frappe.get_all("BRS Compte Hors Dossier",
+                                  filters={"parenttype": REGLAGE, "parentfield": CHAMP_HORS_DOSSIER},
+                                  pluck="account"))
+    except Exception:
+        return set()
+
+
+def sorties_ecartees() -> bool:
+    """La case du reglage. ⚠️ Lue DIRECTEMENT dans tabSingles : `get_single_value` rend 0 aussi bien pour
+    « decochee » que pour « jamais enregistree », et la regle doit naitre active."""
+    try:
+        v = frappe.db.sql("select value from tabSingles where doctype = %s and field = %s", (REGLAGE, CHAMP_SORTIES))
+    except Exception:
+        return True
+    return True if not v else bool(int(v[0][0] or 0))
+
+
+def raison_hors_dossier(ligne: dict, net_charges, exclus: set, sorties: bool = True) -> str:
+    """Pourquoi cette ligne reste hors du dossier, ou "" si elle y va. Fonction pure.
+
+    Ne juge que les ECRITURES DE JOURNAL : une facture d'achat ou une retenue a sa propre nature.
+    `net_charges` : debit − credit de la piece sur les comptes de charge du bloc (None = inconnu)."""
+    if ligne.get("document_type") != "Journal Entry":
+        return ""
+    if sorties and net_charges is not None and float(net_charges) <= 0.0005:
+        return RAISON_SORTIE
+    finance = sorted(c for c in (ligne.get("comptes_credites") or []) if c in exclus)
+    if finance:
+        return "financée par %s" % finance[0]
+    return ""
+
+
+def ecarter(lignes: list, nets: dict, exclus: set, sorties: bool = True) -> tuple:
+    """(lignes gardees, lignes ecartees avec leur `raison_hors_dossier`). Fonction pure.
+
+    `nets` : {(document_type, document_name): net sur les comptes de charge} ; `sorties` : la case du reglage."""
+    gardees, ecartees = [], []
+    for l in lignes:
+        raison = raison_hors_dossier(l, nets.get((l.get("document_type"), l.get("document_name"))), exclus, sorties)
+        if raison:
+            ecartees.append({"date": l.get("date"), "ref": l.get("reference_export") or l.get("ref"),
+                             "document_type": l.get("document_type"), "document_name": l.get("document_name"),
+                             "ttc": l.get("ttc"), "raison": raison})
+        else:
+            gardees.append(l)
+    return gardees, ecartees
+
+
+def nets_par_voucher(ecritures) -> dict:
+    """{(voucher_type, voucher_no): debit − credit} depuis des lignes du grand livre. Fonction pure."""
+    out = defaultdict(float)
+    for e in ecritures:
+        out[(e["voucher_type"], e["voucher_no"])] += float(e.get("debit") or 0) - float(e.get("credit") or 0)
+    return dict(out)
+
+
 def _propre(valeur) -> str:
     """Une valeur sur UNE ligne, sans espaces doubles — un nom de piece comptable ne se plie pas."""
     return " ".join(str(valeur or "").split())
@@ -218,12 +295,14 @@ def _tva_du_journal(lignes: list) -> dict:
     Le taux se lit sur le NOM du compte (« TVA 19% - A&S »), exactement comme le script
     d'origine et comme `tej/emis.py` : c'est la seule lecture qui resiste a une ligne exoneree.
     """
-    out = {"tva7": 0.0, "tva19": 0.0, "ht": 0.0, "categorie": "", "compte_credite": ""}
+    out = {"tva7": 0.0, "tva19": 0.0, "ht": 0.0, "categorie": "", "compte_credite": "", "comptes_credites": []}
     for l in lignes:
         debit, credit = flt(l.get("debit"), PRECISION), flt(l.get("credit"), PRECISION)
         compte = l.get("account") or ""
         if credit > 0 and not out["compte_credite"]:
             out["compte_credite"] = compte
+        if credit > 0 and compte not in out["comptes_credites"]:
+            out["comptes_credites"].append(compte)
         if debit <= 0:
             continue
         if "7%" in compte:
@@ -284,7 +363,15 @@ def lignes_par_vouchers(vouchers) -> list:
     lignes += _lignes_journal(par_type.get("Journal Entry", []), fichiers)
     lignes += _lignes_achat(par_type.get("Purchase Invoice", []), fichiers)
     lignes.sort(key=lambda r: (r["date"], r["ref"]))
-    return _enrichir(lignes, source="Retard")
+    _enrichir(lignes, source="Retard")
+    # Meme regle que le bloc du mois : une sortie de charge ou une depense financee hors dossier
+    # n'est pas plus une retardataire qu'une charge du mois.
+    noms_je = par_type.get("Journal Entry", [])
+    nets = nets_par_voucher(frappe.get_all(
+        "GL Entry", filters={"voucher_type": "Journal Entry", "voucher_no": ["in", noms_je],
+                             "account": ["in", comptes_charges()], "is_cancelled": 0},
+        fields=["voucher_type", "voucher_no", "debit", "credit"], limit_page_length=0)) if noms_je else {}
+    return ecarter(lignes, nets, comptes_hors_dossier(), sorties_ecartees())[0]
 
 
 def comptes_charges() -> list:
@@ -357,12 +444,16 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
     lignes.sort(key=lambda r: (r["date"], r["ref"]))
 
     _enrichir(lignes, source=titre)
+    ecartees = []
+    if cle == "depenses":
+        lignes, ecartees = ecarter(lignes, nets_par_voucher(ecritures), comptes_hors_dossier(), sorties_ecartees())
 
     return {
         "cle": cle,
         "titre": titre,
         "comptes": comptes,
         "lignes": lignes,
+        "ecartees": ecartees,
         "totaux": totaux_du_bloc(lignes),
     }
 
@@ -438,11 +529,12 @@ def _lignes_journal(noms: list, fichiers: dict) -> list:
         fields=["name", "posting_date", "cheque_no", "user_remark", "mode_of_payment",
                 "total_credit"], limit_page_length=0)}
     detail = defaultdict(list)
+    # ⚠️ EN DINARS (devise de la societe), PAS EN DEVISE DU COMPTE. Une ligne sur un compte en euros
+    # remontait son montant en euros comme un HT en dinars : 8 800,000 de « HT » pour 29 902,400 de TTC
+    # sur ACC-JV-2026-01034 (05/11/2026). Pour un compte en dinars, les deux lectures sont identiques.
     for l in frappe.get_all("Journal Entry Account", filters={"parent": ["in", list(entetes)]},
-                            fields=["parent", "account", "debit_in_account_currency",
-                                    "credit_in_account_currency"], limit_page_length=0):
-        detail[l.parent].append({"account": l.account, "debit": l.debit_in_account_currency,
-                                 "credit": l.credit_in_account_currency})
+                            fields=["parent", "account", "debit", "credit"], limit_page_length=0):
+        detail[l.parent].append({"account": l.account, "debit": l.debit, "credit": l.credit})
     out = []
     for nom, j in entetes.items():
         v = _tva_du_journal(detail.get(nom, []))
@@ -452,6 +544,7 @@ def _lignes_journal(noms: list, fichiers: dict) -> list:
             "type": "Journal Entry",
             "document_type": "Journal Entry", "document_name": nom,
             "tiers": v["compte_credite"],
+            "comptes_credites": v["comptes_credites"],
             "categorie": v["categorie"],
             "mode": j.mode_of_payment or "",
             "ht": v["ht"], "tva7": v["tva7"], "tva19": v["tva19"],
