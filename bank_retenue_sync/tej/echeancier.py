@@ -174,7 +174,7 @@ def suivre(pe, avant: float, apres: float, part: float, mode_dette: str, mode_ra
     try:
         commandes = commandes_de(pe)
     except Exception as e:  # noqa: BLE001
-        frappe.log_error(str(e)[:1000], "Échéancier RAS : commandes introuvables")
+        frappe.log_error(title="Échéancier RAS : commandes introuvables", message=str(e)[:1000])
         return [{"commande": None, "ok": False, "raison": str(e)[:200]}]
     if not commandes:
         return [{"commande": None, "ok": False, "raison": "la pièce ne porte aucune commande"}]
@@ -182,13 +182,12 @@ def suivre(pe, avant: float, apres: float, part: float, mode_dette: str, mode_ra
         try:
             p = plan(_lignes(commande), avant, apres, part, mode_dette, mode_ras)
             if not p["ok"]:
-                frappe.log_error("%s : %s" % (commande, p["raison"]),
-                                 "Échéancier RAS non aligné")
+                frappe.log_error(title="Échéancier RAS non aligné", message="%s : %s" % (commande, p["raison"]))
                 out.append({"commande": commande, **p})
                 continue
             out.append(_appliquer(commande, p, mode_ras, motif))
         except Exception as e:  # noqa: BLE001
-            frappe.log_error("%s : %s" % (commande, str(e)[:1000]), "Échéancier RAS : échec")
+            frappe.log_error(title="Échéancier RAS : échec", message="%s : %s" % (commande, str(e)[:1000]))
             out.append({"commande": commande, "ok": False, "raison": str(e)[:200]})
     return out
 

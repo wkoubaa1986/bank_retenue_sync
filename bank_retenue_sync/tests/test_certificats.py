@@ -287,3 +287,24 @@ class TestTachesPlanifiees(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRefreshNonFatal(unittest.TestCase):
+    """07/11/2026 : « Valeur trop grande » sur Essai à blanc. Le relais TEJ injoignable était bien rattrapé, mais
+    frappe.log_error(message, titre) — ordre v14 — faisait du message d'une ligne (> 140 caractères) le titre de
+    l'Error Log, dont l'insertion LEVAIT ; l'essai à blanc s'arrêtait net sur une erreur « non fatale »."""
+
+    def test_refresh_en_echec_est_journalise_sans_arreter_la_synchro(self):
+        from unittest.mock import patch
+
+        erreur = RuntimeError("job jb_a34907b839334db4 failed : ProxyInjoignable: relais TEJ injoignable "
+                              "(100.127.209.10:3128 — TimeoutError) : la machine ne répond pas, vérifier le tunnel Tailscale")
+        journal = []
+        with patch.object(C, "refresh_certificats", side_effect=erreur), \
+                patch.object(C, "fetch_latest_certificats", return_value=(b"", [])), \
+                patch.object(C.frappe, "log_error", side_effect=lambda **kw: journal.append(kw)):
+            out = C.synchroniser(refresh=True, insert=False)
+        self.assertEqual(out["statut"], "essai a blanc")
+        self.assertEqual(len(journal), 1)
+        self.assertLessEqual(len(journal[0]["title"]), 140)      # Error Log.method est un Data de 140 caractères
+        self.assertIn("relais TEJ injoignable", journal[0]["message"])

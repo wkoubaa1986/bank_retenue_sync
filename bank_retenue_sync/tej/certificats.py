@@ -353,7 +353,10 @@ def synchroniser(refresh: bool = False, insert: bool = True, annee_min: int = No
             refresh_certificats()
         except Exception as e:
             # Non fatal, comme partout ailleurs : le dernier export vaut mieux que rien.
-            frappe.log_error("refresh certificats TEJ : %s" % str(e)[:120], "brs tej")
+            # title= / message= explicites : frappe.log_error(title, message) ne devine l'ordre qu'avec un
+            # saut de ligne ; un message d'une ligne de plus de 140 caractères passé en premier devenait le
+            # titre et faisait LEVER « Valeur trop grande » — l'essai à blanc s'arrêtait net (07/11/2026).
+            frappe.log_error(title="brs tej : refresh certificats TEJ", message=str(e))
 
     contenu, lignes = fetch_latest_certificats()
     signature = empreinte(contenu)
