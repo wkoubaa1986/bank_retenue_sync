@@ -837,6 +837,18 @@ class TestSuiviDesDepotsIncertains(unittest.TestCase):
             self.assertIn("IN260068", resultat["message"])
             self.assertIn("rien ne prouve", resultat["message"])
 
+    def test_un_introuvable_avec_plusieurs_depots_laisse_la_ligne_incertaine_et_nomme_les_candidats(self):
+        """« introuvable » n'existe pas comme statut de ligne (l'ecran refusait l'enregistrement, 09/11/2026) :
+        la ligne reste incertaine, l'export est consulte, et les depots de la periode sont nommes."""
+        resultat, appels = self._suivre({"statut": "introuvable", "reference": "", "depot_numero": "",
+                                         "depot_source": "periode", "candidats": ["IN260068", "IN260067"],
+                                         "message": "2 depots pour Novembre 2026"})
+        self.assertEqual(resultat["statut"], depot.INCERTAIN)
+        self.assertNotIn("conclure", appels)
+        self.assertIn("toucher", appels)
+        self.assertIn("IN260068, IN260067", resultat["message"])
+        self.assertEqual(resultat["candidats"], ["IN260068", "IN260067"])
+
     def test_lire_statut_porte_la_source_du_depot_et_les_candidats(self):
         r = depot.lire_statut({"cert_statut": {"statut": "introuvable", "depot": None, "depot_source": "periode",
                                                "candidats": [{"numero": "IN260068"}, {"numero": "IN260067"}]}})

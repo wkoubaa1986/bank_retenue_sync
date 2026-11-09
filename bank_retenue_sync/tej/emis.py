@@ -1309,6 +1309,24 @@ def suivre_depot(ligne, lire_export=None) -> dict:
         return _conclure_genere(nom, facture, piece_type, vu["reference"],
                                 vu.get("message") or "", vu.get("depot_numero") or "")
 
+    if vu["statut"] == "introuvable":
+        # ⚠️ « INTROUVABLE » N'EST PAS UN ETAT DE LA LIGNE, C'EST UN DOUTE. Le service le rend quand ni
+        # certificat ni depot identifiable : soit rien n'est parti, soit la periode compte plusieurs
+        # depots dont aucun n'est attribuable sans numero (`candidats`). Le poser comme statut faisait
+        # refuser l'enregistrement (« Statut ne peut pas etre "introuvable" », 09/11/2026). L'export est
+        # consulte, puis la ligne reste ce qu'elle est — incertaine — et dit ce qu'elle a vu.
+        repli = _repli_export(ligne, lire_export)
+        if repli:
+            return repli
+        candidats = vu.get("candidats") or []
+        note = vu.get("message") or "ni certificat, ni depot identifiable"
+        if candidats:
+            note += " Depots de la periode : %s." % ", ".join(candidats)
+        M_depot.toucher(nom, note + _sans_certificat(statut_courant))
+        return {"depot": nom,
+                "statut": (M_depot.INCERTAIN if statut_courant == M_depot.INCERTAIN else statut_courant),
+                "message": note, "candidats": candidats}
+
     if vu["statut"] and vu["statut"] not in (M_depot.EN_ANALYSE, M_depot.GENERE):
         M_depot.conclure(nom, vu["statut"], "", vu.get("message") or "")
         return {"depot": nom, "statut": vu["statut"]}
