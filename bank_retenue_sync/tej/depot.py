@@ -93,6 +93,10 @@ def lire_statut(reponse) -> dict:
         "statut": statut,
         "reference": str(reference or ""),
         "depot_numero": str(depot.get("numero") or depot.get("numero_depot") or ""),
+        # « numero » : le service a retrouve le depot par SON numero ; « periode » : par la seule periode
+        # (un depot du meme mois, pas forcement le notre) ; absent : service d'avant le 09/11/2026 au soir.
+        "depot_source": cs.get("depot_source") or "",
+        "candidats": [str(c.get("numero") or "?") for c in (cs.get("candidats") or []) if isinstance(c, dict)],
         "message": (cs.get("message") or cs.get("etat") or ""),
     }
 

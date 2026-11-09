@@ -813,13 +813,35 @@ class TestSuiviDesDepotsIncertains(unittest.TestCase):
         self.assertIn("pdf", appels)
 
     def test_un_incertain_que_le_portail_dit_en_analyse_reprend_le_circuit_nominal(self):
+        """Depot identifie PAR SON NUMERO : l'attribution est sure, la ligne reprend le circuit."""
         resultat, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "",
-                                         "depot_numero": "IN260099", "message": "patienter"})
+                                         "depot_numero": "IN260099", "depot_source": "numero",
+                                         "message": "patienter"})
         self.assertEqual(resultat["statut"], depot.EN_ANALYSE)
         a, k = appels["conclure"]
         self.assertEqual(a[1], depot.EN_ANALYSE)
         self.assertEqual(k.get("numero"), "IN260099")
         self.assertNotIn("toucher", appels)
+
+    def test_un_incertain_ne_s_approprie_pas_un_depot_retrouve_par_la_seule_periode(self):
+        """09/11/2026 : deux soumissions le meme soir, le suivi de la premiere (sans numero) avait adopte
+        le depot de la seconde. Retrouve par la periode — ou par un service qui ne dit pas d'ou il vient —
+        le depot n'est pas adopte : la ligne reste a verifier et le dit, l'export tranchera."""
+        for source in ("periode", ""):
+            resultat, appels = self._suivre({"statut": depot.EN_ANALYSE, "reference": "",
+                                             "depot_numero": "IN260068", "depot_source": source,
+                                             "message": "Depot IN260068 encore 'Envoye a l'analyse'"})
+            self.assertEqual(resultat["statut"], depot.INCERTAIN, source)
+            self.assertNotIn("conclure", appels, source)
+            self.assertIn("toucher", appels, source)
+            self.assertIn("IN260068", resultat["message"])
+            self.assertIn("rien ne prouve", resultat["message"])
+
+    def test_lire_statut_porte_la_source_du_depot_et_les_candidats(self):
+        r = depot.lire_statut({"cert_statut": {"statut": "introuvable", "depot": None, "depot_source": "periode",
+                                               "candidats": [{"numero": "IN260068"}, {"numero": "IN260067"}]}})
+        self.assertEqual((r["depot_source"], r["candidats"], r["depot_numero"]), ("periode", ["IN260068", "IN260067"], ""))
+        self.assertEqual(depot.lire_statut({"cert_statut": {"statut": "en_analyse", "depot": {"numero": "IN1"}}})["depot_source"], "")
 
     def test_un_en_analyse_toujours_en_analyse_est_seulement_touche(self):
         ligne = dict(self.LIGNE, statut="en_analyse")

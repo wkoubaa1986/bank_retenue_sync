@@ -1316,11 +1316,24 @@ def suivre_depot(ligne, lire_export=None) -> dict:
     # Un `incertain` que le portail dit `en_analyse` n'est plus incertain : le depot existe,
     # la declaration est bien partie — la ligne reprend le circuit nominal (et son numero de
     # depot, qu'une conclusion prematuree n'avait jamais pu enregistrer).
+    # ⚠️ SEULEMENT SI LE DEPOT A ETE IDENTIFIE PAR SON NUMERO. Retrouve par la seule periode, un depot
+    # du meme mois peut etre celui d'un AUTRE fournisseur : le 09/11/2026, deux soumissions le meme
+    # soir, et le suivi de la premiere (sans numero) a adopte IN260068, le depot de la seconde. Sans
+    # numero sur et sans le service d'avant (qui ne disait pas d'ou venait le depot : on ne l'adopte
+    # pas non plus), la ligne reste incertaine : l'export des certificats emis, lui, tranchera par le
+    # numero chez le declarant.
     if vu["statut"] == M_depot.EN_ANALYSE and statut_courant == M_depot.INCERTAIN:
-        M_depot.conclure(nom, M_depot.EN_ANALYSE, "", vu.get("message") or "",
-                         numero=vu.get("depot_numero") or "")
-        return {"depot": nom, "statut": M_depot.EN_ANALYSE,
-                "message": vu.get("message") or ""}
+        if vu.get("depot_source") == "numero":
+            M_depot.conclure(nom, M_depot.EN_ANALYSE, "", vu.get("message") or "",
+                             numero=vu.get("depot_numero") or "")
+            return {"depot": nom, "statut": M_depot.EN_ANALYSE,
+                    "message": vu.get("message") or ""}
+        note = ("un depot %s existe pour la periode mais rien ne prouve qu'il est celui de cette facture "
+                "(plusieurs fournisseurs peuvent declarer le meme mois) : la ligne reste a verifier, le "
+                "certificat sera reconnu par son numero chez le declarant quand TEJ l'aura genere."
+                % (vu.get("depot_numero") or "?"))
+        M_depot.toucher(nom, note + _sans_certificat(statut_courant))
+        return {"depot": nom, "statut": M_depot.INCERTAIN, "message": note}
 
     # La route de statut n'a rien conclu : l'export est la derniere chance de sortir un
     # `incertain` de son doute. Un `en_analyse`, lui, attend simplement son tour.
