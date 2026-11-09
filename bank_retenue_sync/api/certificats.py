@@ -125,6 +125,15 @@ def synchroniser(refresh=0, insert=0, pdf=0):
     _acces("System Manager")
     from bank_retenue_sync import orchestrator
 
+    if frappe.utils.cint(refresh):
+        # L'export du portail ne tourne JAMAIS dans la requete non plus (09/11/2026 : plusieurs minutes a
+        # travers le relais, requete coupee a deux minutes). Il part en tache de fond ; l'ecran est prevenu
+        # et relance alors l'essai a blanc sur l'export frais.
+        from bank_retenue_sync.tej import certificats as C
+        if not frappe.db.get_single_value("Bank Retenue Sync Settings", "enabled"):
+            return {"statut": "desactive", "detail": "coupe-circuit general"}
+        return C.demander_export()
+
     # Les PDF ne se telechargent JAMAIS dans la requete : un lot de dix, c'est dix sessions de
     # scraping du portail, bien plus que ce que la passerelle laisse passer (31/10/2026 : « La
     # requete a expire » en prod). Ingestion et rapprochement, eux, tiennent en quelques secondes.

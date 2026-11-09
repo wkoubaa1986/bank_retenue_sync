@@ -411,6 +411,38 @@ def apercu(lignes: list, annee_min: int = None) -> dict:
     return out
 
 
+JOB_EXPORT = "brs-tej-export-recus"
+EVENEMENT_EXPORT = "brs_export_tej_termine"
+
+
+def demander_export() -> dict:
+    """Un nouvel export du portail EN TACHE DE FOND, l'ecran prevenu a la fin. -> {statut}.
+
+    POURQUOI (09/11/2026, prod) : « Demander un nouveau releve » lançait l'export dans la requete web.
+    A travers le relais tunisien, le portail met plusieurs minutes a rendre son fichier, et la
+    passerelle coupe la requete a deux minutes : « La requete a expire », alors que le service, lui,
+    continuait et finissait l'export dans le vide. Meme remede que pour le lot de PDF : en file sur la
+    queue longue, un seul a la fois (`deduplicate` : deux clics ou un clic pendant le passage de nuit
+    ne demandent pas deux exports), et un evenement temps reel a l'utilisateur quand c'est fini.
+    """
+    frappe.enqueue("bank_retenue_sync.tej.certificats.rafraichir_en_fond", queue="long", timeout=1800,
+                   enqueue_after_commit=True, job_id=JOB_EXPORT, deduplicate=True, user=frappe.session.user)
+    return {"statut": "export en file"}
+
+
+def rafraichir_en_fond(user: str = None) -> dict:
+    """Le travail de `demander_export` : l'export, puis l'evenement (reussite ou echec, jamais le silence)."""
+    try:
+        refresh_certificats()
+        out = {"statut": "ok"}
+    except Exception as e:                      # noqa: BLE001 — l'ecran doit savoir, pas seulement Error Log
+        frappe.log_error(title="brs tej : export demande depuis l'ecran", message=frappe.get_traceback())
+        out = {"statut": "erreur", "detail": str(e)[:300]}
+    if user:
+        frappe.publish_realtime(EVENEMENT_EXPORT, out, user=user)
+    return out
+
+
 def refresh_certificats(timeout: int = 900) -> dict:
     """Demande au service un nouvel export, puis attend qu'il aboutisse.
 

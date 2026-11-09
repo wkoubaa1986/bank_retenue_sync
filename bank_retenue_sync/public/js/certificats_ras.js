@@ -234,14 +234,17 @@ window.CertificatsRAS = class CertificatsRAS {
       primary_action_label: __("Essai à blanc"),
       primary_action: () => {
         const refresh = d.get_value("refresh") ? 1 : 0;
-        frappe
-          .call({
+        // L'export du portail part en tâche de fond (plusieurs minutes à travers le relais) : on
+        // attend l'événement, puis on relance l'essai à blanc sur l'export frais. Sans ça, la requête
+        // expirait à deux minutes alors que le service finissait l'export dans le vide (09/11/2026).
+        const essai = () =>
+          frappe.call({
             method: "bank_retenue_sync.api.certificats.synchroniser",
-            args: { refresh, insert: 0, pdf: 0 },
+            args: { refresh: 0, insert: 0, pdf: 0 },
             freeze: true,
-            freeze_message: __("Lecture du portail et simulation…"),
-          })
-          .then((r) => {
+            freeze_message: __("Lecture de l'export et simulation…"),
+          });
+        const afficher = (r) => {
             d.fields_dict.apercu.$wrapper.html(this._resume(r.message));
             d.set_primary_action(__("Appliquer"), () => {
               frappe
@@ -258,6 +261,32 @@ window.CertificatsRAS = class CertificatsRAS {
                   this.refresh();
                 });
             });
+        };
+        if (!refresh) return essai().then(afficher);
+        frappe
+          .call({ method: "bank_retenue_sync.api.certificats.synchroniser", args: { refresh: 1, insert: 0, pdf: 0 } })
+          .then((r) => {
+            const m = r.message || {};
+            if (m.statut !== "export en file") return afficher(r);
+            d.fields_dict.apercu.$wrapper.html(
+              `<div class="text-muted">⏳ ${__("Nouvel export demandé au portail (plusieurs minutes à travers le relais). Vous serez prévenu ici, puis l'essai à blanc se lancera tout seul. Vous pouvez fermer cette fenêtre : le passage continue.")}</div>`
+            );
+            d.set_primary_action(__("En attente du portail…"), () => {});
+            d.get_primary_btn().prop("disabled", true);
+            const sur_fin = (e) => {
+              frappe.realtime.off("brs_export_tej_termine", sur_fin);
+              e = e || {};
+              if (e.statut !== "ok") {
+                frappe.msgprint({ title: __("Export du portail"), message: __("L'export a échoué : {0}", [frappe.utils.escape_html(e.detail || "")]), indicator: "red" });
+                d.get_primary_btn().prop("disabled", false);
+                d.set_primary_action(__("Essai à blanc"), () => essai().then(afficher));
+                return;
+              }
+              frappe.show_alert({ message: __("Export du portail reçu, simulation…"), indicator: "blue" }, 5);
+              d.get_primary_btn().prop("disabled", false);
+              essai().then(afficher);
+            };
+            frappe.realtime.on("brs_export_tej_termine", sur_fin);
           });
       },
     });
@@ -268,6 +297,8 @@ window.CertificatsRAS = class CertificatsRAS {
     if (!m) return "";
     if (m.statut === "desactive")
       return `<div style="color:var(--rsv-warn)">${__("Flux désactivé")} : ${frappe.utils.escape_html(m.detail || "")}</div>`;
+    if (m.statut === "export en file")
+      return `<div class="text-muted">${__("Nouvel export demandé au portail — en cours.")}</div>`;
     const i = m.ingestion || {};
     const r = m.rapprochement || {};
     const p = m.pdf || {};
