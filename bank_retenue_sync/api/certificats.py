@@ -495,3 +495,15 @@ def regulariser_auto(insert=0):
     if frappe.utils.cint(insert):
         frappe.db.commit()
     return out
+
+
+@frappe.whitelist()
+def bilan_raven(envoyer=0, utilisateurs=None):
+    """Le bilan Raven du passage, a la demande : apercu du texte, ou envoi aux destinataires regles
+    (ou a `utilisateurs`, emails separes par des virgules). Meme texte que le passage de 04:00."""
+    _lecture()
+    from bank_retenue_sync.tej import notification
+    if frappe.utils.cint(envoyer):
+        return notification.envoyer_maintenant(utilisateurs)
+    return {"texte": notification.composer(notification.bilan_passage(None, passage="manuel")),
+            "destinataires": notification.destinataires()}

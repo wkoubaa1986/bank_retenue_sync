@@ -72,6 +72,7 @@ window.CertificatsRAS = class CertificatsRAS {
         <button class="btn btn-default btn-sm" data-act="orphelines">🔎 Retenues sans certificat</button>
         <button class="btn btn-default btn-sm" data-act="probables">💡 Retenues en dette</button>
         <button class="btn btn-default btn-sm" data-act="bilan">✉️ Bilan hebdo</button>
+        <button class="btn btn-default btn-sm" data-act="raven" title="${__("Le message Raven envoyé à la fin du passage de 04:00 : aperçu, et envoi immédiat pour l'essayer")}">📣 Bilan Raven</button>
         <button class="btn btn-primary btn-sm" data-act="creer">➕ Créer les écritures manquantes</button>
       </div>
       <div class="rsv-kpis" data-role="cert-kpis"></div>
@@ -211,6 +212,7 @@ window.CertificatsRAS = class CertificatsRAS {
     this.$root.on("click", "[data-act='orphelines']", () => this._orphelines_dialogue());
     this.$root.on("click", "[data-act='probables']", () => this._probables_dialogue());
     this.$root.on("click", "[data-act='bilan']", () => this._bilan_dialogue());
+    this.$root.on("click", "[data-act='raven']", () => this._raven_dialogue());
     this.$root.on("click", "[data-act='regulariser']", (e) => this._regulariser($(e.currentTarget).data("ref")));
     this.$root.on("click", "[data-act='trancher']", (e) => this._trancher($(e.currentTarget).data("ref")));
   }
@@ -636,6 +638,45 @@ window.CertificatsRAS = class CertificatsRAS {
             }),
         });
         d.fields_dict.corps.$wrapper.html(b.html || "");
+        d.show();
+      });
+  }
+
+  // Le bilan Raven du passage de nuit (09/11/2026) : le même texte que celui que le bot envoie à
+  // 04:00, pour le relire et l'envoyer tout de suite aux destinataires réglés — c'est ainsi qu'on
+  // vérifie le réglage sans attendre la nuit.
+  _raven_dialogue() {
+    frappe
+      .call({ method: "bank_retenue_sync.api.certificats.bilan_raven", freeze: true, freeze_message: __("Bilan…") })
+      .then((r) => {
+        const b = r.message || {};
+        const dest = (b.destinataires || []).join(", ");
+        const d = new frappe.ui.Dialog({
+          title: __("Bilan Raven du passage TEJ (envoyé chaque nuit après le passage de 04:00)"),
+          size: "large",
+          fields: [{ fieldtype: "HTML", fieldname: "corps" }],
+          primary_action_label: dest ? __("Envoyer maintenant à {0}", [dest]) : __("Aucun destinataire réglé"),
+          primary_action: () => {
+            if (!dest) {
+              frappe.msgprint(__("Réglez « Message Raven après le passage de nuit » et les destinataires dans Bank Retenue Sync Settings."));
+              return;
+            }
+            frappe.call({ method: "bank_retenue_sync.api.certificats.bilan_raven", args: { envoyer: 1 } }).then((r2) => {
+              const e = r2.message || {};
+              const ok = (e.envoyes || []).length;
+              frappe.show_alert({
+                message: ok ? __("Envoyé à {0}", [e.envoyes.join(", ")]) : (e.erreurs || []).join(" ; ") || __("Rien envoyé"),
+                indicator: ok ? "green" : "orange",
+              });
+              if (ok && (e.erreurs || []).length) frappe.msgprint((e.erreurs || []).join("<br>"));
+              d.hide();
+            });
+          },
+        });
+        d.fields_dict.corps.$wrapper.html(
+          `<div class="brs-raven-apercu" style="font-size:13px;line-height:1.5">${frappe.markdown(b.texte || "")}</div>` +
+            (dest ? "" : `<p class="text-muted" style="margin-top:10px">${__("Aucun destinataire : le message n'est envoyé à personne la nuit tant que le réglage est vide.")}</p>`)
+        );
         d.show();
       });
   }

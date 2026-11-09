@@ -247,8 +247,13 @@ def certificats_ras_refresh():
 
 def certificats_ras_refresh_job():
     from bank_retenue_sync import orchestrator
+    from bank_retenue_sync.tej import notification
 
-    return _safe("certificats_ras_refresh", lambda: orchestrator.run_certificats_ras(refresh=1))
+    out = _safe("certificats_ras_refresh", lambda: orchestrator.run_certificats_ras(refresh=1))
+    # Bilan Raven du passage de nuit (09/11/2026) : termine ou echoue (`out` vaut None quand la tache a
+    # leve, _safe l'a journalise), nouveaux certificats, sans ecriture, relais TEJ. Jamais fatal.
+    notification.notifier_passage(out)
+    return out
 
 
 def bilan_ras_hebdo():

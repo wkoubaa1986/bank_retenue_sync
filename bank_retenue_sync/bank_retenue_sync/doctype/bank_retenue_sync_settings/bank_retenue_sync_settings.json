@@ -35,6 +35,8 @@
   "section_tej",
   "enable_tej_sync",
   "tej_sync_lookback_days",
+  "notif_tej_raven",
+  "notif_tej_destinataires",
   "column_break_tej",
   "ras_mode_of_payment",
   "auto_submit_ras_ajustement",
@@ -268,6 +270,20 @@
    "fieldname": "tej_sync_lookback_days",
    "fieldtype": "Int",
    "label": "Profondeur (jours)"
+  },
+  {
+   "fieldname": "notif_tej_raven",
+   "fieldtype": "Check",
+   "label": "Message Raven apres le passage de nuit",
+   "default": "0",
+   "description": "A la fin du passage de 04:00 (nouvel export des certificats recus) : un message Raven aux destinataires ci-dessous — passage termine ou echoue, nouveaux certificats, sans ecriture, a trancher, relais TEJ utilise. Essai : bench execute bank_retenue_sync.tej.notification.envoyer_maintenant"
+  },
+  {
+   "fieldname": "notif_tej_destinataires",
+   "fieldtype": "Small Text",
+   "label": "Destinataires Raven (un utilisateur par ligne)",
+   "depends_on": "notif_tej_raven",
+   "description": "Adresses des utilisateurs (ils doivent exister dans Raven). Le message est envoye en direct par le bot « Retenue à la source Bot », cree a la premiere utilisation."
   },
   {
    "fieldname": "column_break_tej",
@@ -536,7 +552,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-05 21:30:00.000000",
+ "modified": "2026-11-09 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",
