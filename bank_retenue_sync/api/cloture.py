@@ -504,7 +504,40 @@ def _pool_retardataires(nb_mois: int = NB_MOIS_RETARDS) -> list:
     # `detecter_retardataires` doit rester le seul endroit ou « qu'est-ce qu'une retardataire »
     # se decide. Sur les lignes deja triees, c'est un passe-plat ; s'il cessait de l'etre, c'est
     # le filtre amont qui aurait tort.
-    return M_retards.detecter_retardataires(candidats, envois, rattachees)
+    retards = M_retards.detecter_retardataires(candidats, envois, rattachees)
+
+    # ⚠️ SAISIE APRES L'ENVOI NE VEUT PAS DIRE ABSENTE DU DOSSIER. Une ecriture refaite apres
+    # l'envoi (compte change, ressaisie) est une retardataire a la lettre, mais la charge est
+    # deja chez le comptable sous l'ancienne piece, dans l'archive remise (octobre 2026 : six
+    # candidates sur sept). On le lit dans le manifeste de l'archive envoyee et on le DIT ; la
+    # ligne reste visible, decochee, et ne compte plus comme manque.
+    entrees_par_mois = {}
+    for l in retards:
+        mois = l.get("mois_origine")
+        if mois not in entrees_par_mois:
+            entrees_par_mois[mois] = _entrees_archive_envoyee(mois, envois.get(mois))
+        l["deja_envoyee"] = M_retards.deja_remise(l, entrees_par_mois[mois])
+    return retards
+
+
+def _entrees_archive_envoyee(mois: str, date_envoi) -> list:
+    """Les entrees du manifeste de l'archive REMISE pour ce mois : la derniere constituee avant
+    l'envoi, sinon la plus recente. Sans archive ou sans manifeste fiable : rien — on ne
+    pretend jamais qu'une piece est partie sur une donnee qu'on ne sait pas lire."""
+    from bank_retenue_sync.facturation import archive as M_archive
+    try:
+        archives = M_dossier.archives(mois)
+        avant = [a for a in archives if date_envoi and a.creation and a.creation <= date_envoi]
+        choix = (avant or archives)[:1]
+        if not choix:
+            return []
+        manifeste = M_archive.lire_manifeste(frappe.get_doc("File", choix[0].name).get_content())
+        if M_archive.defaut_du_manifeste(manifeste, mois):
+            return []
+        return M_archive.entrees_du_manifeste(manifeste)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Facturation mensuelle : archive envoyée illisible")
+        return []
 
 
 def _vue_pool(l: dict) -> dict:
@@ -519,6 +552,8 @@ def _vue_pool(l: dict) -> dict:
         "reference": l.get("reference_export") or l.get("ref"),
         "montant": l.get("ttc"),
         "avec_justificatif": bool(l.get("justificatifs")),
+        # La piece de l'archive remise sous laquelle la charge est deja partie (ecriture refaite).
+        "deja_envoyee": l.get("deja_envoyee"),
     }
 
 
@@ -552,6 +587,18 @@ def get_dossier_mensuel(mois=None, nb_mois=NB_MOIS_RETARDS) -> dict:
     candidats = [_vue_pool(l) for l in _pool_retardataires(nb_mois)
                  if (l.get("mois_origine") or "") < mois]
     rattaches = [_vue_child(r) for r in (doc.retardataires if doc else [])]
+    # Une piece rattachee a la main peut, elle aussi, etre une ecriture refaite deja partie sous
+    # l'ancienne piece (Aramex 09-2026, rattachee a octobre alors que septembre la portait) : on
+    # le dit sur la ligne cochee, le geste de detacher reste a l'utilisateur.
+    envois = _envois_map()
+    entrees_par_mois = {}
+    for r in rattaches:
+        mois_origine = r.get("mois_origine")
+        if mois_origine not in entrees_par_mois:
+            entrees_par_mois[mois_origine] = _entrees_archive_envoyee(mois_origine, envois.get(mois_origine))
+        r["deja_envoyee"] = M_retards.deja_remise(
+            {"document_type": r["document_type"], "document_name": r["document_name"],
+             "reference": r.get("reference"), "ttc": r.get("montant")}, entrees_par_mois[mois_origine])
     return {
         "mois": mois,
         "libelle": periode.libelle(mois),
@@ -559,7 +606,9 @@ def get_dossier_mensuel(mois=None, nb_mois=NB_MOIS_RETARDS) -> dict:
         "peut_envoyer": any(r in frappe.get_roles() for r in ROLES_ECRITURE),
         "candidats": candidats,
         "rattaches": rattaches,
-        "nb_candidats": len(candidats),
+        # Ne comptent que les charges qui MANQUENT au comptable ; les refaites restent listees.
+        "nb_candidats": sum(1 for c in candidats if not c.get("deja_envoyee")),
+        "nb_deja_envoyees": sum(1 for c in candidats if c.get("deja_envoyee")),
         "nb_rattaches": len(rattaches),
     }
 
@@ -822,7 +871,8 @@ def verifier_non_envoyees(nb_mois=NB_MOIS_RETARDS) -> dict:
     pool = _pool_retardataires(nb_mois)
     groupes = M_retards.grouper_par_mois_origine(pool)
     return {
-        "nb": len(pool),
+        "nb": sum(1 for l in pool if not l.get("deja_envoyee")),
+        "nb_deja_envoyees": sum(1 for l in pool if l.get("deja_envoyee")),
         "nb_mois": nb_mois,
         "groupes": [{"mois": g["mois"],
                      "libelle": periode.libelle(g["mois"]) if g["mois"] else "",

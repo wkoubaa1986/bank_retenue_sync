@@ -164,3 +164,47 @@ def sous_total(lignes: list[dict]) -> dict:
                                  if l.get("justificatif_requis") and not l.get("justificatifs")),
         "avec_justificatif": sum(1 for l in lignes if l.get("justificatifs")),
     }
+
+
+def _montant(valeur) -> float:
+    try:
+        return round(float(valeur or 0), PRECISION)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _noms_justificatifs(ligne: dict) -> set:
+    if ligne.get("justificatifs"):
+        return {str(j.get("file_name") or "").strip() for j in ligne["justificatifs"]
+                if str(j.get("file_name") or "").strip()}
+    return {str(p or "").strip() for p in ligne.get("pieces") or () if str(p or "").strip()}
+
+
+def deja_remise(candidat: dict, entrees_archive: list[dict]) -> dict | None:
+    """La pièce de l'archive ENVOYÉE sous laquelle cette retardataire est déjà partie, sinon None.
+
+    Octobre 2026 : six « candidates » sur sept étaient des écritures REFAITES après l'envoi —
+    leasing recomptabilisé sur un autre compte le 30/10, factures Aramex ressaisies le 14/10.
+    Saisies après l'envoi, donc retardataires à la lettre ; mais la charge elle-même, le comptable
+    l'avait, sous l'ancienne pièce, dans l'archive remise. Les rattacher l'aurait comptée deux fois.
+
+    Fonction pure. Une entrée de l'archive (forme `archive.entree`) portant une AUTRE pièce
+    désigne la candidate si elle a la même référence et le même montant, ou si elle partage un
+    justificatif (le nom de fichier survit à toute ressaisie). Rien de moins : deux échéances de
+    leasing du même montant se distinguent par leur référence.
+    """
+    cle = cle_voucher(candidat.get("document_type"), candidat.get("document_name"))
+    reference = str(candidat.get("reference_export") or candidat.get("reference")
+                    or candidat.get("ref") or "").strip()
+    montant = _montant(candidat.get("ttc"))
+    justificatifs = _noms_justificatifs(candidat)
+    for e in entrees_archive or ():
+        if cle_voucher(e.get("document_type"), e.get("document_name")) == cle:
+            continue
+        meme_ligne = bool(reference) and str(e.get("reference") or "").strip() == reference \
+            and abs(_montant(e.get("ttc")) - montant) < 0.0005
+        meme_piece = bool(justificatifs & _noms_justificatifs(e))
+        if meme_ligne or meme_piece:
+            return {"document_type": e.get("document_type"), "document_name": e.get("document_name"),
+                    "reference": e.get("reference"), "par": "justificatif" if meme_piece and not meme_ligne else "ligne"}
+    return None

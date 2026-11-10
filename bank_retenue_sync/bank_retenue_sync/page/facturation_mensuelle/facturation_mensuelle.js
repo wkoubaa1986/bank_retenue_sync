@@ -1018,7 +1018,7 @@ class FacturationMensuelle {
     const lignes = envoye
       ? (d.rattaches || []).map((r) => this._ligne_retard(r, true, true)).join("")
       : [
-        ...(d.rattaches || []).map((r) => this._ligne_retard(r, true, false)),
+        ...(d.rattaches || []).map((r) => this._ligne_retard({ ...r, rattachee: true }, true, false)),
         ...(d.candidats || []).map((r) => this._ligne_retard(r, false, false)),
       ].join("");
     const total = envoye
@@ -1048,13 +1048,25 @@ class FacturationMensuelle {
       <div class="fm-dossier">
         <div class="tete"><b>À rattraper</b>
           <span class="fm-badge ${d.nb_candidats ? "bad" : "ok"}">${
-            d.nb_candidats || 0} candidate(s)</span>
+            d.nb_candidats || 0} candidate(s)</span>${d.nb_deja_envoyees
+            ? `<span class="muted" style="font-size:12px;margin-left:6px;">+ ${d.nb_deja_envoyees}
+               déjà chez le comptable sous une autre pièce</span>` : ""}
           <span style="flex:1"></span>
           <button data-action="verifier-non-envoyees">Vérifier les factures non envoyées</button>
         </div>
         ${consigne}
         ${table}
       </div>`;
+  }
+
+  /** Écriture refaite après l’envoi : la charge est déjà partie sous l’ancienne pièce. */
+  _deja_envoyee(r) {
+    const d = r.deja_envoyee;
+    if (!d) return "";
+    return `<div style="font-size:12px;margin-top:2px;"><span class="fm-badge ok">déjà envoyée</span>
+      <span class="muted">sous ${this._lien(d.document_type, d.document_name)}${
+        d.par === "justificatif" ? " (même justificatif)" : ""} — écriture refaite : ${
+        r.rattachee ? "à détacher, sinon le comptable l’aura deux fois" : "ne pas rattacher"}</span></div>`;
   }
 
   _ligne_retard(r, coche, fige) {
@@ -1064,7 +1076,7 @@ class FacturationMensuelle {
         ${coche ? "checked" : ""}${fige ? " disabled" : ""}></td>
       <td>${this._esc(r.libelle_origine || r.mois_origine || "")}</td>
       <td>${this._esc(r.tiers || "")}</td>
-      <td>${this._esc(r.reference || "")}</td>
+      <td>${this._esc(r.reference || "")}${this._deja_envoyee(r)}</td>
       <td class="num">${this._m(r.montant)}</td>
       <td>${r.avec_justificatif
         ? '<span class="fm-badge ok">présent</span>'
@@ -1162,7 +1174,7 @@ class FacturationMensuelle {
     const blocs = (res.groupes || []).map((g) => {
       const rows = g.lignes.map((r) => `<tr>
         <td>${this._esc(r.tiers || "")}</td>
-        <td>${this._esc(r.reference || "")}</td>
+        <td>${this._esc(r.reference || "")}${this._deja_envoyee(r)}</td>
         <td class="num">${this._m(r.montant)}</td>
         <td>${r.avec_justificatif
           ? '<span class="fm-badge ok">présent</span>'

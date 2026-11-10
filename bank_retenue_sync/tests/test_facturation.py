@@ -1343,3 +1343,41 @@ class TestNumerotation(unittest.TestCase):
         n = self.numerotation([5, 5, 6])
         self.assertEqual(n["doublons"], [5])
         self.assertEqual(n["doublons_detail"]["5"], {"dans_le_mois": 2, "ailleurs": []})
+
+
+class TestDejaRemise(unittest.TestCase):
+    """Octobre 2026 : six candidates sur sept étaient des écritures refaites, déjà chez le comptable."""
+
+    ARCHIVE = [
+        {"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00757", "reference": "Echeance Leasing Changan 09-2026", "ttc": 960.344, "pieces": []},
+        {"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00858", "reference": "Facture Aramex 09-2026", "ttc": 710.41, "pieces": ["ARAMEX E-INV NO: 1900540919.PDF"]},
+        {"document_type": "Purchase Invoice", "document_name": "ACC-PINV-2026-00100", "reference": "JEGHAM industries FA-2026-0142", "ttc": 2470.955, "pieces": ["facture-0142.pdf"]},
+    ]
+
+    def setUp(self):
+        from bank_retenue_sync.facturation.retards import deja_remise
+        self.deja = deja_remise
+
+    def test_ecriture_refaite_meme_reference_meme_montant(self):
+        d = self.deja({"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00964",
+                       "reference_export": "Echeance Leasing Changan 09-2026", "ttc": 960.344}, self.ARCHIVE)
+        self.assertEqual((d["document_name"], d["par"]), ("ACC-JV-2026-00757", "ligne"))
+
+    def test_ressaisie_reconnue_au_justificatif(self):
+        d = self.deja({"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00882", "ref": "Aramex septembre",
+                       "ttc": 710.41, "justificatifs": [{"file_name": "ARAMEX E-INV NO: 1900540919.PDF"}]}, self.ARCHIVE)
+        self.assertEqual((d["document_name"], d["par"]), ("ACC-JV-2026-00858", "justificatif"))
+
+    def test_vraie_retardataire(self):
+        self.assertIsNone(self.deja({"document_type": "Purchase Invoice", "document_name": "ACC-PINV-2026-00112",
+                                     "reference_export": "JEGHAM industries FA-2026-0143", "ttc": 383.825,
+                                     "justificatifs": [{"file_name": "facture-0143.pdf"}]}, self.ARCHIVE))
+
+    def test_meme_montant_autre_reference_ne_suffit_pas(self):
+        self.assertIsNone(self.deja({"document_type": "Journal Entry", "document_name": "X",
+                                     "reference_export": "Echeance Leasing Cenntro 09-2026", "ttc": 960.344}, self.ARCHIVE))
+
+    def test_la_piece_elle_meme_ne_se_designe_pas(self):
+        self.assertIsNone(self.deja({"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00757",
+                                     "reference_export": "Echeance Leasing Changan 09-2026", "ttc": 960.344}, self.ARCHIVE))
+        self.assertIsNone(self.deja({"document_type": "Journal Entry", "document_name": "X", "ttc": 0}, []))
