@@ -464,8 +464,17 @@ def creations_des_vouchers(vouchers) -> dict:
     return out
 
 
-def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
+def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str, journal_hors: set | None = None) -> dict:
     ecritures = _ecritures(comptes, debut, fin)
+    # `journal_hors` : des comptes du bloc qui ne font pas entrer une ECRITURE DE JOURNAL (ex. « Stock
+    # Reçus Mais Non Facturés » dans Achats : une facture d'achat née d'un reçu y est un achat, une
+    # écriture de journal qui le solde n'en est pas un — elle vit dans Dépenses, en négatif).
+    if journal_hors:
+        par_piece = defaultdict(set)
+        for e in ecritures:
+            par_piece[(e.voucher_type, e.voucher_no)].add(e.account)
+        ecritures = [e for e in ecritures
+                     if not (e.voucher_type == "Journal Entry" and par_piece[(e.voucher_type, e.voucher_no)] <= set(journal_hors))]
     pieces = sorted({(e.voucher_type, e.voucher_no) for e in ecritures})
     fichiers = _justificatifs(pieces)
 
@@ -736,7 +745,7 @@ def liste(mois: str) -> dict:
         _bloc("depenses", "Dépenses", (_descendance(racine) if racine else [])
               + ([frais_lc] if frais_lc else []), debut, fin),
         _bloc("achats", "Achats", ([achats] if achats else []) + ([recus_non_factures] if recus_non_factures else []),
-              debut, fin),
+              debut, fin, journal_hors={recus_non_factures} if recus_non_factures else None),
         _bloc("retenues", "Retenues / Ventes", [retenues] if retenues else [], debut, fin),
     ])
 
