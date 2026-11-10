@@ -1436,3 +1436,15 @@ class TestDeclaration(unittest.TestCase):
                            {"salaires_bruts": 0, "taux_irpp": 0, "taux_css": 0, "loyer_base": 0, "honoraires_base": 0, "report": 5})
         self.assertEqual((e["tva"]["solde"], e["tva"]["a_payer"], e["tva"]["credit"]), (-16.0, 0.0, 16.0))
         self.assertEqual(e["recap"]["total"], 1.0 + 0.238)   # timbre + TCL
+
+    def test_les_retardataires_rattachees_se_declarent_avec_le_mois(self):
+        charges = dict(self.SEPT["charges"], retards=[{"mois": "2026-08", "nombre": 1, "tva": 201.625, "retenue": 0.0},
+                                                       {"mois": "2026-07", "nombre": 1, "tva": 0.0, "retenue": 5.0}])
+        e = self.D.estimer(dict(self.SEPT, charges=charges), self.D.hypotheses_par_defaut("2026-09"))
+        ligne = next(l for l in e["tva"]["recuperable"] if l["cle"] == "tva_retards")
+        self.assertEqual((ligne["montant"], ligne["source"]), (201.625, "exacte"))
+        self.assertIn("2026-07, 2026-08", ligne["note"])
+        self.assertEqual(e["tva"]["recuperable_total"], round(2058.846 + 1437.186 + 201.625, 3))
+        self.assertEqual(e["retenues"]["lignes"][4]["montant"], round(117.541 + 5.0, 3))
+        sans = self.D.estimer(self.SEPT, self.D.hypotheses_par_defaut("2026-09"))
+        self.assertFalse([l for l in sans["tva"]["recuperable"] if l["cle"] == "tva_retards"])

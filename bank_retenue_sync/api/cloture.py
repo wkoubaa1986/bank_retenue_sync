@@ -162,7 +162,11 @@ def get_declaration(mois=None, hypotheses=None) -> dict:
         "charges": {"tva_achats": (blocs.get("achats") or {}).get("totaux", {}).get("tva"),
                     "tva_depenses": (blocs.get("depenses") or {}).get("totaux", {}).get("tva"),
                     "marche_retenue": marche_retenue,
-                    "honoraires_retenue": sum(r.credit for r in honoraires) if honoraires else None},
+                    "honoraires_retenue": sum(r.credit for r in honoraires) if honoraires else None,
+                    # Les retardataires rattachées partent avec ce dossier : elles se déclarent avec lui.
+                    "retards": [{"mois": g["mois"], "nombre": g["totaux"].get("nombre"), "tva": g["totaux"].get("tva"),
+                                 "retenue": g["totaux"].get("retenue")}
+                                for g in M_dossier.retardataires_du_dossier(mois)]},
     }
     estimation = M_decl.estimer(donnees, hyp)
     declare = M_decl.DECLARATIONS_CONNUES.get(mois)

@@ -116,7 +116,10 @@ def estimer(donnees: dict, hyp: dict) -> dict:
       ventes   : {taux: [{taux, base, tva}], base_exoneree, nombre, total_base, total_tva}
       charges  : {tva_achats, tva_depenses, marche_retenue (le 1 % effectivement retenu sur les
                   achats du mois, lu au compte de retenue), honoraires_retenue (le 3 % retenu sur
-                  la note du comptable, None si aucune note n'a été payée dans le mois)}
+                  la note du comptable, None si aucune note n'a été payée dans le mois),
+                  retards: [{mois, nombre, tva, retenue}] — les charges d'un mois antérieur
+                  RATTACHÉES au dossier de ce mois : le comptable les reçoit avec lui, donc leur
+                  TVA et leur retenue se déclarent avec lui}
     `hyp` : voir `hypotheses_par_defaut`.
 
     Les retenues se lisent au compte « Retenue a la source achat » : c'est ce qui a été retenu,
@@ -133,7 +136,8 @@ def estimer(donnees: dict, hyp: dict) -> dict:
     loyer_base = _arr(hyp.get("loyer_base"))
     honoraires_base = _arr(_arr(honoraires_lus) * 100.0 / TAUX["honoraires"]) if honoraires_lus is not None \
         else _arr(hyp.get("honoraires_base"))
-    marche_retenue = _arr(c.get("marche_retenue"))
+    retards = [r for r in (c.get("retards") or ()) if r.get("tva") or r.get("retenue")]
+    marche_retenue = _arr(_arr(c.get("marche_retenue")) + sum(_arr(r.get("retenue")) for r in retards))
     marche_base = _arr(marche_retenue * 100.0 / TAUX["marche"])
     retenues = [
         _ligne("irpp", "Ret. à la source (salaires)", brut, None, irpp, "hypothese",
@@ -164,7 +168,8 @@ def estimer(donnees: dict, hyp: dict) -> dict:
 
     # --- TVA récupérable ---------------------------------------------------------------------
     tva_achats, tva_depenses = _arr(c.get("tva_achats")), _arr(c.get("tva_depenses"))
-    recuperable = _arr(tva_achats + tva_depenses)
+    tva_retards = _arr(sum(_arr(r.get("tva")) for r in retards))
+    recuperable = _arr(tva_achats + tva_depenses + tva_retards)
     report = _arr(hyp.get("report"))
     solde = _arr(collectee_tva - recuperable - report)
     tva_a_payer = solde if solde > 0 else 0.0
@@ -189,7 +194,9 @@ def estimer(donnees: dict, hyp: dict) -> dict:
                 _ligne("tva_achats", "S/achats (factures d'achat)", None, None, tva_achats, "approchee",
                        "le comptable isole les immobilisations, pas nous"),
                 _ligne("tva_depenses", "S/dépenses (journal)", None, None, tva_depenses, "approchee", ""),
-            ],
+            ] + ([_ligne("tva_retards", "S/retards rattachés", None, None, tva_retards, "exacte",
+                         "charges de %s rattachées à ce dossier" % ", ".join(sorted({str(r.get("mois")) for r in retards})))]
+                 if retards else []),
             "recuperable_total": recuperable,
             "report": report, "solde": solde, "a_payer": tva_a_payer, "credit": credit,
         },
