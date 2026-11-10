@@ -139,12 +139,37 @@ def sorties_ecartees() -> bool:
     return True if not v else bool(int(v[0][0] or 0))
 
 
+EXEMPTION_FINANCEMENT_STOCK = "part stock : portée par la commande d'achat"
+
+
+def ligne_financement_stock(ligne: dict, net_charges, commande: str) -> dict:
+    """L'ecriture « le compte de charge finance la commande d'achat » (part stock d'une depense de
+    caisse, customization_app.caisse_stock_partiel, 10/11/2026), rendue comme une ligne NEGATIVE du
+    bloc des depenses. Fonction pure.
+
+    La depense a ete comptabilisee entiere (tout le HT) ; cette ecriture en retire le HT des
+    articles mis en stock, que la facture d'achat porte a son tour. L'ecarter comme une « sortie de
+    charge » comptait ce HT deux fois dans le dossier (depense entiere + facture d'achat) ; la
+    rendre en negatif remet le bloc des depenses au net, et le total du dossier d'aplomb.
+    """
+    net = round(float(net_charges or 0), PRECISION)
+    l = dict(ligne)
+    l.update({"ht": net, "tva7": 0.0, "tva19": 0.0, "tva": 0.0, "ttc": net, "retenue": 0.0,
+              "categorie": next((c for c in (ligne.get("comptes_credites") or []) if c), ligne.get("categorie") or ""),
+              "tiers": "Commande d'achat %s (part stock)" % commande,
+              "financement_stock": commande,
+              "exemption": EXEMPTION_FINANCEMENT_STOCK, "justificatif_requis": False, "manque": False})
+    return l
+
+
 def raison_hors_dossier(ligne: dict, net_charges, exclus: set, sorties: bool = True) -> str:
     """Pourquoi cette ligne reste hors du dossier, ou "" si elle y va. Fonction pure.
 
     Ne juge que les ECRITURES DE JOURNAL : une facture d'achat ou une retenue a sa propre nature.
     `net_charges` : debit − credit de la piece sur les comptes de charge du bloc (None = inconnu)."""
     if ligne.get("document_type") != "Journal Entry":
+        return ""
+    if ligne.get("financement_stock"):
         return ""
     if sorties and net_charges is not None and float(net_charges) <= 0.0005:
         return RAISON_SORTIE
@@ -241,6 +266,15 @@ def reference_export(ligne: dict) -> str:
         vus.update(m.lower() for m in mots)
         out.append(" ".join(mots))
     return " ".join(out)
+
+
+def compte_stock_recu_non_facture() -> str:
+    """Le compte « Stock Reçus Mais Non Facturés » de la societe (reglage ERPNext), ou ""."""
+    try:
+        return frappe.db.get_value("Company", {"name": ["is", "set"]}, "stock_received_but_not_billed",
+                                   order_by="creation asc") or ""
+    except Exception:
+        return ""
 
 
 def _resoudre(nom: str) -> str | None:
@@ -448,7 +482,12 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
     _enrichir(lignes, source=titre)
     ecartees = []
     if cle == "depenses":
-        lignes, ecartees = ecarter(lignes, nets_par_voucher(ecritures), comptes_hors_dossier(), sorties_ecartees())
+        nets = nets_par_voucher(ecritures)
+        financements = _financements_stock(par_type.get("Journal Entry", []))
+        lignes = [ligne_financement_stock(l, nets.get(("Journal Entry", l["document_name"])), financements[l["document_name"]])
+                  if l.get("document_type") == "Journal Entry" and l["document_name"] in financements else l
+                  for l in lignes]
+        lignes, ecartees = ecarter(lignes, nets, comptes_hors_dossier(), sorties_ecartees())
 
     return {
         "cle": cle,
@@ -458,6 +497,18 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str) -> dict:
         "ecartees": ecartees,
         "totaux": totaux_du_bloc(lignes),
     }
+
+
+def _financements_stock(noms_journal: list) -> dict:
+    """{ ecriture -> commande d'achat } des ecritures « le compte de charge finance la commande »
+    (fiches de caisse d'une part stock). Vide si la fiche de caisse n'a pas ce champ."""
+    if not noms_journal or not frappe.db.exists("DocType", "Facture Achat a Saisir"):
+        return {}
+    if not frappe.get_meta("Facture Achat a Saisir").has_field("depense_a_payer"):
+        return {}
+    return {f.journal_entry: f.purchase_order or "?" for f in frappe.get_all(
+        "Facture Achat a Saisir", filters={"journal_entry": ["in", noms_journal], "depense_a_payer": ["is", "set"]},
+        fields=["journal_entry", "purchase_order"])}
 
 
 def totaux_du_bloc(lignes: list) -> dict:
@@ -676,10 +727,16 @@ def liste(mois: str) -> dict:
     from bank_retenue_sync.expenses.frais_lc import compte_frais_lc
 
     frais_lc = _resoudre(compte_frais_lc(creer=False))
+    # Une facture d'achat nee d'un RECU (stock deja entre a la reception : BL de caisse, part stock
+    # d'une depense) ne touche pas « Stock Existant » mais « Stock Reçus Mais Non Facturés » : sans
+    # ce compte, elle n'etait dans aucun bloc (10/11/2026). Les recus eux-memes ne sont pas des
+    # lignes du dossier : seuls les types facture, journal et paiement sont rendus.
+    recus_non_factures = _resoudre(compte_stock_recu_non_facture())
     blocs = sans_doublons_achats([
         _bloc("depenses", "Dépenses", (_descendance(racine) if racine else [])
               + ([frais_lc] if frais_lc else []), debut, fin),
-        _bloc("achats", "Achats", [achats] if achats else [], debut, fin),
+        _bloc("achats", "Achats", ([achats] if achats else []) + ([recus_non_factures] if recus_non_factures else []),
+              debut, fin),
         _bloc("retenues", "Retenues / Ventes", [retenues] if retenues else [], debut, fin),
     ])
 

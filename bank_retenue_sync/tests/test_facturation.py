@@ -1464,3 +1464,32 @@ class TestExtractionHorsParts(unittest.TestCase):
         self.assertIs(extraction_hors_parts(src), src)
         self.assertIsNone(extraction_hors_parts(None, 1, 1, 1))
         self.assertEqual(extraction_hors_parts(src, 0.5)["total_ttc"], None)
+
+
+class TestFinancementStock(unittest.TestCase):
+    """L'écriture « le compte de charge finance la commande » d'une part stock : ligne négative, jamais écartée."""
+
+    def setUp(self):
+        from bank_retenue_sync.facturation import charges
+        self.C = charges
+
+    def test_ligne_negative(self):
+        l = {"document_type": "Journal Entry", "document_name": "JV-1", "ht": 0.0, "tva": 0.0, "ttc": 65.0,
+             "comptes_credites": ["Charges Diverses - A&S"], "categorie": "", "tiers": "Charges Diverses - A&S", "justificatifs": []}
+        f = self.C.ligne_financement_stock(l, -65.0, "PUR-ORD-1")
+        self.assertEqual((f["ht"], f["tva"], f["ttc"], f["categorie"], f["financement_stock"]), (-65.0, 0.0, -65.0, "Charges Diverses - A&S", "PUR-ORD-1"))
+        self.assertEqual((f["exemption"], f["manque"]), (self.C.EXEMPTION_FINANCEMENT_STOCK, False))
+        self.assertEqual(l["ttc"], 65.0)   # l'original n'est pas modifié
+
+    def test_jamais_ecartee_et_le_bloc_se_nette(self):
+        depense = {"document_type": "Journal Entry", "document_name": "JV-0", "ht": 252.1, "tva": 47.9, "ttc": 300.0, "comptes_credites": ["Espèces - A&S"], "justificatifs": [1], "manque": False, "exemption": ""}
+        fin = self.C.ligne_financement_stock({"document_type": "Journal Entry", "document_name": "JV-1", "comptes_credites": ["Charges Diverses - A&S"], "justificatifs": []}, -65.0, "PUR-ORD-1")
+        nets = {("Journal Entry", "JV-0"): 252.1, ("Journal Entry", "JV-1"): -65.0}
+        gardees, ecartees = self.C.ecarter([depense, fin], nets, set(), sorties=True)
+        self.assertEqual([l["document_name"] for l in gardees], ["JV-0", "JV-1"])
+        self.assertEqual(ecartees, [])
+        t = self.C.totaux_du_bloc(gardees)
+        self.assertEqual((t["ht"], t["tva"], t["ttc"]), (187.1, 47.9, 235.0))
+        # sans le marquage, la même écriture serait une sortie de charge écartée
+        brute = {"document_type": "Journal Entry", "document_name": "JV-1", "comptes_credites": ["Charges Diverses - A&S"]}
+        self.assertEqual(self.C.raison_hors_dossier(brute, -65.0, set(), True), self.C.RAISON_SORTIE)
