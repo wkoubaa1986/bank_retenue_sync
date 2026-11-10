@@ -1310,3 +1310,36 @@ class TestSousBlocRetards(unittest.TestCase):
         lignes = self._lignes(deja_remises={("Purchase Invoice", "ACC-PINV-9999"): "2026-09"})
         _, ligne = self._trouver(lignes, "Fournisseur A 001")
         self.assertNotIn("DÉJÀ REMISE", ligne[-1])
+
+
+class TestNumerotation(unittest.TestCase):
+    """Octobre 2026 : 52 « trous » qui etaient des numeros du 30/09, 19 doublons invisibles."""
+
+    def setUp(self):
+        from bank_retenue_sync.facturation.factures import numerotation
+        self.numerotation = numerotation
+
+    def test_vide(self):
+        n = self.numerotation([])
+        self.assertEqual((n["premier"], n["trous"], n["doublons"], n["hors_mois"]), (None, [], [], []))
+
+    def test_serie_continue(self):
+        n = self.numerotation([3, 1, 2])
+        self.assertEqual((n["premier"], n["dernier"], n["trous_total"], n["doublons"]), (1, 3, 0, []))
+
+    def test_un_numero_d_un_autre_mois_n_est_pas_un_trou(self):
+        n = self.numerotation([2397, 2398, 2405], {2399: ["2026-09-30"], 2400: ["2026-09-30"]})
+        self.assertEqual(n["hors_mois"], [2399, 2400])
+        self.assertEqual(n["trous"], [2401, 2402, 2403, 2404])
+        self.assertEqual(n["trous_total"], 4)
+        self.assertEqual(n["doublons"], [])
+
+    def test_un_numero_du_mois_porte_ailleurs_est_un_doublon_date(self):
+        n = self.numerotation([2397, 2398], {2397: ["2026-09-30"]})
+        self.assertEqual(n["doublons"], [2397])
+        self.assertEqual(n["doublons_detail"]["2397"], {"dans_le_mois": 1, "ailleurs": ["2026-09-30"]})
+
+    def test_deux_fois_dans_le_mois(self):
+        n = self.numerotation([5, 5, 6])
+        self.assertEqual(n["doublons"], [5])
+        self.assertEqual(n["doublons_detail"]["5"], {"dans_le_mois": 2, "ailleurs": []})

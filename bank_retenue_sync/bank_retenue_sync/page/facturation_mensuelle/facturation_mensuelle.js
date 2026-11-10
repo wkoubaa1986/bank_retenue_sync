@@ -509,6 +509,7 @@ class FacturationMensuelle {
     const n = d.numerotation || {};
     const trous = (n.trous_total || 0);
     const doublons = (n.doublons || []).length;
+    const hors = (n.hors_mois_total || 0);
 
     const kpis = this._kpis([
       ["Factures", t.nombre, `n° ${n.premier ?? "—"} → ${n.dernier ?? "—"}`, ""],
@@ -546,8 +547,23 @@ class FacturationMensuelle {
         série : ${this._esc((n.trous || []).join(", "))}.</div>`);
     }
     if (doublons) {
-      alertes.push(`<div class="fm-note alerte"><b>Numéro(s) en double</b> :
-        ${this._esc((n.doublons || []).join(", "))}.</div>`);
+      const det = n.doublons_detail || {};
+      const libelle = (num) => {
+        const d = det[String(num)] || {};
+        const ou = [];
+        if ((d.dans_le_mois || 0) > 1) ou.push(`${d.dans_le_mois} fois dans le mois`);
+        if ((d.ailleurs || []).length) ou.push(`aussi sur une facture du ${
+          d.ailleurs.map((x) => frappe.datetime.str_to_user(x)).join(", ")}`);
+        return `${num}${ou.length ? " (" + ou.join(" ; ") + ")" : ""}`;
+      };
+      alertes.push(`<div class="fm-note alerte"><b>${doublons} numéro(s) en double</b> — deux
+        factures portent le même numéro, il faut en renuméroter une avant remise :
+        ${this._esc((n.doublons || []).map(libelle).join(", "))}.</div>`);
+    }
+    if (hors) {
+      alertes.push(`<div class="fm-note">${hors} numéro(s) de la série sont portés par des
+        factures datées d'un autre mois (elles figurent dans le dossier de ce mois-là, la série
+        globale reste continue) : ${this._esc((n.hors_mois || []).join(", "))}.</div>`);
     }
 
     const taux = (t.taux || []).map((x) =>

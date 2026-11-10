@@ -242,27 +242,61 @@ def liste(mois: str) -> dict:
             "factures_presumees": sum(1 for r in out if r["presume"]),
             **tva.cumuler(ventilations),
         },
-        "numerotation": numerotation(numeros),
+        "numerotation": numerotation(numeros, _numeros_ailleurs(debut, fin, numeros)),
     }
 
 
-def numerotation(numeros: list) -> dict:
-    """Trous et doublons dans la serie du mois.
+def _numeros_ailleurs(debut, fin, numeros: list) -> dict:
+    """Les numeros de la plage du mois portes par des factures validees datees d'un AUTRE mois.
+    -> {numero: [dates de ces factures]}"""
+    if not numeros:
+        return {}
+    rows = frappe.db.sql(
+        """SELECT CAST(custom_numero_facture AS UNSIGNED) AS n, posting_date
+           FROM `tabSales Invoice`
+           WHERE docstatus = 1 AND is_opening = 'No'
+             AND custom_numero_facture REGEXP '^[0-9]+$'
+             AND posting_date NOT BETWEEN %s AND %s
+             AND CAST(custom_numero_facture AS UNSIGNED) BETWEEN %s AND %s""",
+        (debut, fin, min(numeros), max(numeros)), as_dict=True)
+    out = defaultdict(list)
+    for r in rows:
+        out[int(r.n)].append(str(r.posting_date))
+    return {n: sorted(d) for n, d in out.items()}
+
+
+def numerotation(numeros: list, ailleurs: dict | None = None) -> dict:
+    """Trous et doublons dans la serie du mois, en regardant TOUTE la base.
 
     Le meme controle que la page Facturation Auto fait avant de generer — refait ici APRES, sur
     ce qui existe reellement en base. Un dossier remis au comptable avec un numero manquant se
     discute ; le decouvrir a ce moment-la coute moins cher que de l'apprendre de lui.
+
+    Limite au mois, ce controle mentait dans les deux sens (octobre 2026) : 52 numeros
+    « manquants » etaient ceux de factures du 30/09 creees le 07/10, et 19 vrais doublons — un
+    numero sur une facture de septembre ET une d'octobre — passaient inapercus. D'ou
+    `ailleurs` : un numero porte par un autre mois n'est pas un trou, il est signale a part
+    (`hors_mois`) ; un numero du mois porte aussi ailleurs est un doublon, date a l'appui.
     """
+    ailleurs = ailleurs or {}
+    vide = {"premier": None, "dernier": None, "trous": [], "trous_total": 0,
+            "doublons": [], "doublons_detail": {}, "hors_mois": [], "hors_mois_total": 0}
     if not numeros:
-        return {"premier": None, "dernier": None, "trous": [], "doublons": []}
-    vus, doublons = set(), set()
+        return vide
+    vus, deux_fois = set(), set()
     for n in numeros:
-        (doublons if n in vus else vus).add(n)
+        (deux_fois if n in vus else vus).add(n)
     premier, dernier = min(vus), max(vus)
-    trous = [n for n in range(premier, dernier + 1) if n not in vus]
+    doublons = deux_fois | (vus & set(ailleurs))
+    detail = {str(n): {"dans_le_mois": numeros.count(n), "ailleurs": ailleurs.get(n, [])}
+              for n in sorted(doublons)}
+    absents = [n for n in range(premier, dernier + 1) if n not in vus]
+    hors_mois = [n for n in absents if n in ailleurs]
+    trous = [n for n in absents if n not in ailleurs]
     return {"premier": premier, "dernier": dernier,
             "trous": trous[:200], "trous_total": len(trous),
-            "doublons": sorted(doublons)}
+            "doublons": sorted(doublons), "doublons_detail": detail,
+            "hors_mois": hors_mois[:200], "hors_mois_total": len(hors_mois)}
 
 
 def nom_de_piece(mois: str, numero) -> str:
