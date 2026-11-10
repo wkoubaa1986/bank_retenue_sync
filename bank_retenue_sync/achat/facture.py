@@ -343,6 +343,9 @@ def _fiches_caisse(doc) -> list:
     if not frappe.db.exists("DocType", DOCTYPE_FICHE_CAISSE):
         return []
     champs = ["name", "mode_paiement", "journal_entry", "journal_entries"]
+    # Les parts du BL parties en depense a la caisse (caisse_stock_partiel), quand la fiche les porte.
+    meta = frappe.get_meta(DOCTYPE_FICHE_CAISSE)
+    champs += [c for c in ("part_depense_ht", "part_depense_tva", "part_depense_ttc") if meta.has_field(c)]
     a_saisir = {"statut": "À saisir", "purchase_invoice": ["is", "not set"]}
     fiches = {}
     if doc.name and not doc.is_new():
@@ -386,6 +389,16 @@ def _verse_par_la_caisse(fiche) -> float:
                                and a.account <> %(retenue)s""",
                           {"jes": jes, "retenue": retenue.compte_retenue()})[0][0]
     return flt(verse, 3)
+
+
+def parts_en_depense(doc) -> dict:
+    """Ce que les BL de cette facture ont deja envoye en depense a la caisse. -> {ht, tva, ttc}."""
+    ht = tva = ttc = 0.0
+    for f in _fiches_caisse(doc):
+        ht += flt(f.get("part_depense_ht"))
+        tva += flt(f.get("part_depense_tva"))
+        ttc += flt(f.get("part_depense_ttc"))
+    return {"ht": round(ht, 3), "tva": round(tva, 3), "ttc": round(ttc, 3)}
 
 
 def deja_regle(doc) -> dict:
@@ -562,7 +575,16 @@ def avant_validation(doc, method=None):
                               dates["posting_date"], dates["bill_date"]),
                         indicator="orange", alert=True)
 
-    refus = regles.bloquants(facture, pieces, extraction, *_seuils())
+    # Les parts des BL comptabilisees en depense a la caisse ne sont pas dans cette facture :
+    # le scan, lui, les porte. On les deduit avant de comparer (caisse_stock_partiel).
+    parts = parts_en_depense(doc)
+    if parts["ttc"]:
+        frappe.msgprint(_("Scan comparé hors des parts comptabilisées en dépense à la caisse : "
+                          "{0} HT, {1} TVA, {2} TTC.").format(parts["ht"], parts["tva"], parts["ttc"]),
+                        indicator="blue", alert=True)
+    refus = regles.bloquants(facture, pieces,
+                             regles.extraction_hors_parts(extraction, parts["ht"], parts["tva"], parts["ttc"]),
+                             *_seuils())
 
     # ⚠️ LA RETENUE SE VERROUILLE AUSSI ICI, ET C'EST LE MEME TROU QUE LES DATES. Le Desk sait
     # enregistrer ET valider en un seul appel : le document arrive alors avec `docstatus = 1`,

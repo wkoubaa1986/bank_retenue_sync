@@ -1448,3 +1448,19 @@ class TestDeclaration(unittest.TestCase):
         self.assertEqual(e["retenues"]["lignes"][4]["montant"], round(117.541 + 5.0, 3))
         sans = self.D.estimer(self.SEPT, self.D.hypotheses_par_defaut("2026-09"))
         self.assertFalse([l for l in sans["tva"]["recuperable"] if l["cle"] == "tva_retards"])
+
+
+class TestExtractionHorsParts(unittest.TestCase):
+    """Facture mensuelle couvrant des BL dont une part est partie en dépense à la caisse."""
+
+    def test_deduit_les_parts(self):
+        from bank_retenue_sync.achat.regles import extraction_hors_parts
+        e = extraction_hors_parts({"total_ht": 1000.0, "total_tva": 190.0, "total_ttc": 1191.0, "coherent": 1}, 100, 19, 119)
+        self.assertEqual((e["total_ht"], e["total_tva"], e["total_ttc"], e["coherent"]), (900.0, 171.0, 1072.0, 1))
+
+    def test_sans_part_rien_ne_change(self):
+        from bank_retenue_sync.achat.regles import extraction_hors_parts
+        src = {"total_ht": 1.0, "total_ttc": None}
+        self.assertIs(extraction_hors_parts(src), src)
+        self.assertIsNone(extraction_hors_parts(None, 1, 1, 1))
+        self.assertEqual(extraction_hors_parts(src, 0.5)["total_ttc"], None)

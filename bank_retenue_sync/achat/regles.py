@@ -186,6 +186,23 @@ def ecarts_importants(facture: dict, extraction: dict = None, minimal: float = E
     return out
 
 
+def extraction_hors_parts(extraction: dict | None, ht=0, tva=0, ttc=0) -> dict | None:
+    """Le scan, moins ce qui en a deja ete comptabilise ailleurs. Pure.
+
+    Une facture mensuelle de fournisseur peut couvrir des BL dont une PART est partie en depense
+    a la caisse (caisse_stock_partiel, 10/11/2026) : la facture d'achat ne porte que les parts
+    stock, le scan porte tout. Comparer l'un a l'autre sans cette deduction refuserait une facture
+    juste. Sans part a deduire, le scan est rendu tel quel.
+    """
+    if not extraction or not (ht or tva or ttc):
+        return extraction
+    e = dict(extraction)
+    for cle, part in (("total_ht", ht), ("total_tva", tva), ("total_ttc", ttc)):
+        if e.get(cle) is not None:
+            e[cle] = round(float(e[cle]) - float(part or 0), 3)
+    return e
+
+
 def _somme(lignes, deduire=False, mot=None) -> float:
     total = 0.0
     for l in lignes or []:
