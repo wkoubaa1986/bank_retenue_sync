@@ -53,6 +53,24 @@
   .fm-tbl tfoot td { font-weight: 600; border-top: 2px solid var(--border-color); border-bottom: 0; }
   .fm-tbl .muted { color: var(--text-muted); }
 
+  /* --- déclaration (estimation) --------------------------------------- */
+  .fm-decl { display: grid; grid-template-columns: 1fr; gap: 4px; }
+  .fm-decl .fm-tbl td:first-child { min-width: 260px; }
+  .fm-decl .note { font-size: 11px; color: var(--text-muted); }
+  .fm-decl .fm-scroll { margin-bottom: 0; }
+  .fm-decl-hyp { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; padding: 10px 12px;
+                 border: 1px dashed var(--border-color); border-radius: 8px; margin-bottom: 14px; }
+  .fm-decl-hyp .f { display: flex; flex-direction: column; gap: 3px; }
+  .fm-decl-hyp label { font-size: 11px; color: var(--text-muted); }
+  .fm-decl-hyp input { width: 120px; height: 28px; font-size: 13px; text-align: right; padding: 2px 6px;
+                       border: 1px solid var(--border-color); border-radius: 6px; background: var(--control-bg);
+                       color: var(--text-color); }
+  .fm-src { font-size: 10px; padding: 0 5px; border-radius: 8px; white-space: nowrap; }
+  .fm-src.exacte { background: rgba(30,126,52,.12); color: #1e7e34; }
+  .fm-src.approchee { background: rgba(156,111,0,.12); color: #9c6f00; }
+  .fm-src.hypothese { background: rgba(0,0,0,.06); color: var(--text-muted); }
+  .fm-tbl td.total, .fm-tbl tr.total td { font-weight: 600; }
+
   .fm-sous { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
              color: var(--text-muted); margin: 18px 0 8px; }
 
@@ -178,6 +196,8 @@
     </div>
     <span class="periode" data-role="periode"></span>
     <span class="spacer"></span>
+    <button class="btn btn-default btn-sm" data-action="facturation-auto"
+            title="Générer les factures du mois précédent (paiements Zitouna, PASSAGER)">Facturation Auto ↗</button>
   </div>
 
   <div class="fm-tabs" data-role="onglets">
@@ -186,6 +206,7 @@
     <button class="fm-tab" data-onglet="factures">Factures</button>
     <button class="fm-tab" data-onglet="charges">Charges</button>
     <button class="fm-tab" data-onglet="dossier">Dossier</button>
+    <button class="fm-tab" data-onglet="declaration">Déclaration (estimation)</button>
   </div>
 
   <div class="fm-panneau actif" data-panneau="caisse"><div class="fm-chargement">Chargement…</div></div>
@@ -193,5 +214,6 @@
   <div class="fm-panneau" data-panneau="factures"><div class="fm-chargement">Chargement…</div></div>
   <div class="fm-panneau" data-panneau="charges"><div class="fm-chargement">Chargement…</div></div>
   <div class="fm-panneau" data-panneau="dossier"><div class="fm-chargement">Chargement…</div></div>
+  <div class="fm-panneau" data-panneau="declaration"><div class="fm-chargement">Chargement…</div></div>
 
 </div>

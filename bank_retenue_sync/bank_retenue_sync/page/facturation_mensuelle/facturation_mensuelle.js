@@ -22,6 +22,7 @@ const FM_ONGLETS = {
   // Le dossier ne charge rien par la voie commune : son etat se rafraichit tout seul tant
   // qu un job tourne, ce que `_suivre_dossier` gere deja.
   dossier: { methode: null, rendu: null },
+  declaration: { methode: "get_declaration", rendu: "_rendre_declaration" },
 };
 
 const FM_STATUT_LABEL = {
@@ -141,6 +142,10 @@ class FacturationMensuelle {
     this.$root.on("click", '[data-action="marquer-envoye"]', () => this._marquer_envoye());
     this.$root.on("click", '[data-action="annuler-envoi"]', () => this._annuler_envoi());
     this.$root.on("change", 'input[data-action="rattacher"]', (e) => this._rattacher(e));
+    this.$root.on("click", '[data-action="facturation-auto"]', () => frappe.set_route("facturation-auto"));
+    // --- déclaration (estimation) : corriger une hypothèse et recalculer --------
+    this.$root.on("click", '[data-action="recalculer-declaration"]', () => this._recalculer_declaration());
+    this.$root.on("click", '[data-action="hypotheses-defaut"]', () => this._recalculer_declaration(true));
     this.$root.on("click", '[data-action="verifier-non-envoyees"]',
       () => this._verifier_non_envoyees());
 
@@ -282,6 +287,128 @@ class FacturationMensuelle {
     if (nom !== "charges" || !this.mois_origine) return;
     this.$root.find('[data-f="mois-origine"]').val(this.mois_origine);
     this._charger_anterieures();
+  }
+
+  // ---------------------------------------------------------------- déclaration (estimation)
+
+  async _recalculer_declaration(defauts = false) {
+    const hyp = {};
+    if (!defauts) {
+      this.$root.find('[data-hyp]').each((_, el) => { hyp[$(el).data("hyp")] = $(el).val(); });
+    }
+    const $p = this.$root.find('[data-panneau="declaration"]');
+    $p.find('[data-action="recalculer-declaration"]').prop("disabled", true);
+    try {
+      const r = await frappe.call({ method: "bank_retenue_sync.api.cloture.get_declaration",
+        args: { mois: this.mois, hypotheses: JSON.stringify(hyp) } });
+      const d = r.message || {};
+      this.cache[`${this.mois}|declaration`] = d;
+      $p.html(this._rendre_declaration(d));
+    } catch (e) {
+      $p.html(this._erreur(e));
+    }
+  }
+
+  _src(src) {
+    const lib = { exacte: "exacte", approchee: "approchée", hypothese: "hypothèse" }[src] || src;
+    return `<span class="fm-src ${this._esc(src)}">${this._esc(lib)}</span>`;
+  }
+
+  _rendre_declaration(d) {
+    const e = d.estimation || {};
+    const h = d.hypotheses || {};
+    const cmp = d.comparaison || {};
+    const declare = !!d.declare;
+    const nb = (v) => this._m(v);
+    const taux = (t) => (t == null ? "" : `${String(t).replace(".", ",")} %`);
+    const ecart = (cle) => {
+      if (!declare || !cmp[cle]) return "";
+      const x = cmp[cle].ecart;
+      const cls = Math.abs(x) < 0.01 ? "ok" : (Math.abs(x) < 50 ? "warn" : "bad");
+      return `<td class="num">${nb(cmp[cle].declare)}</td><td class="num"><span class="fm-badge ${cls}">${
+        x > 0 ? "+" : ""}${nb(x)}</span></td>`;
+    };
+    const enteteCmp = declare ? `<th class="num">Déclaré</th><th class="num">Écart</th>` : "";
+    const colspan = declare ? 7 : 5;
+
+    const ligne = (l, cleCmp) => `<tr>
+      <td>${this._esc(l.libelle)}${l.note ? ` <span class="note">— ${this._esc(l.note)}</span>` : ""}</td>
+      <td class="num">${l.base == null ? "" : nb(l.base)}</td>
+      <td class="num">${taux(l.taux)}</td>
+      <td class="num">${nb(l.montant)}</td>
+      <td>${this._src(l.source)}</td>${ecart(cleCmp)}</tr>`;
+    const tete = `<thead><tr><th>Nature</th><th class="num">Base</th><th class="num">Taux</th>
+      <th class="num">Impôt dû</th><th>Source</th>${enteteCmp}</tr></thead>`;
+
+    // --- hypothèses -----------------------------------------------------------------
+    const champs = [
+      ["salaires_bruts", "Masse salariale brute (DT)"], ["taux_irpp", "IRPP, % du brut"],
+      ["taux_css", "C.S.S, % du brut"], ["loyer_base", "Loyer mensuel déclaré (DT)"],
+      ["honoraires_base", "Honoraires du comptable (DT)"], ["report", "Report TVA mois précédent (DT)"],
+    ];
+    const hypotheses = `<div class="fm-decl-hyp">
+      <div style="flex-basis:100%;font-size:12px;color:var(--text-muted);">
+        <b>Hypothèses</b> — ce qu’ERPNext ne connaît pas${h.origine
+          ? `, repris de la déclaration de <b>${this._esc(h.origine)}</b>` : " (aucune déclaration connue)"}.
+        Corrige, puis recalcule : rien n’est enregistré, c’est une projection.</div>
+      ${champs.map(([k, lib]) => `<div class="f"><label>${lib}</label>
+        <input type="number" step="0.001" data-hyp="${k}" value="${h[k] == null ? "" : h[k]}"></div>`).join("")}
+      <button data-action="recalculer-declaration">Recalculer</button>
+      <button class="btn-link" data-action="hypotheses-defaut" style="font-size:12px;">Revenir aux valeurs par défaut</button>
+    </div>`;
+
+    // --- retenues + TFP / FOPROLOS ----------------------------------------------------
+    const rs = e.retenues || { lignes: [], total: 0 };
+    const retenues = `<div class="fm-scroll"><table class="fm-tbl">${tete}<tbody>
+      ${rs.lignes.map((l) => ligne(l, l.cle)).join("")}
+      <tr class="total"><td>Total retenues à la source</td><td></td><td></td><td class="num">${nb(rs.total)}</td><td></td>${ecart("retenues_total")}</tr>
+      ${ligne(e.tfp, "tfp")}${ligne(e.foprolos, "foprolos")}
+    </tbody></table></div>`;
+
+    // --- TVA --------------------------------------------------------------------------
+    const tva = e.tva || { collectee: [], recuperable: [] };
+    const tvaTable = `<div class="fm-scroll"><table class="fm-tbl">
+      <thead><tr><th>TVA</th><th class="num">Base</th><th class="num">Taux</th><th class="num">TVA</th><th>Source</th>${enteteCmp}</tr></thead>
+      <tbody>
+      ${tva.collectee.map((t) => `<tr><td>Collectée</td><td class="num">${nb(t.base)}</td><td class="num">${taux(t.taux)}</td>
+        <td class="num">${nb(t.tva)}</td><td>${this._src("exacte")}</td>${declare ? "<td></td><td></td>" : ""}</tr>`).join("")}
+      <tr class="total"><td>Cumul collectée</td><td class="num">${nb(tva.collectee_base)}</td><td></td>
+        <td class="num">${nb(tva.collectee_tva)}</td><td></td>${ecart("tva_collectee_total")}</tr>
+      ${tva.recuperable.map((l) => `<tr><td>Récupérable — ${this._esc(l.libelle)}${l.note ? ` <span class="note">— ${this._esc(l.note)}</span>` : ""}</td>
+        <td></td><td></td><td class="num">${nb(l.montant)}</td><td>${this._src(l.source)}</td>${declare ? "<td></td><td></td>" : ""}</tr>`).join("")}
+      <tr class="total"><td>Cumul récupérable</td><td></td><td></td><td class="num">${nb(tva.recuperable_total)}</td><td></td>${ecart("tva_recuperable")}</tr>
+      <tr><td>Report mois précédent</td><td></td><td></td><td class="num">${nb(tva.report)}</td><td>${this._src("hypothese")}</td>${declare ? "<td></td><td></td>" : ""}</tr>
+      <tr class="total"><td>${tva.credit ? "Crédit de TVA (à reporter)" : "TVA à payer"}</td><td></td><td></td>
+        <td class="num">${nb(tva.credit ? tva.credit : tva.a_payer)}</td><td></td>${ecart("tva_a_payer")}</tr>
+      ${ligne(e.suspension, "ventes_suspension")}
+    </tbody></table></div>`;
+
+    // --- timbre, TCL, récap -------------------------------------------------------------
+    const autres = `<div class="fm-scroll"><table class="fm-tbl">${tete}<tbody>
+      ${ligne(e.timbre, "timbre")}${ligne(e.tcl, "tcl")}
+    </tbody></table></div>`;
+    const r = e.recap || {};
+    const recap = this._kpis([
+      ["R/S", nb(r.rs), "retenues à la source", ""],
+      ["TFP + FOPROLOS", nb((r.tfp || 0) + (r.foprolos || 0)), "sur la masse brute", ""],
+      ["TVA", nb(r.tva), tva.credit ? `crédit ${nb(tva.credit)}` : "à payer", ""],
+      ["D.T + T.C.L", nb((r.timbre || 0) + (r.tcl || 0)), `${e.timbre ? e.timbre.base : 0} facture(s)`, ""],
+      ["Total déclaration", nb(r.total), declare && cmp.total ? `déclaré ${nb(cmp.total.declare)} · écart ${cmp.total.ecart > 0 ? "+" : ""}${nb(cmp.total.ecart)}` : "estimation", declare && cmp.total && Math.abs(cmp.total.ecart) < 150 ? "ok" : (declare ? "warn" : "")],
+    ]);
+
+    const consigne = `<div class="fm-note" style="margin-bottom:12px;">Projection de la déclaration mensuelle de
+      <b>${this._esc(d.libelle)}</b> à partir des factures et charges saisies à ce jour. Une ligne
+      <span class="fm-src exacte">exacte</span> sort telle quelle de la base ; <span class="fm-src approchee">approchée</span>,
+      la base la porte mais pas découpée comme le comptable ; <span class="fm-src hypothese">hypothèse</span>, ERPNext
+      ne la connaît pas.${declare ? ` Le projet du comptable de ce mois est connu (${this._esc(d.declare.source)}) :
+      la colonne « Déclaré » et l’écart mesurent ce que la base sait.` : ""}</div>`;
+
+    return consigne + hypotheses + recap
+      + `<div class="fm-decl">
+           <div>${this._sous("Retenues à la source · TFP · FOPROLOS")}${retenues}</div>
+           <div>${this._sous("TVA")}${tvaTable}</div>
+           <div>${this._sous("Droit de timbres · T.C.L")}${autres}</div>
+         </div>`;
   }
 
   // ---------------------------------------------------------------- caisse

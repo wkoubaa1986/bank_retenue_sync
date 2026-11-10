@@ -1381,3 +1381,58 @@ class TestDejaRemise(unittest.TestCase):
         self.assertIsNone(self.deja({"document_type": "Journal Entry", "document_name": "ACC-JV-2026-00757",
                                      "reference_export": "Echeance Leasing Changan 09-2026", "ttc": 960.344}, self.ARCHIVE))
         self.assertIsNone(self.deja({"document_type": "Journal Entry", "document_name": "X", "ttc": 0}, []))
+
+
+class TestDeclaration(unittest.TestCase):
+    """L'estimation de la déclaration mensuelle, confrontée au projet du comptable de septembre 2026."""
+
+    SEPT = {"ventes": {"taux": [{"taux": 19.0, "base": 65724.049, "tva": 12487.594}, {"taux": 7.0, "base": 9455.295, "tva": 661.87}],
+                       "base_exoneree": 11346.133, "nombre": 305, "total_base": 86525.477, "total_tva": 13149.464},
+            "charges": {"tva_achats": 2058.846, "tva_depenses": 1437.186, "marche_retenue": 117.541, "honoraires_retenue": 7.14}}
+
+    def setUp(self):
+        from bank_retenue_sync.facturation import declaration as D
+        self.D = D
+
+    def test_les_hypotheses_viennent_de_la_derniere_declaration_connue(self):
+        h = self.D.hypotheses_par_defaut("2026-10")
+        self.assertEqual(h["origine"], "2026-09")
+        self.assertEqual(h["salaires_bruts"], 6674.863)
+        self.assertAlmostEqual(h["taux_irpp"], 12.558, places=3)
+        self.assertEqual(self.D.hypotheses_par_defaut("2026-09")["origine"], "2026-09")   # le mois lui-même
+        self.assertIsNone(self.D.hypotheses_par_defaut("2025-01")["origine"])
+
+    def test_corrections_de_l_ecran(self):
+        h = self.D.fusionner_hypotheses(self.D.hypotheses_par_defaut("2026-10"), {"salaires_bruts": "7000", "report": "abc", "origine": "x", "inconnu": 1})
+        self.assertEqual((h["salaires_bruts"], h["report"], h["origine"]), (7000.0, 0.0, "2026-09"))
+        self.assertNotIn("inconnu", h)
+
+    def test_septembre_retrouve_le_projet_du_comptable(self):
+        e = self.D.estimer(self.SEPT, self.D.hypotheses_par_defaut("2026-09"))
+        c = self.D.comparer(e, self.D.DECLARATIONS_CONNUES["2026-09"])
+        self.assertEqual(c["timbre"]["ecart"], 0.0)                       # 305 factures
+        self.assertAlmostEqual(c["marche"]["ecart"], 0.0, delta=0.002)     # le 1 % retenu, lu au compte
+        self.assertAlmostEqual(c["honoraires"]["ecart"], 0.0, delta=0.001)
+        self.assertAlmostEqual(c["loyer"]["ecart"], 0.0, delta=0.001)
+        self.assertAlmostEqual(c["irpp"]["ecart"], 0.0, delta=0.05)
+        self.assertAlmostEqual(c["ventes_suspension"]["ecart"], 1.0, delta=0.001)   # lecture manuscrite
+        self.assertAlmostEqual(c["tva_collectee_total"]["ecart"], -10.467, delta=0.001)  # la retardataire d'août
+        self.assertLess(abs(c["tva_recuperable"]["ecart"]), 140)          # approchée : immobilisations non isolées
+        self.assertLess(abs(c["total"]["ecart"]), 130)
+
+    def test_les_sources_sont_dites(self):
+        e = self.D.estimer(self.SEPT, self.D.hypotheses_par_defaut("2026-09"))
+        sources = {l["cle"]: l["source"] for l in e["retenues"]["lignes"]}
+        self.assertEqual(sources["marche"], "exacte")
+        self.assertEqual(sources["honoraires"], "exacte")
+        self.assertEqual(sources["irpp"], "hypothese")
+        self.assertEqual(e["tva"]["recuperable"][0]["source"], "approchee")
+        sans_note = dict(self.SEPT, charges=dict(self.SEPT["charges"], honoraires_retenue=None))
+        self.assertEqual(self.D.estimer(sans_note, self.D.hypotheses_par_defaut("2026-09"))["retenues"]["lignes"][3]["source"], "hypothese")
+
+    def test_credit_de_tva(self):
+        e = self.D.estimer({"ventes": {"taux": [{"taux": 19.0, "base": 100, "tva": 19}], "nombre": 1, "total_base": 100, "total_tva": 19},
+                            "charges": {"tva_achats": 30, "tva_depenses": 0, "marche_retenue": 0}},
+                           {"salaires_bruts": 0, "taux_irpp": 0, "taux_css": 0, "loyer_base": 0, "honoraires_base": 0, "report": 5})
+        self.assertEqual((e["tva"]["solde"], e["tva"]["a_payer"], e["tva"]["credit"]), (-16.0, 0.0, 16.0))
+        self.assertEqual(e["recap"]["total"], 1.0 + 0.238)   # timbre + TCL

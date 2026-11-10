@@ -30,6 +30,8 @@ PRECISION = 3
 RACINE_DEPENSES = "Charges Indirectes - A&S"
 COMPTE_ACHATS = "Stock Existant - A&S"
 COMPTE_RETENUES = "Avance  impôt société - A&S"   # le double espace est celui du plan comptable
+# Retenue de 1 % que NOUS opérons sur nos achats (marché P.M de la déclaration mensuelle).
+COMPTE_RAS_ACHAT = "Retenue a la source achat - A&S"
 
 # Taux de la retenue a la source sur les ventes, en pourcentage du TTC.
 TAUX_RAS_VENTE = 1.0

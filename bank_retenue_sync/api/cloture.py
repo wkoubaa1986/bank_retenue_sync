@@ -127,6 +127,54 @@ def get_factures(mois=None) -> dict:
 
 
 @frappe.whitelist()
+def get_declaration(mois=None, hypotheses=None) -> dict:
+    """L'estimation de la déclaration mensuelle du mois, ligne par ligne, avec ses sources.
+
+    `hypotheses` : corrections de l'écran (JSON) par-dessus les défauts repris de la dernière
+    déclaration connue. Rien n'est persisté : c'est une projection, pas une pièce.
+    """
+    from bank_retenue_sync.facturation import declaration as M_decl
+    _guard()
+    mois = periode.normaliser(mois)
+    if isinstance(hypotheses, str):
+        hypotheses = frappe.parse_json(hypotheses) if hypotheses else {}
+    defauts = M_decl.hypotheses_par_defaut(mois)
+    hyp = M_decl.fusionner_hypotheses(defauts, hypotheses or {})
+
+    f = M_factures.liste(mois)
+    t = f["totaux"]
+    ch = M_charges.liste(mois)
+    blocs = {b["cle"]: b for b in ch["blocs"]}
+    # Retenues que NOUS opérons : ce qui a été crédité au compte de retenue d'achat dans le mois,
+    # pièce par pièce. La note d'honoraires du comptable (3 %) se reconnaît à son libellé ; tout
+    # le reste est du marché à 1 %.
+    retenues = frappe.db.sql(
+        """SELECT gl.voucher_no, SUM(gl.credit) AS credit, COALESCE(je.user_remark, '') AS remarque
+           FROM `tabGL Entry` gl LEFT JOIN `tabJournal Entry` je ON je.name = gl.voucher_no
+           WHERE gl.is_cancelled = 0 AND gl.account = %s AND gl.posting_date BETWEEN %s AND %s
+           GROUP BY gl.voucher_no, je.user_remark""",
+        (M_charges.COMPTE_RAS_ACHAT, f["periode"]["debut"], f["periode"]["fin"]), as_dict=True)
+    honoraires = [r for r in retenues if "honorair" in (r.remarque or "").lower()]
+    marche_retenue = sum(r.credit for r in retenues if r not in honoraires)
+    donnees = {
+        "ventes": {"taux": t.get("taux") or [], "base_exoneree": t.get("base_exoneree"), "nombre": t.get("nombre"),
+                   "total_base": t.get("total_base"), "total_tva": t.get("total_tva")},
+        "charges": {"tva_achats": (blocs.get("achats") or {}).get("totaux", {}).get("tva"),
+                    "tva_depenses": (blocs.get("depenses") or {}).get("totaux", {}).get("tva"),
+                    "marche_retenue": marche_retenue,
+                    "honoraires_retenue": sum(r.credit for r in honoraires) if honoraires else None},
+    }
+    estimation = M_decl.estimer(donnees, hyp)
+    declare = M_decl.DECLARATIONS_CONNUES.get(mois)
+    return {
+        "mois": mois, "libelle": periode.libelle(mois), "periode": f["periode"],
+        "hypotheses": hyp, "defauts": defauts, "donnees": donnees,
+        "estimation": estimation,
+        "declare": declare, "comparaison": M_decl.comparer(estimation, declare),
+    }
+
+
+@frappe.whitelist()
 def get_charges(mois=None) -> dict:
     """Les charges du mois, enrichies des controles DEJA passes — aucun PDF n'est relu ici.
 
