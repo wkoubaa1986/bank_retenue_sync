@@ -348,7 +348,7 @@ def bilan(pieces: list, lecture: dict = None, saisi: dict = None, nature: str = 
         numero = f"{mot.capitalize()} n° {p.get('numero') or '?'}"
         if p.get("etat") == ETAT_INTROUVABLE:
             signalements.append(numero + (f" ({_dt(p['montant'])})" if p.get("montant") is not None else "")
-                                + " : pas trouvé dans ERPNext.")
+                                + " : introuvable dans ERPNext.")
         elif p.get("etat") == ETAT_A_VERIFIER:
             if p.get("paiement") and p.get("montant") is not None and p.get("montant_erp") is not None \
                     and not _egaux(p["montant"], p["montant_erp"]) and "numéro" not in (p.get("remarque") or ""):

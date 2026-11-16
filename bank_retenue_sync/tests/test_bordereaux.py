@@ -77,7 +77,7 @@ class TestRapprochement(unittest.TestCase):
         etat = B.bilan(r, {"total": 1400.0, "nombre": 4})
         self.assertEqual(etat["signalements"], [
             "Chèque n° 4001767 : 275,000 sur le bordereau, 270,000 dans ERPNext.",
-            "Chèque n° 5555555 (12,000) : pas trouvé dans ERPNext.",
+            "Chèque n° 5555555 (12,000) : introuvable dans ERPNext.",
             "Le total écrit sur le bordereau (1 400,000) ne correspond pas à la somme des montants (1 332,000).",
             "Le bordereau annonce 4 pièce(s), 3 sont écrites."])
         self.assertEqual(B.bilan([])["signalements"], ["Aucune pièce lue sur ce bordereau."])
@@ -85,6 +85,8 @@ class TestRapprochement(unittest.TestCase):
         self.assertTrue(par_montant["signalements"][0].startswith("Chèque n° 1234567 : à vérifier (aucun paiement ne porte"))
         self.assertTrue(B.bilan(B.rapprocher([{"numero": "9", "montant": 1.0}], []), nature="Traites")["signalements"][0]
                         .startswith("Traite n° 9 (1,000)"))
+        self.assertEqual(B.bilan(B.rapprocher([{"numero": "011779021079", "montant": 4005.0}], []), nature="Traites")["signalements"],
+                         ["Traite n° 011779021079 (4 005,000) : introuvable dans ERPNext."])
 
     def test_tous_trouves_et_zeros_de_tete(self):
         r = B.rapprocher([{"numero": "88", "montant": 581.0}, {"numero": "04001066", "montant": 1045.0}], self.PORTEFEUILLE)
