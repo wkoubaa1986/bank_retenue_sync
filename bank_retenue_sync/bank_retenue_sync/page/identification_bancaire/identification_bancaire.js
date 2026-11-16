@@ -72,6 +72,10 @@ class IdentificationBancaire {
     try {
       const r = await frappe.call({ method: this._m("get_filtres") });
       const f = r.message || {};
+      // Banque (16/11/2026) : Zitouna par défaut ; le choix n'apparaît que si le registre en porte une autre.
+      const banques = f.banques || ["Zitouna"];
+      this._fill("banque", banques);
+      this.$root.find('[data-role="banque"]').toggle(banques.length > 1);
       this._fill("sens", f.sens || []);
       this._fill("statut", f.statut || f.statuts || [], IB_STATUT_LABEL);
       this._fill("categorie", f.categories || []);
@@ -112,6 +116,42 @@ class IdentificationBancaire {
     return `bank_retenue_sync.api.mouvements.${fn}`;
   }
 
+  // La banque affichée. Zitouna porte tous les outils de la page ; une autre banque (BIAT) n'a pour
+  // l'instant que la lecture de ses mouvements reconnus, « Ignorer » et le rafraîchissement.
+  _banque() {
+    return this.$root.find('[data-f="banque"]').val() || "Zitouna";
+  }
+
+  _autre_banque() {
+    return this._banque() !== "Zitouna";
+  }
+
+  async _changer_banque() {
+    const autre = this._autre_banque();
+    // Catégories et période de la banque choisie ; les filtres de l'autre ne s'appliquent plus.
+    this.$root.find('[data-f="statut"], [data-f="sens"], [data-f="ecart"], [data-f="search"], [data-f="date_to"]').val("");
+    this.$root.find('[data-f="vue"]').val("banque").prop("disabled", autre);
+    const $cat = this.$root.find('[data-f="categorie"]');
+    $cat.find("option").not(":first").remove();
+    try {
+      const r = await frappe.call({ method: this._m("get_filtres"), args: { banque: this._banque() } });
+      const f = r.message || {};
+      this._fill("categorie", f.categories || []);
+      let depuis = "";
+      if (f.date_max) {
+        const min = String(frappe.datetime.add_days(f.date_max, -90)).substring(0, 10);
+        depuis = f.date_min && String(f.date_min) > min ? String(f.date_min).substring(0, 10) : min;
+      }
+      this.$root.find('[data-f="date_from"]').val(depuis);
+    } catch (e) {
+      console.error("identification-bancaire: get_filtres (banque)", e);
+    }
+    // Le bandeau du solde est celui du compte Zitouna : masqué pour une autre banque.
+    this.$root.find('[data-role="solde"]').toggle(!autre);
+    this.load();
+    if (!autre) this._load_solde();
+  }
+
   _fill(name, values, labels) {
     const $sel = this.$root.find(`[data-f="${name}"]`);
     values.forEach((v) => {
@@ -125,8 +165,9 @@ class IdentificationBancaire {
 
   _bind() {
     let timer = null;
-    this.$root.on("change", "[data-f]", () => {
+    this.$root.on("change", "[data-f]", (e) => {
       this.state.start = 0;
+      if ($(e.currentTarget).attr("data-f") === "banque") return this._changer_banque();
       this.load();
     });
     this.$root.on("input", '[data-f="search"]', () => {
@@ -325,6 +366,7 @@ class IdentificationBancaire {
     // « vue » pilote le sens de lecture, il n'est pas un filtre du serveur : le laisser passer
     // ferait échouer get_data sur un argument inconnu.
     delete f.vue;
+    delete f.banque;
     return f;
   }
 
@@ -345,6 +387,7 @@ class IdentificationBancaire {
       return this._load_pieces();
     }
     const args = Object.assign({}, this._filters(), {
+      banque: this._banque(),
       start: this.state.start,
       page_length: this.state.page_length,
       order_by: this.state.order_by,
@@ -1330,6 +1373,13 @@ class IdentificationBancaire {
   _actions_cell(r) {
     const esc = frappe.utils.escape_html;
     const b = [];
+    if (this._autre_banque()) {
+      // Les rattachements, écritures et encaissements de cette page sont écrits pour le compte Zitouna :
+      // pour une autre banque, on lit et on écarte, rien de plus pour l'instant.
+      b.push(r.ignore_manuel ? `<button data-reactiver="${esc(r.cle)}">Réactiver</button>`
+        : `<button data-ignorer="${esc(r.cle)}">Ignorer</button>`);
+      return `<div class="ib-act">${b.join("")}</div>`;
+    }
     // ↩ Défaire un arbitrage (30/10/2026) : virement porté par un encaissement (bouton « Dette
     // client » ou flux automatique), ou écart reporté en crédit fournisseur.
     // Frais de LC : UN bouton par opération, sur sa ligne la plus grosse (demande utilisateur
@@ -1512,7 +1562,7 @@ class IdentificationBancaire {
     const f = this._filters();
     const r = await frappe.call({
       method: this._m("reclassifier"),
-      args: { date_from: f.date_from || null, date_to: f.date_to || null },
+      args: { date_from: f.date_from || null, date_to: f.date_to || null, banque: this._banque() },
       freeze: true,
       freeze_message: __("Reclassification…"),
     });
@@ -1535,6 +1585,7 @@ class IdentificationBancaire {
       async () => {
         const r = await frappe.call({
           method: this._m("rafraichir"),
+          args: { banque: this._banque() },
           freeze: true,
           freeze_message: __("Export bancaire en cours, cela peut prendre plusieurs minutes…"),
         });
@@ -2144,7 +2195,7 @@ class IdentificationBancaire {
   }
 
   _excel() {
-    const params = new URLSearchParams(this._filters());
+    const params = new URLSearchParams(Object.assign({}, this._filters(), { banque: this._banque() }));
     window.open(
       `/api/method/bank_retenue_sync.api.mouvements.download_excel?${params.toString()}`
     );

@@ -297,8 +297,8 @@ def rapprochement(date_from=None, date_to=None, compte: str = None) -> dict:
     # le registre : une piece du 02/06 rattachee a un mouvement du 30/05 est rapprochee, et la
     # declarer « sans mouvement » parce que le filtre commence au 01/06 serait faux. Filtrer les
     # cles avec la fenetre gonflait la liste de 13 a 23 lignes.
-    tous = frappe.db.get_all(registry.DOCTYPE, limit_page_length=0, order_by="date asc",
-                             fields=champs)
+    tous = frappe.db.get_all(registry.DOCTYPE, filters=registry.filtre_banque(), limit_page_length=0,
+                             order_by="date asc", fields=champs)
     movements = [m for m in tous if _dans(m.get("date"), date_from, date_to)]
     if not movements:
         return {"erpnext_sans_banque": [], "banque_sans_erpnext": [],
@@ -532,7 +532,7 @@ def explication_ecart(date_from=None, date_to=None, compte: str = None) -> dict:
     # Les composantes se construisent sur TOUT le registre : un lien ne s'arrete pas au bord de
     # la fenetre. Seuls les MONTANTS sont ensuite bornes a la periode.
     movements = frappe.db.get_all(
-        registry.DOCTYPE, limit_page_length=0, order_by="date asc",
+        registry.DOCTYPE, filters=registry.filtre_banque(), limit_page_length=0, order_by="date asc",
         fields=["name as cle", "date", "operation", "reference", "debit", "credit", "montant",
                 "sens", "statut", "groupe", "document_name", "lien_pieces"])
     pieces = lookup.pieces_bancaires(compte=compte)
@@ -694,7 +694,7 @@ def mesurer_ecart_a(date_reference) -> float:
         return None
     flux = flt(frappe.db.sql(
         """select sum(credit) - sum(debit) from `tab%s`
-           where `date` > %%s and `date` <= %%s""" % registry.DOCTYPE,
+           where `banque` = 'Zitouna' and `date` > %%s and `date` <= %%s""" % registry.DOCTYPE,
         (getdate(date_reference), getdate(dernier.date_solde)))[0][0], 3)
     banque = round(flt(dernier.solde_banque, 3) - flux, 3)
     return round(banque - S.solde_erpnext(date_reference), 3)

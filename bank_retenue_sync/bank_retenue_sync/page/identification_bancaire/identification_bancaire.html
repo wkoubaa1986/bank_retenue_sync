@@ -142,6 +142,9 @@
   <div class="ib-filters">
     <!-- Sens de lecture. Le tableau part du releve par defaut ; l'autre vue part de la
          comptabilite, la seule qui montre une ecriture SANS mouvement bancaire en face. -->
+    <!-- Banque : Zitouna par defaut ; le choix n apparait que si le registre porte une autre banque. -->
+    <div class="f" data-role="banque" style="display:none"><label>Banque</label>
+      <select data-f="banque"></select></div>
     <div class="f"><label>Vue</label>
       <select data-f="vue">
         <option value="banque">Mouvements bancaires</option>

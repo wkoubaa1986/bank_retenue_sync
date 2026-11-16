@@ -77,7 +77,7 @@ def get_banque(mois=None) -> dict:
     debut, fin = periode.bornes(mois)
 
     lignes = frappe.db.get_all(registry.DOCTYPE,
-                               filters={"date": ["between", [debut, fin]]},
+                               filters={"date": ["between", [debut, fin]], **registry.filtre_banque()},
                                fields=M._FIELDS, order_by="`date` asc, creation asc",
                                limit_page_length=0)
 
@@ -109,7 +109,7 @@ def get_banque(mois=None) -> dict:
         "total": len(lignes),
         # Date du dernier mouvement CONNU du registre, tous mois confondus : c'est elle qui dit
         # si le releve du mois affiche est complet ou si l'export bancaire a pris du retard.
-        "asof": frappe.db.sql("select max(`date`) from `tab%s`" % registry.DOCTYPE)[0][0],
+        "asof": frappe.db.sql("select max(`date`) from `tab%s` where %s" % (registry.DOCTYPE, registry.SQL_BANQUE_DEFAUT))[0][0],
         "ecarts": {"nb": len(hors_seuil),
                    "montant": frappe.utils.flt(
                        sum(abs(frappe.utils.flt(l.get("ecart"), 3)) for l in hors_seuil), 3)},

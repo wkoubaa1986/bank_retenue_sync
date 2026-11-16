@@ -378,7 +378,7 @@ def _feuilles_banque(mois: str) -> list:
     entete = ["Date", "Libellé", "Référence", "Débit", "Crédit", "Règlement"]
 
     lignes = frappe.get_all(registry.DOCTYPE,
-                            filters={"date": ["between", [debut, fin]]},
+                            filters={"date": ["between", [debut, fin]], **registry.filtre_banque()},
                             fields=champs, order_by="`date` asc, name asc",
                             limit_page_length=0)
 

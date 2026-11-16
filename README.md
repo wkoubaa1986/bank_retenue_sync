@@ -3,6 +3,13 @@
 Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing) :
 
 - **Banque Zitouna** — registre des mouvements, identification, solde par capture, frais mensuels ;
+- **BIAT** (depuis le 16/11/2026) — les mouvements du compte BIAT entrent au même registre, chacun
+  portant sa banque (`BRS Bank Movement.banque`). `bank/biat.py` les importe (service
+  `/jobs/biat/mouvements/export`, ou le fichier d'export) et RECONNAÎT chaque ligne : remise de chèques
+  et son numéro de bordereau, commission de la remise, versement d'espèces ; un libellé inconnu sort
+  « à vérifier ». Page « Identification bancaire » : choix de la banque en tête des filtres. Rien
+  n'est créé pour la BIAT (ni écriture ni encaissement) : l'Encaissement Paiement vise encore le
+  compte Zitouna. Tout le reste de l'app ne lit que Zitouna (`registry.BANQUE_DEFAUT`) ;
 - **Retenue à la source (TEJ)** — certificats reçus (ingestion, rapprochement, imputation) et
   **émis** (déclaration d'un certificat fournisseur depuis la facture d'achat, suivi du dépôt) ;
 - **Achats locaux** — contrôle des factures sur scan (OpenAI), retenue 1 %, matricule fournisseur ;
@@ -42,6 +49,7 @@ bench --site <site> execute bank_retenue_sync.patches.politique_achat_local.exec
 # Fonctions pures, sans site :
 python -m unittest bank_retenue_sync.tests.test_achat bank_retenue_sync.tests.test_emis \
   bank_retenue_sync.tests.test_facturation bank_retenue_sync.tests.test_especes \
+  bank_retenue_sync.tests.test_biat \
   bank_retenue_sync.tests.test_rapport
 ```
 

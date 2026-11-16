@@ -230,7 +230,7 @@ def _recharge_carte_importee(depuis) -> bool:
     la carte cinq fois par jour pour rien. La regle `chargement_carte` est posee par la
     classification, qui tourne dans le meme passage, avant cet appel."""
     return bool(frappe.db.exists("BRS Bank Movement", {
-        "regle": "chargement_carte", "premiere_vue": [">=", depuis]}))
+        "regle": "chargement_carte", "premiere_vue": [">=", depuis], "banque": "Zitouna"}))
 
 
 def _hors_perimetre(periode: str, depuis: str) -> bool:
@@ -971,7 +971,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
     # Chaque etape est isolee : son echec n'empeche ni les suivantes ni l'ecriture de frais.
     out["encaissements"] = out["depenses"] = out["contrats"] = out["especes"] = None
     out["declarations"] = out["cnss"] = out["reglements"] = None
-    if frappe.db.count("BRS Bank Movement"):     # registre vide = rien a creer, pas d'exception
+    if frappe.db.count("BRS Bank Movement", {"banque": "Zitouna"}):     # registre vide = rien a creer, pas d'exception
         try:
             out["encaissements"] = process_encaissements(insert=True, refresh=False)
             # Decision utilisateur 2026-08-18 (2e volet) : si l'option « validation automatique »
@@ -1057,7 +1057,7 @@ def run_verification_bancaire(capture_solde=True, ecritures=True):
     # produit rien. La conditionner a `crees` laissait des frais importes par un autre canal
     # sans ecriture jusqu'au prochain run « chanceux ».
     out["ecritures"] = None
-    if frappe.utils.cint(ecritures) and frappe.db.count("BRS Bank Movement"):
+    if frappe.utils.cint(ecritures) and frappe.db.count("BRS Bank Movement", {"banque": "Zitouna"}):
         try:
             out["ecritures"] = fees.process_fees(registry.registry_as_movements(), insert=True)
         except Exception as e:

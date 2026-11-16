@@ -75,8 +75,9 @@ def _noms_par_ecart(choix: str, seuil: float) -> list:
 
 
 def _filters(date_from=None, date_to=None, statut=None, categorie=None, sens=None,
-             search=None, ecart=None) -> tuple:
-    filters, or_filters = {}, None
+             search=None, ecart=None, banque=None) -> tuple:
+    # La banque fait partie de TOUT filtre (Zitouna par defaut) : la page n'additionne jamais deux comptes.
+    filters, or_filters = registry.filtre_banque(banque), None
     if date_from and date_to:
         filters["date"] = ["between", [date_from, date_to]]
     elif date_from:
@@ -100,12 +101,17 @@ def _filters(date_from=None, date_to=None, statut=None, categorie=None, sens=Non
 
 
 @frappe.whitelist()
-def get_filtres() -> dict:
-    """Valeurs disponibles pour les listes deroulantes, et periode par defaut."""
+def get_filtres(banque=None) -> dict:
+    """Valeurs disponibles pour les listes deroulantes, et periode par defaut — pour UNE banque."""
     _guard()
-    cats = frappe.db.get_all(DOCTYPE, fields=["distinct categorie as c"], limit_page_length=0)
-    bornes = frappe.db.sql("select min(`date`), max(`date`) from `tab%s`" % DOCTYPE)[0]
+    banque = registry.filtre_banque(banque)["banque"]
+    cats = frappe.db.get_all(DOCTYPE, filters={"banque": banque}, fields=["distinct categorie as c"], limit_page_length=0)
+    bornes = frappe.db.sql("select min(`date`), max(`date`) from `tab%s` where `banque` = %%s" % DOCTYPE, (banque,))[0]
+    presentes = set(frappe.db.get_all(DOCTYPE, fields=["distinct banque as b"], limit_page_length=0, pluck="b"))
     return {
+        "banque": banque,
+        # Zitouna toujours ; une autre banque des que le registre en porte un mouvement.
+        "banques": [b for b in registry.BANQUES if b == registry.BANQUE_DEFAUT or b in presentes],
         "categories": sorted({r.c for r in cats if r.c}),
         "statuts": ["Identifie", "Identifie non comptabilise", "Orphelin", "A verifier", "Ignore"],
         "sens": ["Debit", "Credit"],
@@ -117,11 +123,11 @@ def get_filtres() -> dict:
 
 @frappe.whitelist()
 def get_data(date_from=None, date_to=None, statut=None, categorie=None, sens=None, search=None,
-             ecart=None, start=0, page_length=100, order_by="date", order_dir="desc") -> dict:
+             ecart=None, start=0, page_length=100, order_by="date", order_dir="desc", banque=None) -> dict:
     """Lignes + KPI. Les KPI portent sur TOUT le filtre, pas sur la page affichee : sinon
     « ce qui reste » ne voudrait rien dire."""
     _guard()
-    filters, or_filters = _filters(date_from, date_to, statut, categorie, sens, search, ecart)
+    filters, or_filters = _filters(date_from, date_to, statut, categorie, sens, search, ecart, banque)
     order_by = order_by if order_by in _SORTABLE else "date"
     order_dir = "asc" if str(order_dir).lower() == "asc" else "desc"
 
@@ -141,7 +147,7 @@ def get_data(date_from=None, date_to=None, statut=None, categorie=None, sens=Non
         kpi.setdefault(a.sens or "Debit", {})[a.statut or "Orphelin"] = {
             "nb": a.nb, "montant": flt(a.tot, 3)}
 
-    asof = frappe.db.sql("select max(`date`) from `tab%s`" % DOCTYPE)[0][0]
+    asof = frappe.db.sql("select max(`date`) from `tab%s` where `banque` = %%s" % DOCTYPE, (filters["banque"],))[0][0]
 
     # Ecarts de paiement au-dela du seuil, sur TOUT le filtre : c'est un compteur d'anomalies,
     # il perdrait son sens s'il ne portait que sur la page affichee.
@@ -151,22 +157,25 @@ def get_data(date_from=None, date_to=None, statut=None, categorie=None, sens=Non
         fields=["name", "ecart"], limit_page_length=0)
     hors_seuil = [e for e in ecarts if abs(flt(e.ecart, 3)) > seuil]
 
-    return {"rows": rows, "total": total, "kpi": kpi, "asof": asof,
+    return {"rows": rows, "total": total, "kpi": kpi, "asof": asof, "banque": filters["banque"],
             "start": frappe.utils.cint(start), "seuil_ecart": seuil,
             "ecarts": {"nb": len(hors_seuil),
                        "montant": flt(sum(abs(flt(e.ecart, 3)) for e in hors_seuil), 3)}}
 
 
 @frappe.whitelist()
-def reclassifier(date_from=None, date_to=None) -> dict:
+def reclassifier(date_from=None, date_to=None, banque=None) -> dict:
     """Rejoue la classification sur le registre. Ne touche pas a la banque : rapide et sans risque."""
     _guard(write=True)
     frappe.only_for("System Manager")
+    if registry.filtre_banque(banque)["banque"] == "BIAT":
+        from bank_retenue_sync.bank import biat
+        return biat.classer_registre(persist=True)
     return C.run(date_from=date_from, date_to=date_to, persist=True)
 
 
 @frappe.whitelist()
-def rafraichir(lookback_days=None) -> dict:
+def rafraichir(lookback_days=None, banque=None) -> dict:
     """Declenche un nouvel export bancaire, l'ajoute au registre, puis reclasse.
 
     Lent (scraping Playwright de plusieurs minutes cote service) et non fatal : si le service est
@@ -174,6 +183,9 @@ def rafraichir(lookback_days=None) -> dict:
     """
     _guard(write=True)
     frappe.only_for("System Manager")
+    if registry.filtre_banque(banque)["banque"] == "BIAT":
+        from bank_retenue_sync.bank import biat
+        return biat.rafraichir(lookback_days=frappe.utils.cint(lookback_days) or None)
     from bank_retenue_sync.bank import movements as mv
 
     out = {"export": None, "erreur": None}
@@ -1134,12 +1146,12 @@ def download_ecarts(date_from=None, date_to=None):
 
 @frappe.whitelist()
 def download_excel(date_from=None, date_to=None, statut=None, categorie=None, sens=None, ecart=None,
-                   search=None):
+                   search=None, banque=None):
     """Export Excel du filtre courant (toutes les lignes, pas seulement la page affichee)."""
     _guard()
     from frappe.utils.xlsxutils import make_xlsx
 
-    filters, or_filters = _filters(date_from, date_to, statut, categorie, sens, search, ecart)
+    filters, or_filters = _filters(date_from, date_to, statut, categorie, sens, search, ecart, banque)
     rows = frappe.db.get_all(DOCTYPE, filters=filters, or_filters=or_filters, fields=_FIELDS,
                              order_by="`date` asc", limit_page_length=0)
     entetes = ["Date", "Sens", "Libellé", "Référence", "Débit", "Crédit", "Catégorie", "Règle",

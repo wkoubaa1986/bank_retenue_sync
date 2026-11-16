@@ -27,6 +27,9 @@ from frappe.utils import flt, getdate
 from bank_retenue_sync.encaissement.pending import BANK_ACCOUNT, COMPANY
 
 DOCTYPE_MOUVEMENT = "BRS Bank Movement"
+# Ce module suit LE compte Zitouna : depuis que le registre porte aussi la BIAT (16/11/2026), chaque
+# lecture le dit (meme valeur que `bank.registry.BANQUE_DEFAUT`).
+BANQUE = "Zitouna"
 
 
 # ------------------------------------------------------------------ ERPNext
@@ -52,7 +55,7 @@ def flux_registre(date_min=None, date_max=None) -> dict:
         filters["date"] = ["<=", getdate(date_max)]
     elif date_min:
         filters["date"] = [">=", getdate(date_min)]
-    rows = frappe.db.get_all(DOCTYPE_MOUVEMENT, filters=filters, limit_page_length=0,
+    rows = frappe.db.get_all(DOCTYPE_MOUVEMENT, filters=dict(filters, banque=BANQUE), limit_page_length=0,
                              fields=["credit", "debit"])
     credits = flt(sum(flt(r.credit) for r in rows), 3)
     debits = flt(sum(flt(r.debit) for r in rows), 3)
@@ -190,7 +193,7 @@ def ecart_par_categorie(date_min=None, date_max=None) -> list:
 
     C'est la liste de travail — ce qui reste a comptabiliser pour que les deux soldes convergent.
     """
-    filters = {"statut": ["!=", "Identifie"], "ignore_manuel": 0}
+    filters = {"statut": ["!=", "Identifie"], "ignore_manuel": 0, "banque": BANQUE}
     if date_min and date_max:
         filters["date"] = ["between", [getdate(date_min), getdate(date_max)]]
     rows = frappe.db.get_all(
@@ -217,15 +220,15 @@ def decomposition_ecart(date_max=None, limite: int = 40) -> dict:
     a les compter deux fois.
     """
     bornes = frappe.db.sql(
-        "select min(`date`), max(`date`) from `tab%s`" % DOCTYPE_MOUVEMENT)[0]
+        "select min(`date`), max(`date`) from `tab%s` where `banque` = %%s" % DOCTYPE_MOUVEMENT, (BANQUE,))[0]
     debut, fin = bornes[0], (getdate(date_max) if date_max else bornes[1])
     if not (debut and fin):
         return {"ecart": None, "postes": [], "lignes": []}
 
     # Flux vus par la BANQUE sur la periode couverte par le registre.
     bq = frappe.db.sql("""select round(sum(credit),3), round(sum(debit),3)
-        from `tab%s` where `date` between %%s and %%s""" % DOCTYPE_MOUVEMENT,
-        (debut, fin))[0]
+        from `tab%s` where `banque` = %%s and `date` between %%s and %%s""" % DOCTYPE_MOUVEMENT,
+        (BANQUE, debut, fin))[0]
     bq_in, bq_out = flt(bq[0], 3), flt(bq[1], 3)
 
     # Flux vus par ERPNext sur le MEME compte et la MEME periode. Sur un compte bancaire,
@@ -262,14 +265,14 @@ def decomposition_ecart(date_max=None, limite: int = 40) -> dict:
     # et il est bel et bien comptabilise.
     lignes = frappe.db.get_all(
         DOCTYPE_MOUVEMENT,
-        filters={"ignore_manuel": 0, "document_type": ["is", "not set"],
+        filters={"ignore_manuel": 0, "document_type": ["is", "not set"], "banque": BANQUE,
                  "date": ["between", [debut, fin]]},
         fields=["name as cle", "date", "reference", "operation", "sens", "montant",
                 "categorie", "statut", "raison"],
         order_by="montant desc", limit_page_length=limite)
 
     ecarts = frappe.db.get_all(
-        DOCTYPE_MOUVEMENT, filters={"ignore_manuel": 0, "ecart": ["!=", 0]},
+        DOCTYPE_MOUVEMENT, filters={"ignore_manuel": 0, "ecart": ["!=", 0], "banque": BANQUE},
         fields=["name as cle", "date", "reference", "operation", "sens", "montant",
                 "montant_document", "ecart"],
         order_by="abs(ecart) desc", limit_page_length=limite)
@@ -466,7 +469,7 @@ def solde_derive(date_max=None) -> dict | None:
     if not coupure:
         return None
     f = flux_registre(date_min=add_days(getdate(coupure), 1), date_max=date_max)
-    dernier_mvt = frappe.db.get_all(DOCTYPE_MOUVEMENT, limit_page_length=1,
+    dernier_mvt = frappe.db.get_all(DOCTYPE_MOUVEMENT, filters={"banque": BANQUE}, limit_page_length=1,
                                     order_by="date desc", fields=["date"])
     return {
         "solde_calcule": flt(flt(ancre.solde_banque) + f["net"], 3),

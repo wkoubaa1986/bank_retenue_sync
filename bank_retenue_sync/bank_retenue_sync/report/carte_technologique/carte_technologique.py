@@ -72,13 +72,13 @@ def _mouvements(compte: str, filters) -> list:
     # Une recharge est rapprochee si un mouvement du releve pointe son ecriture. C'est le seul
     # controle possible ici : les depenses n'ont pas de contrepartie bancaire.
     rapproches = set(frappe.db.get_all(
-        "BRS Bank Movement", filters={"document_name": ["in", [r.voucher_no for r in rows]]},
+        "BRS Bank Movement", filters={"document_name": ["in", [r.voucher_no for r in rows]], "banque": "Zitouna"},
         pluck="document_name"))
     # ⚠️ Hors de la periode du registre, l'absence de rapprochement ne prouve RIEN : le releve
     # ne remonte pas jusque-la. Sans cette borne, 18 recharges de 2024-2025 ressortaient en
     # alerte rouge alors qu'elles sont simplement anterieures a l'import.
     debut, fin = frappe.db.sql(
-        "select min(`date`), max(`date`) from `tabBRS Bank Movement`")[0]
+        "select min(`date`), max(`date`) from `tabBRS Bank Movement` where `banque` = 'Zitouna'")[0]
 
     # Le solde progressif est calcule sur TOUTE l'histoire du compte, meme si un filtre de date
     # masque le debut : un solde qui repartirait de zero au 1er du mois serait faux.

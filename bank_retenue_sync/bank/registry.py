@@ -32,6 +32,23 @@ from frappe.utils import flt, now_datetime
 
 DOCTYPE = "BRS Bank Movement"
 
+# UNE LIGNE = UN MOUVEMENT D'UNE BANQUE (16/11/2026 : la BIAT rejoint Zitouna).
+# Tout le code historique — rapprochements, frais, solde, dossier mensuel — raisonne sur LE compte
+# Zitouna. Il continue de ne voir que lui : chaque lecture du registre porte la banque, et la valeur
+# par defaut est Zitouna. Une autre banque se lit en la nommant, jamais par accident.
+BANQUE_DEFAUT = "Zitouna"
+BANQUES = (BANQUE_DEFAUT, "BIAT")
+#: Condition SQL pour les requetes ecrites a la main sur le registre (valeur fixe, pas une saisie).
+SQL_BANQUE_DEFAUT = "`banque` = '%s'" % BANQUE_DEFAUT
+
+
+def filtre_banque(banque: str = None) -> dict:
+    """Le filtre `get_all` d'une banque (Zitouna par defaut). Refuse un nom inconnu."""
+    banque = banque or BANQUE_DEFAUT
+    if banque not in BANQUES:
+        frappe.throw(f"Banque inconnue : {banque}")
+    return {"banque": banque}
+
 # Champs poses par la classification. Regroupes ici parce que `apply_classifications` doit pouvoir
 # les remettre a zero quand un mouvement cesse d'etre reconnu (une regle retiree, par exemple).
 CLASSIFICATION_FIELDS = (
@@ -47,10 +64,14 @@ HUMAN_FIELDS = ("ignore_manuel", "ignore_motif", "note",
 DOCTYPES_RATTACHABLES = ("Journal Entry", "Payment Entry")
 
 
-def movement_key(m: dict) -> str:
-    """Empreinte stable d'un mouvement : sha1 tronque de (date, reference, debit, credit)."""
+def movement_key(m: dict, banque: str = None) -> str:
+    """Empreinte stable d'un mouvement : sha1 tronque de (date, reference, debit, credit).
+    Pour une autre banque que Zitouna, son nom entre dans l'empreinte : deux banques peuvent porter
+    le meme jour la meme reference et le meme montant sans se confondre. Les cles Zitouna, elles,
+    ne changent pas."""
     d = m.get("date")
-    payload = "%s|%s|%.3f|%.3f" % (
+    prefixe = "" if (banque or BANQUE_DEFAUT) == BANQUE_DEFAUT else banque + "|"
+    payload = prefixe + "%s|%s|%.3f|%.3f" % (
         d.isoformat() if hasattr(d, "isoformat") else (str(d or "")),
         (m.get("reference") or "").strip().upper(),
         flt(m.get("debit"), 3),
@@ -59,7 +80,7 @@ def movement_key(m: dict) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
 
 
-def assign_keys(movements: list) -> list:
+def assign_keys(movements: list, banque: str = None) -> list:
     """Rend [(cle, mouvement), ...] en desambiguisant les lignes STRICTEMENT identiques.
 
     Un releve peut porter deux fois la meme operation le meme jour pour le meme montant et la meme
@@ -69,7 +90,7 @@ def assign_keys(movements: list) -> list:
     seen = Counter()
     out = []
     for m in movements:
-        base = movement_key(m)
+        base = movement_key(m, banque)
         seen[base] += 1
         n = seen[base]
         out.append((base if n == 1 else f"{base}-{n}", m))
@@ -95,7 +116,8 @@ def _row_values(cle: str, m: dict) -> dict:
     }
 
 
-def upsert_movements(movements: list, snapshot_run: str = None, origine: str = "export") -> dict:
+def upsert_movements(movements: list, snapshot_run: str = None, origine: str = "export",
+                     banque: str = None) -> dict:
     """Insere les mouvements inconnus, rafraichit la trace de vue des connus.
 
     IDEMPOTENT. Sur une ligne deja connue, seuls `dernier_import` et `snapshot_run` bougent :
@@ -104,7 +126,8 @@ def upsert_movements(movements: list, snapshot_run: str = None, origine: str = "
 
     Retourne {"crees", "revus", "cles"}.
     """
-    pairs = assign_keys(movements)
+    banque = filtre_banque(banque)["banque"]
+    pairs = assign_keys(movements, banque)
     if not pairs:
         return {"crees": 0, "revus": 0, "cles": []}
 
@@ -131,6 +154,7 @@ def upsert_movements(movements: list, snapshot_run: str = None, origine: str = "
             continue
         doc = frappe.new_doc(DOCTYPE)
         doc.update(_row_values(cle, m))
+        doc.banque = banque
         doc.statut = "Orphelin"          # tant que la classification n'est pas passee
         doc.origine = origine
         doc.snapshot_run = snapshot_run
@@ -172,14 +196,16 @@ def apply_classifications(classifications: list, snapshot_run: str = None) -> di
     return {"maj": maj, "ignores": ignores, "absents": absents}
 
 
-def registry_as_movements(date_from=None, date_to=None, categorie=None, sens=None) -> list:
+def registry_as_movements(date_from=None, date_to=None, categorie=None, sens=None, banque=None) -> list:
     """Rend les lignes du registre AU FORMAT DICT NU de `bank/movements.py`.
 
     C'est la brique qui rend tout le code existant (matching, especes, classify, engine) utilisable
     HORS LIGNE : sans tej-bank-service joignable, le registre devient la source de mouvements.
     Indispensable ici, ou le microservice tourne dans un autre devcontainer.
+
+    `banque` : Zitouna par defaut — tous les flux historiques lisent ici et ne doivent voir qu'elle.
     """
-    filters = {}
+    filters = filtre_banque(banque)
     if date_from:
         filters.setdefault("date", ["between", [date_from, date_to or "2999-12-31"]])
     elif date_to:
@@ -251,9 +277,9 @@ def pieces_du_lien(valeur) -> list:
     return out
 
 
-def liens_manuels() -> dict:
+def liens_manuels(banque: str = None) -> dict:
     """{cle: {"pieces": [{doctype, name}], "motif", "par"}} des mouvements rattaches a la main."""
-    rows = frappe.db.get_all(DOCTYPE, filters={"lien_manuel": 1}, limit_page_length=0,
+    rows = frappe.db.get_all(DOCTYPE, filters={"lien_manuel": 1, **filtre_banque(banque)}, limit_page_length=0,
                              fields=["name", "lien_pieces", "lien_motif", "lien_par"])
     return {r.name: {"pieces": pieces_du_lien(r.lien_pieces), "motif": r.lien_motif or "",
                      "par": r.lien_par or ""}

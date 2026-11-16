@@ -292,7 +292,7 @@ def _ordered_windows(last_movement_date=None) -> tuple:
 def _last_registered_date():
     """Date du dernier mouvement au registre, None si registre vide ou table absente."""
     try:
-        return frappe.db.sql("select max(date) from `tabBRS Bank Movement`")[0][0]
+        return frappe.db.sql("select max(date) from `tabBRS Bank Movement` where `banque` = 'Zitouna'")[0][0]
     except Exception:
         return None
 

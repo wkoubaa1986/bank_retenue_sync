@@ -183,7 +183,7 @@ def _deja_comptabilise(row: dict, m: dict, reference_je: str, context) -> str:
     if ref_banque:
         lie = frappe.db.get_value(
             "BRS Bank Movement",
-            {"reference": ref_banque, "document_name": ["is", "set"]},
+            {"reference": ref_banque, "document_name": ["is", "set"], "banque": "Zitouna"},
             "document_name")
         if lie:
             return lie

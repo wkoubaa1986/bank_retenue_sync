@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "cle",
+  "banque",
   "date",
   "date_valeur",
   "column_break_head",
@@ -56,6 +57,18 @@
    "read_only": 1,
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "banque",
+   "fieldtype": "Data",
+   "label": "Banque",
+   "default": "Zitouna",
+   "reqd": 1,
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "in_list_view": 1,
+   "search_index": 1,
+   "description": "Le compte bancaire d’où vient ce mouvement. Zitouna pour tout ce qui précède le 16/11/2026."
   },
   {
    "fieldname": "date",
