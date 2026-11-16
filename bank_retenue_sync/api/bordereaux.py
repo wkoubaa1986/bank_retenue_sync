@@ -31,6 +31,10 @@ NATURES_LUES = ("Chèques", "Traites")
 LECTURE_EN_ATTENTE, LECTURE_LUE, LECTURE_ECHEC = "En attente", "Lue", "Échec"
 ETAT_TROUVE, ETAT_A_VERIFIER, ETAT_INTROUVABLE = "Trouvé", "À vérifier", "Introuvable"
 TOLERANCE = 0.0005
+#: Ecart de montant TOLERE entre le bordereau et le paiement d'une meme piece : en dessous, c'est un arrondi
+#: (cheque fait sur le total exact, paiement saisi sur le total arrondi : 0,247 sur le bordereau BIAT
+#: 7473685), pas quelque chose a signaler. Meme seuil que `encaissement.matching.TOLERANCE_PAIEMENT`.
+ECART_TOLERE = 1.0
 #: Ecart de montant au-dela duquel deux numeros voisins ne sont plus « la meme piece mal lue ».
 ECART_VOISIN = 5.0
 
@@ -128,7 +132,8 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
 
     L'ordre des passes compte : tout ce qui est SUR (numero exact) est servi avant ce qui est probable,
     pour qu'un rapprochement approche ne prenne pas le paiement d'une autre ligne.
-      1. meme numero — « Trouvé » si le montant est le meme, « À vérifier » sinon (l'ecart est montre) ;
+      1. meme numero — « Trouvé » si le montant est le meme ou a moins de `ECART_TOLERE` (un arrondi : il
+         est note, pas signale), « À vérifier » sinon (l'ecart est montre) ;
       2. numero different d'un seul chiffre ET meme montant — « Trouvé », la difference est dite ;
       3. un seul paiement du portefeuille a exactement ce montant — « À vérifier » ;
       4. numero voisin, montant proche — « À vérifier » ;
@@ -162,6 +167,8 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
                          + ", ".join(c["name"] for c in memes) + "), aucun au montant lu")
         elif piece.get("montant") is None:
             prendre(piece, memes[0], ETAT_TROUVE, "montant non lu sur le bordereau")
+        elif abs(float(piece["montant"]) - float(memes[0].get("montant") or 0)) <= ECART_TOLERE:
+            prendre(piece, memes[0], ETAT_TROUVE, "petit écart de montant, toléré : " + ecart(piece, memes[0]))
         else:
             prendre(piece, memes[0], ETAT_A_VERIFIER, "montant différent : " + ecart(piece, memes[0]))
 
@@ -210,7 +217,8 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
         memes.sort(key=lambda c: not _egaux(piece.get("montant"), c.get("montant")))
         if memes:
             c = memes[0]
-            juste = piece.get("montant") is None or _egaux(piece.get("montant"), c.get("montant"))
+            juste = piece.get("montant") is None \
+                or abs(float(piece["montant"]) - float(c.get("montant") or 0)) <= ECART_TOLERE
             piece.update(etat=ETAT_TROUVE if juste else ETAT_A_VERIFIER, paiement=c["name"], client=c.get("client"),
                          montant_erp=round(float(c.get("montant") or 0), 3),
                          remarque=f"plus dans le portefeuille : paiement sur « {c.get('compte') or '?'} »"
@@ -286,7 +294,12 @@ def message_d_echec(erreur: Exception) -> str:
 def bilan(pieces: list, lecture: dict = None, saisi: dict = None, nature: str = "Chèques") -> dict:
     """Le resultat en une ligne (`resume`) et ce qu'il faut regarder (`remarques`). Pur.
     `lecture` : {numero, total, nombre} lus sur le scan ; `saisi` : {numero, montant_total, nombre} de la
-    fiche. -> {resume, remarques: [str], trouves, a_verifier, introuvables}"""
+    fiche. -> {resume, remarques: [str], signalements: [str], trouves, a_verifier, introuvables}
+
+    Deux lecteurs, deux listes. `signalements` s'adresse a la PERSONNE QUI REMET LE BORDEREAU (demande du
+    16/11/2026 : « il ne faut pas l'embrouiller, l'idee est de dire tout est bon ou pas ») : vide, tout est
+    bon ; sinon une phrase simple par chose a signaler. `remarques` garde le detail pour qui controle
+    (ecart de total, numero lu different, doute de l'IA)."""
     lecture, saisi = lecture or {}, saisi or {}
     mot = "traite" if nature == "Traites" else "chèque"
     feminin = nature == "Traites"
@@ -330,7 +343,26 @@ def bilan(pieces: list, lecture: dict = None, saisi: dict = None, nature: str = 
     if any(p.get("doute") and p.get("etat") == ETAT_INTROUVABLE for p in pieces):
         # Une ligne « à vérifier » dit deja son ecart ; c'est pour l'introuvable qu'un chiffre mal lu est la piste.
         remarques.append("L’IA hésite sur un chiffre d’une ligne introuvable : comparez avec le scan, corrigez sur la fiche.")
-    return {"resume": resume, "remarques": remarques, "trouves": compte[ETAT_TROUVE],
+    signalements = []
+    for p in pieces:
+        numero = f"{mot.capitalize()} n° {p.get('numero') or '?'}"
+        if p.get("etat") == ETAT_INTROUVABLE:
+            signalements.append(numero + (f" ({_dt(p['montant'])})" if p.get("montant") is not None else "")
+                                + " : pas trouvé dans ERPNext.")
+        elif p.get("etat") == ETAT_A_VERIFIER:
+            if p.get("paiement") and p.get("montant") is not None and p.get("montant_erp") is not None \
+                    and not _egaux(p["montant"], p["montant_erp"]) and "numéro" not in (p.get("remarque") or ""):
+                signalements.append(f"{numero} : {_dt(p['montant'])} sur le bordereau, {_dt(p['montant_erp'])} dans ERPNext.")
+            else:
+                signalements.append(f"{numero} : à vérifier ({p.get('remarque') or 'rapprochement incertain'}).")
+    if not n:
+        signalements.append("Aucune pièce lue sur ce bordereau.")
+    elif total is not None and not _egaux(somme, total):
+        signalements.append(f"Le total écrit sur le bordereau ({_dt(total)}) ne correspond pas à la somme des "
+                            f"montants ({_dt(somme)}).")
+    if n and lecture.get("nombre") is not None and int(lecture["nombre"]) != n:
+        signalements.append(f"Le bordereau annonce {int(lecture['nombre'])} pièce(s), {n} sont écrites.")
+    return {"resume": resume, "remarques": remarques, "signalements": signalements, "trouves": compte[ETAT_TROUVE],
             "a_verifier": compte[ETAT_A_VERIFIER], "introuvables": compte[ETAT_INTROUVABLE]}
 
 
@@ -384,7 +416,7 @@ def recents(limite: int = 12) -> list:
     frappe.has_permission(DOCTYPE, "read", throw=True)
     return frappe.get_list(DOCTYPE, fields=["name", "banque", "nature", "numero", "date_remise", "montant_total",
                                             "fichier", "remis_par", "creation", "lecture_statut", "lecture_resume",
-                                            "total_lu"],
+                                            "total_lu", "nombre_lu", "a_signaler"],
                            order_by="date_remise desc, creation desc", limit_page_length=min(frappe.utils.cint(limite) or 12, 50))
 
 
@@ -396,7 +428,7 @@ def lancer_lecture(name: str):
     """Met la lecture du bordereau en file d'attente. Ne leve jamais : collecter passe avant tout."""
     try:
         frappe.db.set_value(DOCTYPE, name, {"lecture_statut": LECTURE_EN_ATTENTE, "lecture_resume": None,
-                                            "lecture_message": None}, update_modified=False)
+                                            "lecture_message": None, "a_signaler": None}, update_modified=False)
         frappe.enqueue("bank_retenue_sync.api.bordereaux.lire", queue="default", timeout=600,
                        enqueue_after_commit=True, bordereau=name)
     except Exception:
@@ -459,6 +491,7 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
     doc.lecture_statut = LECTURE_LUE
     doc.lecture_resume = etat["resume"]
     doc.lecture_message = "\n".join(list(avant) + etat["remarques"]) or None
+    doc.a_signaler = "\n".join(etat["signalements"]) or None
     doc.flags.ignore_permissions = True
     doc.save()
     return etat
@@ -533,6 +566,7 @@ def detail(name: str) -> dict:
             "date_remise": doc.date_remise, "fichier": doc.fichier, "montant_total": doc.montant_total,
             "lecture_statut": doc.lecture_statut, "lecture_resume": doc.lecture_resume,
             "lecture_message": doc.lecture_message, "total_lu": doc.total_lu, "nombre_lu": doc.nombre_lu,
+            "a_signaler": doc.a_signaler,
             "modifiable": bool(doc.has_permission("write")),
             "pieces": [{champ: ligne.get(champ) for champ in
                         ("numero", "banque", "tireur", "echeance", "montant", "doute", "etat", "paiement", "client",

@@ -57,13 +57,34 @@ class TestRapprochement(unittest.TestCase):
         self.assertEqual((r[0]["etat"], r[0]["paiement"]), ("Trouvé", "PE-767"))
         self.assertIn("lu 4001764, ERPNext 4001767", r[0]["remarque"])
         self.assertEqual((r[1]["etat"], r[1]["paiement"], r[1]["remarque"]), ("Trouvé", "PE-066", ""))
-        # Le bon numero, pas le bon montant : l'ecart est montre, rien n'est tranche.
-        self.assertEqual((r[2]["etat"], r[2]["paiement"], r[2]["montant_erp"]), ("À vérifier", "PE-167", 1694.88))
+        # Le bon numero, 0,247 d'ecart : un arrondi (cheque sur le total exact, paiement sur le total arrondi).
+        # Trouve, l'ecart est note pour qui controle — et rien n'est signale a la personne qui remet.
+        self.assertEqual((r[2]["etat"], r[2]["paiement"], r[2]["montant_erp"]), ("Trouvé", "PE-167", 1694.88))
+        self.assertIn("toléré", r[2]["remarque"])
         self.assertIn("écart 0,247", r[2]["remarque"])
         etat = B.bilan(r, {"numero": "7473685", "total": 3010.127, "nombre": 3}, {"numero": "7473685"})
-        self.assertEqual(etat["resume"], "3 chèques : 2 trouvés, 1 à vérifier")
-        self.assertEqual(len(etat["remarques"]), 1)                       # l'ecart, et rien d'autre
+        self.assertEqual(etat["resume"], "3 chèques : tous trouvés")
+        self.assertEqual(etat["signalements"], [])                        # tout est bon
+        self.assertEqual(len(etat["remarques"]), 1)                       # l'ecart de total, pour le controle
         self.assertIn("3 009,880 dans ERPNext, le bordereau 3 010,127 : écart de 0,247", etat["remarques"][0])
+
+    def test_ce_qui_est_signale_a_la_personne_qui_remet(self):
+        lues = [{"numero": "4001767", "montant": 275.0},                  # 5 DT de trop : ce n'est plus un arrondi
+                {"numero": "5555555", "montant": 12.0},                   # inconnu
+                {"numero": "4001066", "montant": 1045.0}]
+        r = B.rapprocher(lues, self.PORTEFEUILLE)
+        self.assertEqual([p["etat"] for p in r], ["À vérifier", "Introuvable", "Trouvé"])
+        etat = B.bilan(r, {"total": 1400.0, "nombre": 4})
+        self.assertEqual(etat["signalements"], [
+            "Chèque n° 4001767 : 275,000 sur le bordereau, 270,000 dans ERPNext.",
+            "Chèque n° 5555555 (12,000) : pas trouvé dans ERPNext.",
+            "Le total écrit sur le bordereau (1 400,000) ne correspond pas à la somme des montants (1 332,000).",
+            "Le bordereau annonce 4 pièce(s), 3 sont écrites."])
+        self.assertEqual(B.bilan([])["signalements"], ["Aucune pièce lue sur ce bordereau."])
+        par_montant = B.bilan(B.rapprocher([{"numero": "1234567", "montant": 581.0}], self.PORTEFEUILLE))
+        self.assertTrue(par_montant["signalements"][0].startswith("Chèque n° 1234567 : à vérifier (aucun paiement ne porte"))
+        self.assertTrue(B.bilan(B.rapprocher([{"numero": "9", "montant": 1.0}], []), nature="Traites")["signalements"][0]
+                        .startswith("Traite n° 9 (1,000)"))
 
     def test_tous_trouves_et_zeros_de_tete(self):
         r = B.rapprocher([{"numero": "88", "montant": 581.0}, {"numero": "04001066", "montant": 1045.0}], self.PORTEFEUILLE)

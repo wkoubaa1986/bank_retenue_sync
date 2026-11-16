@@ -25,7 +25,10 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   « Modèle IA de lecture des bordereaux », gpt-6.1-sol par défaut), liste les chèques ou les traites
   et cherche chacun parmi les paiements d'ERPNext (`api/bordereaux.rapprocher` : même numéro, numéro
   à un chiffre près avec le même montant, montant unique du portefeuille, pièce déjà sortie du
-  portefeuille). Chaque ligne sort « Trouvé », « À vérifier » (l'écart est dit) ou « Introuvable ».
+  portefeuille). Chaque ligne sort « Trouvé », « À vérifier » (l'écart est dit) ou « Introuvable » ;
+  un écart de montant sous 1 DT sur le bon numéro est un arrondi : noté, pas signalé. La personne qui
+  remet le bordereau ne voit qu'un verdict — « Tout est bon » ou « À signaler », avec une phrase par
+  chose à signaler (champ `a_signaler`) ; le détail pièce par pièce est réservé au contrôle.
   C'est un contrôle : rien n'est comptabilisé, une lecture ratée laisse le bordereau collecté, et
   l'on peut corriger une ligne sur la fiche puis « Revérifier dans ERPNext ». L'identification d'une
   remise BIAT reprend ce résultat dans sa raison ;

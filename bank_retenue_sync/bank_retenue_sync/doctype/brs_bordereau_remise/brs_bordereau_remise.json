@@ -21,6 +21,7 @@
   "lecture_le",
   "lecture_modele",
   "sb_pieces_2",
+  "a_signaler",
   "lecture_message",
   "pieces",
   "sb_suivi",
@@ -148,6 +149,14 @@
    "fieldtype": "Section Break"
   },
   {
+   "fieldname": "a_signaler",
+   "fieldtype": "Small Text",
+   "label": "À signaler",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Ce que la personne qui a remis le bordereau voit à la caisse. Vide : tout est bon."
+  },
+  {
    "fieldname": "lecture_message",
    "fieldtype": "Small Text",
    "label": "Remarques de la lecture",
@@ -186,7 +195,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-16 17:00:00.000000",
+ "modified": "2026-11-16 19:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Bordereau Remise",
