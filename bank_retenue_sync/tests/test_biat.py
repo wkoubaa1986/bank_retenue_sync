@@ -281,6 +281,28 @@ class TestVirementRecu(unittest.TestCase):
         self.assertEqual((brouillon["statut"], brouillon["document_name"]), ("Identifie non comptabilise", "ENC-X"))
 
 
+class TestRemiseSansBordereau(unittest.TestCase):
+    CHEQUES = [{"name": "PE-088", "montant": 581.0}, {"name": "PE-259", "montant": 1523.125},
+               {"name": "PE-A", "montant": 3000.0}, {"name": "PE-B", "montant": 3000.0}, {"name": "PE-C", "montant": 798.0}]
+
+    def test_le_montant_designe_le_cheque(self):
+        self.assertEqual(biat.proposer_cheques(581.0, self.CHEQUES), ["PE-088"])
+        self.assertEqual(biat.proposer_cheques(1523.125, self.CHEQUES), ["PE-259"])
+
+    def test_deux_cheques_au_meme_montant_on_ne_choisit_pas(self):
+        self.assertEqual(biat.proposer_cheques(3000.0, self.CHEQUES), [])
+
+    def test_combinaison_unique(self):
+        self.assertEqual(sorted(biat.proposer_cheques(2104.125, self.CHEQUES)), ["PE-088", "PE-259"])
+        self.assertEqual(sorted(biat.proposer_cheques(2902.125, self.CHEQUES)), ["PE-088", "PE-259", "PE-C"])
+        # 3 581 = PE-A + PE-088 ou PE-B + PE-088 : deux combinaisons, pas de proposition.
+        self.assertEqual(biat.proposer_cheques(3581.0, self.CHEQUES), [])
+
+    def test_rien_ne_tombe(self):
+        self.assertEqual(biat.proposer_cheques(123.456, self.CHEQUES), [])
+        self.assertEqual(biat.proposer_cheques(581.0, []), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

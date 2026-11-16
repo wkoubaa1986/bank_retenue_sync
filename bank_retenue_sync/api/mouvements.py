@@ -218,7 +218,29 @@ def reactiver(cles) -> dict:
     cles = json.loads(cles) if isinstance(cles, str) and cles.startswith("[") else cles
     n = registry.marquer_ignore(cles, ignore=False)
     C.run(persist=True)
+    if frappe.db.exists(DOCTYPE, {"name": ["in", cles if isinstance(cles, list) else [cles]], "banque": "BIAT"}):
+        # Une ligne BIAT reactivee se reclasse avec les regles de SA banque (le classement ci-dessus est Zitouna).
+        from bank_retenue_sync.bank import biat
+        biat.classer_registre(persist=True)
     return {"maj": n}
+
+
+@frappe.whitelist()
+def biat_cheques_pour_remise(cle) -> dict:
+    """Remise de cheques BIAT sans bordereau : les cheques du portefeuille, et ceux que le montant designe."""
+    _guard()
+    from bank_retenue_sync.bank import biat
+    return biat.cheques_pour_remise(cle)
+
+
+@frappe.whitelist()
+def biat_encaisser_remise(cle, paiements) -> dict:
+    """Encaisse a la main une remise de cheques BIAT : la personne a designe les cheques qui la composent."""
+    _guard(write=True)
+    frappe.only_for(("System Manager", "Accounts Manager", "Accounts User"))
+    from bank_retenue_sync.bank import biat
+    paiements = json.loads(paiements) if isinstance(paiements, str) else paiements
+    return biat.encaisser_remise_manuelle(cle, paiements)
 
 
 # ------------------------------------------------------------ rattachement manuel (06/10/2026)

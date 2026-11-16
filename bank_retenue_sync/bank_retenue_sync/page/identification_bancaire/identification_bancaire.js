@@ -218,6 +218,9 @@ class IdentificationBancaire {
     this.$root.on("click", "[data-ignorer]", (e) =>
       this._ignorer($(e.currentTarget).attr("data-ignorer"))
     );
+    this.$root.on("click", "[data-remise-biat]", (e) =>
+      this._remise_biat($(e.currentTarget).attr("data-remise-biat"))
+    );
     this.$root.on("click", "[data-reactiver]", (e) =>
       this._reactiver($(e.currentTarget).attr("data-reactiver"))
     );
@@ -772,6 +775,66 @@ class IdentificationBancaire {
         ${s.robot ? "" : `<span class="note">relevé automatique pas encore activé : solde calculé d’après les mouvements importés</span>`}
       </div>
     `);
+  }
+
+  /* Remise de chèques BIAT SANS BORDEREAU : la personne désigne les chèques du portefeuille qui la
+     composent ; ceux que le montant désigne à lui seul sont déjà cochés. L'encaissement est créé avec la
+     banque de dépôt BIAT et soumis — même contrôle que le flux automatique (1 DT d'écart par chèque). */
+  async _remise_biat(cle) {
+    const r = await frappe.call({ method: this._m("biat_cheques_pour_remise"), args: { cle }, freeze: true });
+    const m = r.message || {};
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => format_number(v || 0, null, 3);
+    const coches = new Set(m.proposes || []);
+    const d = new frappe.ui.Dialog({
+      title: __("Remise de chèques BIAT n° {0} — encaisser sans bordereau", [m.numero]),
+      size: "large",
+      fields: [{ fieldtype: "HTML", fieldname: "corps" }],
+      primary_action_label: __("Encaisser ces chèques"),
+      primary_action: () => {
+        if (!coches.size) { frappe.msgprint(__("Cochez au moins un chèque.")); return; }
+        frappe.call({ method: this._m("biat_encaisser_remise"), args: { cle, paiements: JSON.stringify([...coches]) },
+                      freeze: true, freeze_message: __("Encaissement…") }).then((x) => {
+          const e = x.message || {};
+          d.hide();
+          frappe.show_alert({ indicator: "green", message: __("Remise encaissée : {0}", [e.encaissement]) + (Math.abs(flt(e.ecart, 3)) > 0.0005 ? " · " + __("écart {0}", [nb(e.ecart)]) : "") });
+          this.load();
+          this._load_solde_biat();
+        });
+      },
+    });
+    const total = () => (m.cheques || []).filter((c) => coches.has(c.name)).reduce((t, c) => t + flt(c.montant, 3), 0);
+    const pied = () => {
+      const t = flt(total(), 3), ecart = flt(flt(m.credit, 3) - t, 3), limite = flt(m.tolerance, 3) * Math.max(coches.size, 1);
+      const bon = coches.size && Math.abs(ecart) <= limite + 0.0005;
+      d.$body.find("[data-pied]").html(`${__("Sélection")} : <b>${coches.size}</b> ${__("chèque(s)")} · <b>${nb(t)}</b>
+        · ${__("crédit de la banque")} <b>${nb(m.credit)}</b> · ${__("écart")} <b style="color:${bon ? "#1a7f37" : "#c0392b"}">${nb(ecart)}</b>
+        ${bon ? "" : `<span class="text-muted">(${__("toléré : {0} par chèque", [nb(m.tolerance)])})</span>`}`);
+      d.get_primary_btn().prop("disabled", !bon);
+    };
+    const lignes = (m.cheques || []).map((c) => `<tr>
+        <td style="width:30px"><input type="checkbox" data-pe="${esc(c.name)}" ${coches.has(c.name) ? "checked" : ""}></td>
+        <td style="white-space:nowrap">${esc(c.reference || c.numero || "")}</td><td>${esc(c.client || "")}</td>
+        <td style="text-align:right;white-space:nowrap">${nb(c.montant)}</td>
+        <td style="white-space:nowrap">${c.date ? frappe.datetime.str_to_user(c.date) : ""}</td>
+        <td><a href="/app/payment-entry/${encodeURIComponent(c.name)}" target="_blank">${esc(c.name)}</a></td></tr>`).join("");
+    d.fields_dict.corps.$wrapper.html(`<div style="font-size:13px">
+      <p>${__("La banque a crédité <b>{0}</b> le {1} pour cette remise. Cochez les chèques du portefeuille qui la composent.", [nb(m.credit), frappe.datetime.str_to_user(m.date)])}
+        ${(m.proposes || []).length ? `<br><span style="color:#1a7f37">${__("Le montant désigne déjà {0} chèque(s) : ils sont cochés.", [m.proposes.length])}</span>`
+          : `<br><span class="text-muted">${__("Aucun chèque (ni combinaison unique) ne tombe sur ce montant : à vous de choisir.")}</span>`}
+        ${m.bordereau ? `<br><span class="text-muted">${__("Un bordereau est collecté pour cette remise ({0}) : il a quelque chose à signaler, voyez sa fiche.", [esc(m.bordereau)])}</span>` : ""}</p>
+      <div style="max-height:46vh;overflow:auto;border:1px solid var(--border-color);border-radius:6px">
+        <table class="table table-bordered" style="font-size:12px;margin:0"><thead><tr><th></th><th>${__("Chèque")}</th><th>${__("Client")}</th>
+          <th style="text-align:right">${__("Montant")}</th><th>${__("Date")}</th><th>${__("Paiement")}</th></tr></thead>
+          <tbody>${lignes || `<tr><td colspan="6" class="text-muted">${__("Aucun chèque en portefeuille.")}</td></tr>`}</tbody></table></div>
+      <div data-pied style="margin-top:10px"></div></div>`);
+    d.fields_dict.corps.$wrapper.on("change", "input[data-pe]", (e) => {
+      const pe = $(e.currentTarget).attr("data-pe");
+      if (e.currentTarget.checked) coches.add(pe); else coches.delete(pe);
+      pied();
+    });
+    d.show();
+    pied();
   }
 
   _decomposer_biat() {
@@ -1540,6 +1603,10 @@ class IdentificationBancaire {
     if (this._autre_banque()) {
       // Les rattachements, écritures et encaissements de cette page sont écrits pour le compte Zitouna :
       // pour une autre banque, on lit et on écarte, rien de plus pour l'instant.
+      // Remise de chèques pas encore encaissée : on peut désigner ses chèques à la main, sans bordereau.
+      if (r.regle === "enc_cheque" && !r.ignore_manuel && ["Orphelin", "A verifier"].includes(r.statut)) {
+        b.push(`<button data-remise-biat="${esc(r.cle)}" title="${__("Désigner les chèques de cette remise : l'encaissement est créé et soumis")}">Encaisser sans bordereau</button>`);
+      }
       b.push(r.ignore_manuel ? `<button data-reactiver="${esc(r.cle)}">Réactiver</button>`
         : `<button data-ignorer="${esc(r.cle)}">Ignorer</button>`);
       return `<div class="ib-act">${b.join("")}</div>`;

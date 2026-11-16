@@ -43,6 +43,11 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   si « Relevé BIAT automatique » est coché). Tolérance : 1 DT par chèque entre le crédit de la
   banque et les paiements ; l'écart est tracé (« Toléré ») et affiché sur la ligne. Ce qui n'est pas
   sûr n'est pas encaissé, et la raison se lit sur la ligne (« pas encaissé : … ») ;
+- **Remise BIAT sans bordereau** — sur la ligne d'une remise de chèques pas encore encaissée, le bouton
+  « Encaisser sans bordereau » liste les chèques du portefeuille, coche ceux que le montant désigne
+  (`bank/biat.proposer_cheques` : chèque seul à ce montant, ou combinaison unique), et crée
+  l'Encaissement Paiement (banque de dépôt BIAT, soumis) avec les mêmes contrôles que le flux
+  automatique (`encaisser_remise_manuelle`) ;
 - **Virements reçus à la BIAT** — même logique que Zitouna, même code (`bank/biat.encaisser_virements`) :
   le client est identifié sur le libellé (noms appris des virements des deux banques, alias,
   ressemblance, IA), le montant est réparti sur ses dettes (exacte, sous-ensemble, FIFO partiel), un

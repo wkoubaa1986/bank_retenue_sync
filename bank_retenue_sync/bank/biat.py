@@ -427,6 +427,35 @@ def resume_solde(lignes: list, erpnext: float, lu: dict = None) -> dict:
             "inexplique": _m(ecart - net_attente - total_petits - hors_registre - net_ignores) + 0.0}   # jamais « -0.0 »
 
 
+def proposer_cheques(credit: float, cheques: list, maximum: int = 6) -> list:
+    """Les cheques du portefeuille qui font, ensemble, le credit d'une remise. Pur.
+
+    Pour une remise SANS BORDEREAU (depot fait avant la collecte des bordereaux, bordereau perdu) : on ne sait
+    pas quels cheques elle contient, mais le credit de la banque le dit souvent a lui seul. `cheques` :
+    [{name, montant}]. -> les `name` proposes, ou [] si rien n'est net :
+      - UN cheque au montant exact, s'il est seul a ce montant ;
+      - sinon LA combinaison de 2 a `maximum` cheques dont la somme tombe au millime sur le credit, si elle
+        est unique (deux combinaisons possibles = on ne choisit pas a la place de la personne)."""
+    from itertools import combinations
+
+    credit = _m(credit)
+    cheques = [c for c in cheques or [] if _m(c.get("montant")) > 0]
+    exacts = [c for c in cheques if abs(_m(c["montant"]) - credit) <= 0.0005]
+    if len(exacts) == 1:
+        return [exacts[0]["name"]]
+    if exacts or len(cheques) > 22:
+        return []
+    plus_petits = [c for c in cheques if _m(c["montant"]) < credit]
+    for taille in range(2, min(maximum, len(plus_petits)) + 1):
+        trouvees = [combi for combi in combinations(plus_petits, taille)
+                    if abs(_m(sum(_m(c["montant"]) for c in combi)) - credit) <= 0.0005]
+        if len(trouvees) == 1:
+            return [c["name"] for c in trouvees[0]]
+        if trouvees:
+            return []
+    return []
+
+
 def compte() -> str:
     """Le compte comptable de la BIAT : celui du Bank Account de la societe, sinon « BIAT - A&S »."""
     return frappe.db.get_value("Bank Account", {"bank": BANQUE, "is_company_account": 1, "disabled": 0}, "account") \
@@ -1039,3 +1068,94 @@ def encaisser_virements(insert: bool = True, use_ai: bool = True) -> dict:
         if frappe.session.user != utilisateur:
             frappe.set_user(utilisateur)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Remise SANS bordereau : l'humain designe les cheques
+# ---------------------------------------------------------------------------
+
+def _ligne_remise(cle: str):
+    """La ligne du registre, si c'est bien une remise de cheques BIAT pas encore encaissee. Leve sinon."""
+    ligne = frappe.db.get_value(registry.DOCTYPE, cle, ["name as cle", "banque", "date", "operation", "reference",
+                                                       "credit", "montant", "sens", "ignore_manuel"], as_dict=True)
+    if not ligne or ligne.banque != BANQUE:
+        frappe.throw("Ce mouvement n’est pas une ligne BIAT.")
+    numero = detecter(ligne.operation, "Credit")
+    if ligne.sens != "Credit" or numero["regle"] != "enc_cheque" or not numero["numero"]:
+        frappe.throw("Ce mouvement n’est pas une remise de chèques.")
+    numero = numero["numero"]
+    if frappe.db.sql("select name from `tabPayment Entry` where docstatus < 2 and reference_no regexp %s limit 1",
+                     ("BR:[[:space:]]*" + numero + "([^0-9]|$)",)) or _encaissement_en_cours(numero):
+        frappe.throw(f"La remise {numero} est déjà encaissée (ou son encaissement est en brouillon).")
+    return ligne, numero
+
+
+def cheques_pour_remise(cle: str) -> dict:
+    """Ce qu'il faut pour encaisser a la main une remise sans bordereau : la ligne, les cheques encore en
+    portefeuille, et ceux que le montant designe. Lecture seule."""
+    from bank_retenue_sync.encaissement import pending
+
+    ligne, numero = _ligne_remise(cle)
+    deja = pending.already_encaissed_refs()
+    cheques = [{"name": pe["name"], "numero": pe.get("numero"), "reference": pe.get("reference_no"), "client": pe.get("party"),
+                "montant": flt(pe.get("paid_amount"), 3), "date": str(pe.get("reference_date") or "")}
+               for pe in pending._pending_pes(pending.CHEQUE_ACCOUNT, deja)]
+    cheques.sort(key=lambda c: (c["date"], c["name"]), reverse=True)
+    return {"cle": ligne.cle, "numero": numero, "date": str(ligne.date), "credit": flt(ligne.credit, 3),
+            "bordereau": frappe.db.get_value("BRS Bordereau Remise", {"banque": BANQUE, "numero": numero}, "name"),
+            "tolerance": ECART_PAR_PIECE, "cheques": cheques,
+            "proposes": proposer_cheques(ligne.credit, cheques)}
+
+
+def encaisser_remise_manuelle(cle: str, paiements: list) -> dict:
+    """Encaisse une remise de cheques BIAT dont on n'a pas le bordereau : la personne designe les cheques.
+    Memes controles que le flux automatique (`decider_encaissement`) — cheques encore en portefeuille, credit
+    de la banque egal aux paiements a `ECART_PAR_PIECE` pres par cheque — et meme resultat : un Encaissement
+    Paiement, banque de depot BIAT, SOUMIS (c'est un geste humain, il n'attend pas l'interrupteur).
+    -> {encaissement, total, ecart}"""
+    from frappe.utils.file_lock import LockTimeoutError
+    from frappe.utils.synchronization import filelock
+
+    from bank_retenue_sync.encaissement import builder
+    from bank_retenue_sync.encaissement import ecarts as _ecarts
+
+    paiements = [p for p in dict.fromkeys(paiements or []) if p]
+    if not paiements:
+        frappe.throw("Choisissez au moins un chèque.")
+    if not _script_sait_la_banque():
+        frappe.throw("Le script « Traitement des encaissement » ne lit pas encore la banque de dépôt "
+                     "(customization_app à déployer).")
+    utilisateur = frappe.session.user
+    try:
+        with filelock("brs_biat_encaissement", timeout=60):
+            ligne, numero = _ligne_remise(cle)
+            etats = _etat_paiements(paiements)
+            pieces = []
+            for nom in paiements:
+                pe = frappe.db.get_value("Payment Entry", nom, ["reference_no", "party", "paid_amount"], as_dict=True)
+                if not pe:
+                    frappe.throw(f"Paiement introuvable : {nom}.")
+                chiffres = re.search(r"\d{4,}", pe.reference_no or "")
+                pieces.append({"numero": chiffres.group(0) if chiffres else (pe.reference_no or nom), "montant": pe.paid_amount,
+                               "paiement": nom, "client": pe.party})
+            decision = decider_encaissement(
+                ligne, numero, {"name": "saisie manuelle", "nature": "Chèques", "lecture_statut": "Lue", "a_signaler": None,
+                                "pieces": pieces}, etats)
+            if not decision["faire"]:
+                frappe.throw("Encaissement refusé : " + decision["raison"].replace(
+                    "les chèques du bordereau dans ERPNext", "les chèques choisis") + ".")
+            frappe.set_user("Administrator")            # cf. `encaisser_remises` : droits de la comptabilite
+            doc = builder.build_encaissement(decision["lignes"], insert=False)
+            doc.custom_banque_depot = BANQUE
+            doc.insert(ignore_permissions=True)
+            _ecarts.persister(doc.name, decision["ecarts"])
+            doc.add_comment("Comment", f"Remise BIAT n° {numero} encaissée sans bordereau : chèques désignés par {utilisateur}.")
+            doc.submit()
+            frappe.db.commit()
+    except LockTimeoutError:
+        frappe.throw("Un passage BIAT est en cours : réessayez dans une minute.")
+    finally:
+        if frappe.session.user != utilisateur:
+            frappe.set_user(utilisateur)
+    classer_registre(persist=True)
+    return {"encaissement": doc.name, "total": decision["total"], "ecart": decision["ecart"]}
