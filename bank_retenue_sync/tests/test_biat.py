@@ -379,6 +379,40 @@ class TestJournalDuPassage(unittest.TestCase):
         self.assertEqual(sans_robot["etapes"][0]["detail"], "relevé automatique non activé ; 0 remise(s) et 0 virement(s) encaissés")
 
 
+class TestRepriseDuDev(unittest.TestCase):
+    """Les cheques designes sur le dev se retrouvent en production par numero ET montant, jamais a peu pres."""
+
+    def setUp(self):
+        from bank_retenue_sync.bank import biat_reprise
+        self.R = biat_reprise
+        self.portefeuille = [{"name": "PE-1", "numero": "4001767", "montant": 270.0}, {"name": "PE-2", "numero": "4001066", "montant": 1045.0},
+                             {"name": "PE-3", "numero": "8965167", "montant": 1694.88}, {"name": "PE-4", "numero": "0000088", "montant": 581.0},
+                             {"name": "PE-5", "numero": "1259", "montant": 1523.125}, {"name": "PE-6", "numero": "4001763", "montant": 798.0}]
+
+    def test_les_trois_remises_du_dev(self):
+        self.assertEqual(self.R.trouver_cheques(self.R.REMISES["7473685"], self.portefeuille), {"paiements": ["PE-1", "PE-2", "PE-3"], "manquants": []})
+        self.assertEqual(self.R.trouver_cheques(self.R.REMISES["7473932"], self.portefeuille)["paiements"], ["PE-4"])
+        self.assertEqual(self.R.trouver_cheques(self.R.REMISES["7473933"], self.portefeuille)["paiements"], ["PE-5"])   # zeros de tete
+
+    def test_cheque_absent_ou_montant_different(self):
+        sans = [p for p in self.portefeuille if p["name"] != "PE-2"]
+        r = self.R.trouver_cheques(self.R.REMISES["7473685"], sans)
+        self.assertEqual(r["manquants"], ["chèque n° 4001066 (1045.000) : absent du portefeuille"])
+        change = [dict(p, montant=1046.0) if p["name"] == "PE-2" else p for p in self.portefeuille]
+        self.assertTrue(self.R.trouver_cheques(self.R.REMISES["7473685"], change)["manquants"])
+        double = self.portefeuille + [{"name": "PE-9", "numero": "0000088", "montant": 581.0}]
+        self.assertIn("2 paiements possibles", self.R.trouver_cheques(self.R.REMISES["7473932"], double)["manquants"][0])
+
+    def test_les_donnees_de_reprise_tiennent_debout(self):
+        # Chaque remise designee a sa ligne bancaire dans les mouvements, et son credit tombe sur ses cheques a 1 DT pres par cheque.
+        for numero, designes in self.R.REMISES.items():
+            credits = [m["credit"] for m in self.R.MOUVEMENTS
+                       if biat.detecter(m["operation"], "Credit")["regle"] == "enc_cheque" and biat.detecter(m["operation"], "Credit")["numero"] == numero]
+            self.assertEqual(len(credits), 1, numero)
+            self.assertLessEqual(abs(credits[0] - sum(m for _n, m in designes)), biat.ECART_PAR_PIECE * len(designes), numero)
+        self.assertEqual(round(sum(m["credit"] - m["debit"] for m in self.R.MOUVEMENTS), 3), 5609.788)       # le solde lu par le robot
+
+
 if __name__ == "__main__":
     unittest.main()
 

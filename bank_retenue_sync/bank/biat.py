@@ -975,6 +975,11 @@ def passage(refresh: bool = None) -> dict:
     Appele par le planificateur apres chaque verification Zitouna, et par le depot d'un bordereau."""
     if not actif():
         return {}
+    # Les encaissements faits sur le site de developpement avant la mise en production se rejouent ici, une
+    # fois (cf. `bank/biat_reprise`) : pas au migrate, ou aucun server script ne tourne.
+    from bank_retenue_sync.bank import biat_reprise
+
+    reprise = biat_reprise.rejouer()
     if refresh is None:
         try:
             refresh = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
@@ -983,9 +988,13 @@ def passage(refresh: bool = None) -> dict:
     if refresh:
         out = rafraichir()                             # importe, encaisse et classe
         out["robot"] = True
+        if reprise:
+            out["reprise"] = reprise
         return out
     out = {"robot": False, "encaissements": encaisser_remises(), "virements": encaisser_virements()}
     out.update(classer_registre(persist=True))
+    if reprise:
+        out["reprise"] = reprise
     return out
 
 
@@ -1233,7 +1242,7 @@ def cheques_pour_remise(cle: str) -> dict:
             "proposes": proposer_cheques(ligne.credit, cheques)}
 
 
-def encaisser_remise_manuelle(cle: str, paiements: list) -> dict:
+def encaisser_remise_manuelle(cle: str, paiements: list, par: str = None) -> dict:
     """Encaisse une remise de cheques BIAT dont on n'a pas le bordereau : la personne designe les cheques.
     Memes controles que le flux automatique (`decider_encaissement`) — cheques encore en portefeuille, credit
     de la banque egal aux paiements a `ECART_PAR_PIECE` pres par cheque — et meme resultat : un Encaissement
@@ -1275,7 +1284,8 @@ def encaisser_remise_manuelle(cle: str, paiements: list) -> dict:
             doc.custom_banque_depot = BANQUE
             doc.insert(ignore_permissions=True)
             _ecarts.persister(doc.name, decision["ecarts"])
-            doc.add_comment("Comment", f"Remise BIAT n° {numero} encaissée sans bordereau : chèques désignés par {utilisateur}.")
+            doc.add_comment("Comment", f"Remise BIAT n° {numero} encaissée sans bordereau : chèques désignés par {utilisateur}."
+                            if not par else f"Remise BIAT n° {numero} encaissée sans bordereau : {par}.")
             doc.submit()
             frappe.db.commit()
     except LockTimeoutError:
