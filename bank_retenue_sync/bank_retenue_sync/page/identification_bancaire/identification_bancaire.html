@@ -121,6 +121,12 @@
                background: var(--control-bg); color: var(--text-muted); }
   .ib-banque.active { background: var(--text-color); color: var(--bg-color, #fff); border-color: var(--text-color); }
   .ib-banque + .ib-solde { margin-top: 0; }
+  /* le bandeau de la somme : meme forme, un fond qui le distingue, et le bouton qui ouvre le detail */
+  .ib-solde.ib-total { background: var(--subtle-fg, #f8f8f8); cursor: pointer; }
+  .ib-solde.ib-total .par-banque { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+  .ib-solde.ib-total .ib-solde-actions { border-top: 0; padding-top: 0; }
+  [data-role="soldes-detail"].ferme { display: none; }
+  [data-role="soldes-detail"].ouvert { margin: -6px 0 6px 14px; padding-left: 12px; border-left: 2px solid var(--border-color); }
   .ib-solde { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 14px; padding: 12px;
               border: 1px solid var(--border-color); border-radius: 8px; }
   .ib-solde > div { flex: 1 1 190px; min-width: 0; }
@@ -147,11 +153,15 @@
 <div class="ib-wrap">
   <div class="ib-alert" data-role="alert"></div>
 
-  <!-- Un bandeau par banque, TOUJOURS affiches tous les deux : le solde d une banque se lit sans changer de vue. -->
-  <div class="ib-banque" data-role="titre-solde" data-banque="Zitouna" style="display:none">Banque Zitouna</div>
-  <div class="ib-solde" data-role="solde"></div>
-  <div class="ib-banque" data-role="titre-solde" data-banque="BIAT" style="display:none">BIAT</div>
-  <div class="ib-solde" data-role="solde-biat" style="display:none"></div>
+  <!-- Avec deux banques : UN bandeau « toutes les banques » (la somme), ferme par defaut ; on l ouvre pour
+       retrouver le bandeau de chaque banque. Avec une seule banque, son bandeau s affiche seul, comme avant. -->
+  <div class="ib-solde ib-total" data-role="solde-total" style="display:none"></div>
+  <div data-role="soldes-detail">
+    <div class="ib-banque" data-role="titre-solde" data-banque="Zitouna" style="display:none">Banque Zitouna</div>
+    <div class="ib-solde" data-role="solde"></div>
+    <div class="ib-banque" data-role="titre-solde" data-banque="BIAT" style="display:none">BIAT</div>
+    <div class="ib-solde" data-role="solde-biat" style="display:none"></div>
+  </div>
 
   <div class="ib-kpis" data-role="kpis"></div>
   <div class="ib-cover" data-role="cover"></div>

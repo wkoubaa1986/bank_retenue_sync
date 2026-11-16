@@ -246,6 +246,11 @@ class IdentificationBancaire {
     );
     this.$root.on("click", '[data-action="historique-solde"]', () => this._historique_solde());
     this.$root.on("click", '[data-action="decomposer-biat"]', () => this._decomposer_biat());
+    // Le bandeau de la somme s'ouvre et se referme d'un clic, où que l'on clique dessus.
+    this.$root.on("click", '[data-role="solde-total"]', () => {
+      try { localStorage.setItem("ib_banques_ouvertes", this._banques_ouvertes() ? "0" : "1"); } catch (e) { /* stockage refusé */ }
+      this._render_total();
+    });
     this.$root.on("click", '[data-action="voir-biat"]', () => {
       const $sel = this.$root.find('[data-f="banque"]');
       if ($sel.val() !== "BIAT") $sel.val("BIAT").trigger("change");
@@ -784,6 +789,7 @@ class IdentificationBancaire {
         ${s.robot ? "" : `<span class="note">relevé automatique pas encore activé : solde calculé d’après les mouvements importés</span>`}
       </div>
     `);
+    this._render_total();
   }
 
   /* Remise de chèques BIAT SANS BORDEREAU : la personne désigne les chèques du portefeuille qui la
@@ -844,6 +850,63 @@ class IdentificationBancaire {
     });
     d.show();
     pied();
+  }
+
+  /* ── La somme des banques ──────────────────────────────────────────────────────────────────────
+     Avec deux banques, la page s'ouvre sur UN bandeau : solde, solde ERPNext, écart et écart projeté de
+     toutes les banques réunies, et sous chaque chiffre ce que chaque banque y apporte. On l'ouvre pour
+     retrouver le bandeau détaillé de chaque banque (le choix est retenu sur ce poste). */
+  _banques_ouvertes() {
+    try { return localStorage.getItem("ib_banques_ouvertes") === "1"; } catch (e) { return false; }
+  }
+
+  _render_total() {
+    const $total = this.$root.find('[data-role="solde-total"]');
+    const $detail = this.$root.find('[data-role="soldes-detail"]');
+    const z = this._solde || {}, b = this._solde_biat || {};
+    const deux = (this._banques || []).includes("BIAT") && b.solde_banque !== undefined;
+    if (!deux) {                       // une seule banque : son bandeau, sans étage au-dessus
+      $total.hide();
+      $detail.removeClass("ferme ouvert");
+      return;
+    }
+    const ouvert = this._banques_ouvertes();
+    $detail.toggleClass("ouvert", ouvert).toggleClass("ferme", !ouvert);
+    const nb = (v) => (v === null || v === undefined ? "—" : format_number(v, null, 3));
+    const pr = z.projection || {};
+    const lignes = {
+      banque: [z.banque, b.solde_banque],
+      erpnext: [z.erpnext_a_la_date !== undefined ? z.erpnext_a_la_date : z.erpnext, b.erpnext],
+      ecart: [z.ecart, b.ecart],
+      projete: [pr.ecart_projete_delai !== null && pr.ecart_projete_delai !== undefined ? pr.ecart_projete_delai : z.ecart, b.ecart_projete],
+    };
+    // Une somme n'a de sens que si chaque banque a son chiffre : sans capture Zitouna, on ne l'invente pas.
+    const somme = (cle) => (lignes[cle].some((v) => v === null || v === undefined) ? null
+      : flt(lignes[cle].reduce((t, v) => t + flt(v, 3), 0), 3));
+    const part = (cle) => `<div class="par-banque">Zitouna ${nb(lignes[cle][0])} · BIAT ${nb(lignes[cle][1])}</div>`;
+    const couleur = (v) => (v === null ? "" : Math.abs(v) < 0.005 ? "ok" : "");
+    const e = somme("ecart"), p = somme("projete");
+    $total.show().html(`
+      <div>
+        <div class="lbl">Solde banques (toutes)</div>
+        <div class="val">${nb(somme("banque"))}</div>${part("banque")}
+      </div>
+      <div>
+        <div class="lbl">Solde ERPNext (toutes)</div>
+        <div class="val">${nb(somme("erpnext"))}</div>${part("erpnext")}
+      </div>
+      <div class="delta ${couleur(e)}">
+        <div class="lbl">Écart</div>
+        <div class="val">${nb(e)}</div>${part("ecart")}
+      </div>
+      <div class="delta ${couleur(p)}">
+        <div class="lbl">Écart projeté</div>
+        <div class="val" style="${p !== null && e !== null && Math.abs(p) < Math.abs(e) ? "color:var(--text-on-green,#28a745)" : ""}">${nb(p)}</div>${part("projete")}
+      </div>
+      <div class="ib-solde-actions">
+        <button data-action="deplier-banques">${ouvert ? "▾ Masquer le détail par banque" : "▸ Détail par banque"}</button>
+      </div>
+    `);
   }
 
   _decomposer_biat() {
@@ -1004,6 +1067,7 @@ class IdentificationBancaire {
         <button data-action="historique-solde">Historique des soldes</button>
       </div>
     `);
+    this._render_total();
   }
 
   /* Décomposition de l'écart banque / ERPNext, dans les deux sens.
