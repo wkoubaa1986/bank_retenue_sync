@@ -1,0 +1,173 @@
+{
+ "actions": [],
+ "creation": "2026-11-16 15:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "banque",
+  "nature",
+  "numero",
+  "date_remise",
+  "cb_1",
+  "fichier",
+  "montant_total",
+  "nombre",
+  "sb_suivi",
+  "note",
+  "cb_2",
+  "remis_par"
+ ],
+ "fields": [
+  {
+   "fieldname": "banque",
+   "fieldtype": "Select",
+   "label": "Banque",
+   "options": "BIAT\nZitouna",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "nature",
+   "fieldtype": "Select",
+   "label": "Nature de la remise",
+   "options": "Chèques\nTraites\nEspèces",
+   "default": "Chèques",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "numero",
+   "fieldtype": "Data",
+   "label": "N° du bordereau",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Le numéro imprimé sur le bordereau (« N° 7473685 ») : c’est lui que la banque reprend dans le libellé du crédit."
+  },
+  {
+   "fieldname": "date_remise",
+   "fieldtype": "Date",
+   "label": "Date de la remise",
+   "reqd": 1,
+   "default": "Today",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "cb_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fichier",
+   "fieldtype": "Attach",
+   "label": "Bordereau scanné",
+   "reqd": 1,
+   "description": "Le scan ou la photo du bordereau remis à la banque. Un nom du type « Ordre de versement Chèques Bq BIAT-7473685-du 09-11-2026.pdf » remplit la banque, le numéro et la date."
+  },
+  {
+   "fieldname": "montant_total",
+   "fieldtype": "Currency",
+   "label": "Montant total (facultatif)",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "nombre",
+   "fieldtype": "Int",
+   "label": "Nombre de pièces (facultatif)"
+  },
+  {
+   "fieldname": "sb_suivi",
+   "fieldtype": "Section Break",
+   "label": "Suivi"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  },
+  {
+   "fieldname": "cb_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "remis_par",
+   "fieldtype": "Link",
+   "label": "Collecté par",
+   "options": "User",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-16 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Bordereau Remise",
+ "naming_rule": "By script",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1,
+   "delete": 1
+  },
+  {
+   "role": "Accounts Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1,
+   "delete": 1
+  },
+  {
+   "role": "Accounts User",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "Sales Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "Sales User",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  }
+ ],
+ "search_fields": "banque,numero,date_remise",
+ "sort_field": "date_remise",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "numero",
+ "track_changes": 1
+}

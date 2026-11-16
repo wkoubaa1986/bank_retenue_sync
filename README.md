@@ -10,6 +10,14 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   « à vérifier ». Page « Identification bancaire » : choix de la banque en tête des filtres. Rien
   n'est créé pour la BIAT (ni écriture ni encaissement) : l'Encaissement Paiement vise encore le
   compte Zitouna. Tout le reste de l'app ne lit que Zitouna (`registry.BANQUE_DEFAUT`) ;
+  ses frais vont dans une écriture mensuelle À PART (« BIAT frais bancaires MM-AAAA », tout en
+  « Frais bancaire », même interrupteur et mêmes règles de remplacement que les frais Zitouna) ;
+- **Bordereaux de remise** — `BRS Bordereau Remise` : le scan du bordereau remis à la banque (BIAT ou
+  Zitouna ; chèques, traites, espèces), rangé avec sa banque, son numéro et sa date. Collecte depuis
+  la caisse journalière (bouton « Bordereaux de remise », app customization_app) ou la liste ; le nom
+  du fichier (« Ordre de versement Chèques Bq BIAT-7473685-du 09-11-2026.pdf ») remplit les champs.
+  Rien n'est lu ni rapproché à la collecte : l'identification dit seulement si le bordereau d'une
+  remise BIAT est collecté ou reste à recueillir ;
 - **Retenue à la source (TEJ)** — certificats reçus (ingestion, rapprochement, imputation) et
   **émis** (déclaration d'un certificat fournisseur depuis la facture d'achat, suivi du dépôt) ;
 - **Achats locaux** — contrôle des factures sur scan (OpenAI), retenue 1 %, matricule fournisseur ;

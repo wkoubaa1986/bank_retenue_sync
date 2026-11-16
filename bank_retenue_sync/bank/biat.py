@@ -45,6 +45,12 @@ FENETRE_VERSEMENT = 5
 #: Tolerance sur le total d'une remise (frais preleves a la source, arrondis).
 TOLERANCE_REMISE = 1.0
 
+#: Reference de l'ecriture mensuelle des frais BIAT : « BIAT frais bancaires MM-YYYY ». Elle ne commence
+#: PAS par « Frais bancaire » : le classement Zitouna indexe les ecritures dont la reference commence
+#: ainsi (`fees.PREFIXE_MENSUEL`), et les frais des deux banques ne doivent jamais se croiser.
+PREFIXE_FRAIS = "BIAT frais bancaires "
+COMPTE_FRAIS = "Frais bancaire - A&S"
+
 STATUT_IDENTIFIE = "Identifie"
 STATUT_BROUILLON = "Identifie non comptabilise"
 STATUT_ORPHELIN = "Orphelin"
@@ -118,8 +124,13 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
     if vu["regle"] == "enc_cheque":
         paiements = contexte.get("paiements_par_bordereau", {}).get(numero, [])
         if not paiements:
+            # Le bordereau papier est le seul document qui dit quels cheques composent une remise BIAT : on dit
+            # s'il est deja collecte (`BRS Bordereau Remise`) ou s'il reste a recueillir a la caisse.
+            collecte = contexte.get("bordereaux", {}).get(numero)
+            suite = f"bordereau collecté ({collecte}), chèques à rapprocher" if collecte \
+                else "bordereau à collecter (caisse → Bordereaux de remise)"
             out.update(statut=STATUT_ORPHELIN, raison=f"remise de chèques, bordereau {numero} : aucun paiement "
-                       f"ne porte « BR:{numero} » — chèques à rapprocher")
+                       f"ne porte « BR:{numero} » — {suite}")
             return out
         total = _m(sum(_m(p["montant"]) for p in paiements))
         brouillon = any(int(p.get("docstatus") or 0) == 0 for p in paiements)
@@ -134,6 +145,14 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
 
     if vu["regle"] == "com_enc_cheque":
         ecritures = contexte.get("ecritures_par_reference", {}).get((ligne.get("reference") or "").upper(), [])
+        du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
+        if du_mois:
+            # Les frais ne se comptabilisent jamais a l'unite : la commission rejoint l'ecriture de son mois.
+            out.update(statut=STATUT_BROUILLON if int(du_mois.get("docstatus") or 0) == 0 else STATUT_IDENTIFIE,
+                       document_type="Journal Entry", document_name=du_mois["name"], montant_document=montant,
+                       raison=f"commission de la remise {numero} : dans l’écriture mensuelle des frais BIAT "
+                              f"({cle_frais(periode_de(ligne.get('date')))})")
+            return out
         if ecritures:
             brouillon = any(int(e.get("docstatus") or 0) == 0 for e in ecritures)
             out.update(statut=STATUT_BROUILLON if brouillon else STATUT_IDENTIFIE, document_type="Journal Entry",
@@ -167,6 +186,38 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
     else:
         out.update(statut=STATUT_ORPHELIN, raison="versement d’espèces : aucune écriture caisse → BIAT du même montant")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Frais bancaires : une ecriture par mois, separee de celle de Zitouna — pur
+# ---------------------------------------------------------------------------
+# Decision du 16/11/2026 : « pour le moment tout passe en frais bancaire pour la BIAT ; separe les frais
+# de la BIAT de ceux de Zitouna ; le mecanisme est le meme ». Donc, comme `expenses/fees.py` : UNE
+# ecriture par mois, refaite en entier depuis le registre a chaque frais nouveau (jamais incrementee :
+# une ligne vue deux fois ne double rien), datee du dernier frais du mois. Pas de part TVA ni timbre :
+# la BIAT ne les donne pas sur des lignes a part, et tout va en « Frais bancaire ».
+
+def periode_de(jour) -> str:
+    """« YYYY-MM » d'une date (ou de son texte ISO)."""
+    return str(jour or "")[:7]
+
+
+def cle_frais(periode: str) -> str:
+    """Reference de l'ecriture du mois : « BIAT frais bancaires MM-YYYY »."""
+    annee, mois = periode.split("-")
+    return "%s%s-%s" % (PREFIXE_FRAIS, mois, annee)
+
+
+def cumul_frais(lignes: list, periode: str) -> dict:
+    """Le cumul des frais BIAT d'un mois : lignes de debit de categorie « frais_bancaires », hors
+    lignes ignorees a la main. -> {periode, cle, total, nb, jour (dernier frais), references}"""
+    retenues = [ligne for ligne in lignes
+                if (ligne.get("categorie") == "frais_bancaires" and not ligne.get("ignore_manuel")
+                    and periode_de(ligne.get("date")) == periode and _m(ligne.get("debit")) > 0)]
+    return {"periode": periode, "cle": cle_frais(periode), "nb": len(retenues),
+            "total": _m(sum(_m(ligne.get("debit")) for ligne in retenues)),
+            "jour": max((str(ligne.get("date")) for ligne in retenues), default=None),
+            "references": sorted({(ligne.get("reference") or "").strip() for ligne in retenues} - {""})}
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +269,22 @@ def charger_contexte(lignes: list) -> dict:
            from `tabJournal Entry` je join `tabJournal Entry Account` a on a.parent = je.name
            where je.docstatus < 2 and a.account = %s and a.debit_in_account_currency > 0""",
         (le_compte,), as_dict=True)
+    mensuelles = {}
+    for e in frappe.db.get_all("Journal Entry", filters={"cheque_no": ["like", PREFIXE_FRAIS + "%"], "docstatus": ["<", 2]},
+                               fields=["name", "cheque_no", "docstatus"]):
+        mois, annee = e.cheque_no[len(PREFIXE_FRAIS):].split("-")[:2]
+        mensuelles[f"{annee}-{mois}"] = {"name": e.name, "docstatus": e.docstatus}
+    bordereaux = {}
+    if numeros and frappe.db.exists("DocType", "BRS Bordereau Remise"):
+        for b in frappe.db.get_all("BRS Bordereau Remise", filters={"banque": BANQUE, "numero": ["in", list(numeros)]},
+                                   fields=["name", "numero"]):
+            bordereaux[b.numero] = b.name
     return {"paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
-            "ecritures_versement": versements, "remises": remises}
+            "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
+            "bordereaux": bordereaux}
 
 
-def classer_registre(persist: bool = True) -> dict:
+def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
     """Reclasse toutes les lignes BIAT du registre. Un arbitrage humain (ignore, lien manuel) n'est
     jamais ecrase : `apply_classifications` saute les lignes ignorees, et une ligne rattachee a la
     main garde son rattachement. -> {mouvements, kpi, maj?}"""
@@ -244,7 +306,71 @@ def classer_registre(persist: bool = True) -> dict:
     out = {"mouvements": len(lignes), "kpi": kpi}
     if persist:
         out.update(registry.apply_classifications(classements))
+        if _frais:
+            # Les frais reconnus rejoignent l'ecriture de leur mois ; on reclasse ensuite, une fois, pour que
+            # chaque commission designe cette ecriture.
+            out["frais"] = sync_frais()
+            if any(f.get("statut") in ("cree", "remplacee", "soumise") for f in out["frais"]):
+                suite = classer_registre(persist=True, _frais=False)
+                out.update(kpi=suite["kpi"], maj=suite.get("maj"))
     return out
+
+
+def sync_frais(periode: str = None, insert: bool = True) -> list:
+    """Refait l'ecriture mensuelle des frais BIAT de chaque mois qui porte des frais (ou de `periode`).
+
+        Dr  Frais bancaire - A&S     total du mois
+        Cr  BIAT - A&S               total du mois
+
+    Memes regles que les frais Zitouna (`expenses/fees.sync_ecriture_mensuelle`) : rien n'est cree tant
+    que « Comptabiliser les frais bancaires » n'est pas coche ; une ecriture au bon montant n'est pas
+    refaite ; une ecriture remplacee retrouve son etat (soumise si elle l'etait, ou si le site soumet
+    automatiquement). -> [{periode, statut, total, je}]"""
+    from bank_retenue_sync.encaissement.pending import COMPANY
+    from bank_retenue_sync.expenses import fees, journal
+
+    lignes = frappe.db.get_all(
+        registry.DOCTYPE, filters={"banque": BANQUE, "categorie": "frais_bancaires"}, limit_page_length=0,
+        fields=["name", "date", "reference", "debit", "categorie", "ignore_manuel"])
+    periodes = [periode] if periode else sorted({periode_de(ligne.date) for ligne in lignes})
+    if not fees.is_enabled():
+        return [{"periode": p, "statut": "inactif"} for p in periodes]
+    bilan = []
+    for p in periodes:
+        cumul = cumul_frais(lignes, p)
+        existant = frappe.db.get_value("Journal Entry", {"cheque_no": cumul["cle"], "docstatus": ["<", 2]},
+                                       ["name", "total_debit", "docstatus"], as_dict=True)
+        if not cumul["total"]:
+            bilan.append({"periode": p, "statut": "vide", "total": 0.0, "je": existant.name if existant else None})
+            continue
+        if existant and abs(_m(existant.total_debit) - cumul["total"]) < 0.005:
+            statut = "inchangee"
+            if insert and existant.docstatus == 0 and journal._auto_submit_enabled():
+                try:
+                    frappe.get_doc("Journal Entry", existant.name).submit()
+                    statut = "soumise"
+                except Exception:
+                    frappe.log_error(frappe.get_traceback(), "frais BIAT : soumission %s" % existant.name)
+            bilan.append({"periode": p, "statut": statut, "total": cumul["total"], "je": existant.name})
+            continue
+        etait_soumise = bool(existant and existant.docstatus == 1)
+        remplacee = "%s (%s)" % (existant.name, fees._supprimer_ecriture(existant.name)) if existant and insert else None
+        jour = fees.date_ecriture(cumul["jour"])
+        centre = frappe.db.get_value("Company", COMPANY, "cost_center")
+        je = journal.build_journal_entry(
+            COMPANY, jour,
+            [{"account": compte(), "credit": cumul["total"]},
+             {"account": COMPTE_FRAIS, "debit": cumul["total"], "cost_center": centre}],
+            remark="%s\n%d opérations bancaires cumulées\nRéf. banque %s" % (
+                cumul["cle"], cumul["nb"], ", ".join(cumul["references"][:20])),
+            cheque_no=cumul["cle"], cheque_date=jour)
+        if insert:
+            je.insert(ignore_permissions=True)
+            if etait_soumise or journal._auto_submit_enabled():
+                je.submit()
+        bilan.append({"periode": p, "statut": "remplacee" if remplacee else "cree", "total": cumul["total"],
+                      "je": je.name if insert else "(essai)", "remplacee": remplacee})
+    return bilan
 
 
 def _importer(mouvements: list, origine: str) -> dict:

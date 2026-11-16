@@ -46,7 +46,11 @@ class TestClassement(unittest.TestCase):
         c = biat.classer_ligne(ligne(REMISE, credit=1500.0), {})
         self.assertEqual((c["statut"], c["regle"], c["groupe"]), ("Orphelin", "enc_cheque", "bordereau:1234567"))
         self.assertIn("BR:1234567", c["raison"])
+        self.assertIn("bordereau à collecter", c["raison"])
         self.assertIsNone(c["document_name"])
+        collecte = biat.classer_ligne(ligne(REMISE, credit=1500.0), {"bordereaux": {"1234567": "BR-BIAT-1234567"}})
+        self.assertIn("bordereau collecté (BR-BIAT-1234567)", collecte["raison"])
+        self.assertEqual(collecte["statut"], "Orphelin")                                   # collecter ne rapproche pas
 
     def test_remise_portee_par_des_paiements(self):
         ctx = {"paiements_par_bordereau": {"1234567": [{"name": "PE-1", "montant": 1000.0, "docstatus": 1},
@@ -111,3 +115,39 @@ class TestCleParBanque(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFraisMensuels(unittest.TestCase):
+    """16/11/2026 : les frais BIAT dans une ecriture mensuelle a part, tout en « Frais bancaire »."""
+
+    def lignes(self):
+        frais = lambda jour, montant, ref, **plus: {"date": jour, "debit": montant, "reference": ref, "categorie": "frais_bancaires", **plus}
+        return [frais("2026-11-12", 0.893, "FT1"), frais("2026-11-16", 0.893, "FT2"), frais("2026-11-16", 0.893, "FT3"),
+                frais("2026-11-20", 5.0, "FT4", ignore_manuel=1),                       # ecartee a la main
+                frais("2026-12-01", 0.893, "FT5"),                                       # autre mois
+                {"date": "2026-11-12", "credit": 3010.127, "debit": 0, "reference": "FT6", "categorie": "encaissement"}]
+
+    def test_cumul_du_mois(self):
+        c = biat.cumul_frais(self.lignes(), "2026-11")
+        self.assertEqual((c["total"], c["nb"], c["jour"], c["references"]), (2.679, 3, "2026-11-16", ["FT1", "FT2", "FT3"]))
+        self.assertEqual(biat.cumul_frais(self.lignes(), "2026-12")["total"], 0.893)
+        self.assertEqual(biat.cumul_frais(self.lignes(), "2026-10")["total"], 0.0)
+
+    def test_reference_separee_de_celle_de_zitouna(self):
+        from bank_retenue_sync.expenses import fees
+
+        self.assertEqual(biat.cle_frais("2026-11"), "BIAT frais bancaires 11-2026")
+        self.assertEqual(biat.periode_de("2026-11-16"), "2026-11")
+        # Le classement Zitouna indexe les references qui commencent par « Frais bancaire » : jamais celle de la BIAT.
+        self.assertFalse(biat.cle_frais("2026-11").startswith(fees.PREFIXE_MENSUEL))
+        self.assertNotEqual(biat.cle_frais("2026-11"), fees.cle_mensuelle("2026-11"))
+
+    def test_la_commission_rejoint_l_ecriture_de_son_mois(self):
+        ctx = {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 1}}}
+        c = biat.classer_ligne(ligne(COMMISSION, debit=0.893, date="2026-11-12"), ctx)
+        self.assertEqual((c["statut"], c["document_type"], c["document_name"]), ("Identifie", "Journal Entry", "JV-F"))
+        self.assertIn("BIAT frais bancaires 11-2026", c["raison"])
+        brouillon = biat.classer_ligne(ligne(COMMISSION, debit=0.893, date="2026-11-12"), {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 0}}})
+        self.assertEqual(brouillon["statut"], "Identifie non comptabilise")
+        autre_mois = biat.classer_ligne(ligne(COMMISSION, debit=0.893, date="2026-12-02"), ctx)
+        self.assertEqual(autre_mois["statut"], "Orphelin")
