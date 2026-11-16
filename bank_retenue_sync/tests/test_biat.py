@@ -37,7 +37,7 @@ class TestDetection(unittest.TestCase):
         self.assertEqual(biat.detecter("Frais sur versement", "Credit")["regle"], "")      # « versement » en tete seulement
 
     def test_libelle_inconnu(self):
-        for libelle in ("Virement recu STE EXEMPLE", "Cheque 0001234", "", None):
+        for libelle in ("Prelevement STE EXEMPLE", "Cheque 0001234", "", None):   # (un virement recu est reconnu depuis le 16/11/2026)
             self.assertEqual(biat.detecter(libelle, "Credit")["regle"], "")
 
 
@@ -240,6 +240,45 @@ class TestTableauDeBord(unittest.TestCase):
         # La ligne ecartee a la main pese sur l'ecart sans etre « en attente » : elle a sa propre case.
         self.assertEqual((t["ecart_projete"], t["ignores"], t["inexplique"]), (9.5, {"nb": 1, "net": 10.0}, 0.0))
         self.assertEqual(biat.resume_solde([], 0.0)["solde_banque"], 0.0)
+
+
+class TestVirementRecu(unittest.TestCase):
+    """Meme logique que Zitouna : le virement solde les dettes du client et se reconnait a sa reference."""
+
+    def test_le_libelle_est_reconnu(self):
+        for libelle in ("Virement Recu STE EXEMPLE", "VIR RECU DE AHMED BEN SALAH", "Credit Divers Virt Recu Ste X",
+                        "Virement reçu\nSTE EXEMPLE"):
+            self.assertEqual(biat.detecter(libelle, "Credit")["regle"], "vir_recu", libelle)
+        self.assertEqual(biat.detecter("Virement Recu STE EXEMPLE", "Credit")["categorie"], "encaissement")
+        # Ni un virement EMIS, ni le reversement d'Aramex, ni un mot qui contient « VIR ».
+        self.assertEqual(biat.detecter("Virement emis FOURNISSEUR", "Debit")["regle"], "")
+        self.assertEqual(biat.detecter("Virement Recu ARAMEX TUNISIE", "Credit")["regle"], "")
+        self.assertEqual(biat.detecter("Credit Divers ENVIRONNEMENT", "Credit")["regle"], "")
+        # Les regles precises gardent la main.
+        self.assertEqual(biat.detecter("Versement TND", "Credit")["regle"], "versement_especes")
+        self.assertEqual(biat.detecter(REMISE, "Credit")["regle"], "enc_cheque")
+
+    def test_identifie_par_le_paiement_qui_cite_la_reference(self):
+        l = ligne("Virement Recu STE EXEMPLE", credit=1500.0)
+        l["reference"] = "ft26320abc"
+        ctx = {"paiements_par_reference": {"FT26320ABC": [{"name": "PE-9", "montant": 1499.0, "docstatus": 1, "client": "STE EXEMPLE"}]},
+               "encaissements_par_reference": {"FT26320ABC": "ENC-17-11-2026-00001"}}
+        c = biat.classer_ligne(l, ctx)
+        self.assertEqual((c["statut"], c["document_type"], c["document_name"], c["montant_document"], c["ecart"]),
+                         ("Identifie", "Encaissement Paiement", "ENC-17-11-2026-00001", 1499.0, 1.0))
+        self.assertIn("virement reçu de STE EXEMPLE", c["raison"])
+        self.assertIn("écart de 1.000", c["raison"])
+
+    def test_pas_encore_encaisse(self):
+        l = ligne("Virement Recu STE EXEMPLE", credit=1500.0)
+        l["reference"] = "FT1"
+        self.assertEqual(biat.classer_ligne(l, {})["statut"], "Orphelin")
+        self.assertIn("pas encore rapproché", biat.classer_ligne(l, {})["raison"])
+        refuse = biat.classer_ligne(l, {"refus_virements": {"FT1": "client non identifie : aucun candidat"}})
+        self.assertEqual(refuse["statut"], "A verifier")
+        self.assertIn("pas encaissé — client non identifie", refuse["raison"])
+        brouillon = biat.classer_ligne(l, {"brouillons_par_reference": {"FT1": "ENC-X"}})
+        self.assertEqual((brouillon["statut"], brouillon["document_name"]), ("Identifie non comptabilise", "ENC-X"))
 
 
 if __name__ == "__main__":

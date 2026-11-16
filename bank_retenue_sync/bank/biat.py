@@ -67,6 +67,10 @@ REGLES = (
      "Commission de remise de chèques"),
     ("versement_especes", "Credit", re.compile(r"^VERSEMENT\b"), "caisse", "versement",
      "Versement d’espèces"),
+    # Virement recu d'un client : meme mot entier que le flux Zitouna (`matching.is_virement_credit`), Aramex
+    # exclu (son reversement a son propre circuit). Place APRES les regles precises : il ne prend que le reste.
+    ("vir_recu", "Credit", re.compile(r"^(?!.*ARAMEX).*\bVIR(?:EMENT|T)?\b"), "encaissement", "virement",
+     "Virement reçu"),
 )
 
 
@@ -120,6 +124,39 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
     numero = vu["numero"]
     if numero:
         out["groupe"] = "bordereau:" + numero
+
+    if vu["regle"] == "vir_recu":
+        # MEME LOGIQUE QUE ZITOUNA : le virement solde les dettes du client (`encaisser_virements`), et se
+        # reconnait ensuite au paiement qui cite sa reference bancaire.
+        reference = (ligne.get("reference") or "").upper()
+        paiements = contexte.get("paiements_par_reference", {}).get(reference, [])
+        encaissement = contexte.get("encaissements_par_reference", {}).get(reference)
+        if paiements:
+            total = _m(sum(_m(p["montant"]) for p in paiements))
+            brouillon = any(int(p.get("docstatus") or 0) == 0 for p in paiements)
+            out.update(statut=STATUT_BROUILLON if brouillon else STATUT_IDENTIFIE,
+                       document_type="Encaissement Paiement" if encaissement else "Payment Entry",
+                       document_name=encaissement or (paiements[0]["name"] if len(paiements) == 1 else None),
+                       montant_document=total, ecart=_m(montant - total))
+            clients = sorted({p.get("client") for p in paiements if p.get("client")})
+            detail = "virement reçu" + (f" de {', '.join(clients)}" if clients else "") \
+                + f" : {len(paiements)} paiement(s) citent sa référence"
+            if encaissement:
+                detail += f" (encaissement {encaissement})"
+            if abs(out["ecart"]) > 0.0005:
+                detail += f" — écart de {out['ecart']:.3f} avec le crédit de la banque"
+            out["raison"] = detail
+            return out
+        brouillon = contexte.get("brouillons_par_reference", {}).get(reference)
+        if brouillon:
+            out.update(statut=STATUT_BROUILLON, document_type="Encaissement Paiement", document_name=brouillon,
+                       raison=f"virement reçu : l’encaissement {brouillon} est en brouillon (à soumettre)")
+            return out
+        refus = contexte.get("refus_virements", {}).get(reference)
+        out.update(statut=STATUT_A_VERIFIER if refus else STATUT_ORPHELIN,
+                   raison="virement reçu : " + (f"pas encaissé — {refus}" if refus
+                                                else "pas encore rapproché des dettes d’un client"))
+        return out
 
     if vu["regle"] == "enc_cheque":
         paiements = contexte.get("paiements_par_bordereau", {}).get(numero, [])
@@ -241,6 +278,29 @@ def cumul_frais(lignes: list, periode: str) -> dict:
 #: encaissements Zitouna (`encaissement.matching.TOLERANCE_PAIEMENT`, 1 DT par paiement).
 ECART_PAR_PIECE = 1.0
 COMPTE_CHEQUES = "Chèques - A&S"
+#: Pourquoi un virement recu n'a pas ete encaisse, garde d'un passage a l'autre ({reference: raison}) : la
+#: raison vient de l'identification du client (alias, ressemblance, IA), qu'on ne rejoue pas a chaque affichage.
+#: ⚠️ EN BASE (valeur globale), pas dans le cache : la soumission d'un encaissement vide le cache du site, et
+#: la raison posee juste avant disparaissait avant le classement (constate a l'essai du 16/11/2026).
+CLE_REFUS_VIREMENTS = "brs_biat_refus_virements"
+
+
+def _refus_virements() -> dict:
+    import json
+
+    try:
+        # Lu dans la table, pas par `get_global` : sa copie en cache survit a une transaction annulee.
+        brut = frappe.db.sql("select defvalue from `tabDefaultValue` where parent = '__global' and defkey = %s limit 1",
+                             CLE_REFUS_VIREMENTS)
+        return {str(k).upper(): v for k, v in json.loads((brut[0][0] if brut else None) or "{}").items()}
+    except Exception:
+        return {}
+
+
+def _garder_refus_virements(refus: dict):
+    import json
+
+    frappe.db.set_global(CLE_REFUS_VIREMENTS, json.dumps(refus or {}, ensure_ascii=False))
 
 
 def decider_encaissement(ligne: dict, numero: str, bordereau: dict, paiements: dict) -> dict:
@@ -425,6 +485,24 @@ def charger_contexte(lignes: list) -> dict:
             bordereaux[b.numero] = b.name
             if b.get("lecture_resume"):
                 lectures[b.numero] = b.lecture_resume
+    # Virements recus : les paiements qui citent la reference bancaire (« <reference> - BIAT »), et
+    # l'encaissement — soumis ou en brouillon — qui porte cette reference dans ses dettes client.
+    paiements_ref, encaissements_ref, brouillons_ref = {}, {}, {}
+    for ligne in lignes:
+        if not ligne.get("reference") or detecter(ligne.get("operation"), ligne.get("sens") or "Credit")["regle"] != "vir_recu":
+            continue
+        reference = ligne["reference"].upper()
+        trouves = frappe.db.sql(
+            """select name, paid_amount as montant, docstatus, paid_to as compte, party as client
+               from `tabPayment Entry` where docstatus < 2 and reference_no like %s""", (f"%{reference}%",), as_dict=True)
+        if trouves:
+            paiements_ref[reference] = trouves
+        for nom, statut_doc in frappe.db.sql(
+                """select distinct e.name, e.docstatus from `tabListe des Dettes client` c
+                   join `tabEncaissement Paiement` e on e.name = c.parent
+                   where c.parenttype = 'Encaissement Paiement' and c.`n_chèque` = %s and e.docstatus < 2""", (ligne["reference"],)):
+            (encaissements_ref if int(statut_doc) == 1 else brouillons_ref)[reference] = nom
+    refus_virements = _refus_virements()
     # L'encaissement soumis de chaque bordereau, pour l'ouvrir depuis la ligne.
     encaissements = {}
     if paiements and frappe.db.has_column("Encaissement Paiement", "custom_banque_depot"):
@@ -452,7 +530,9 @@ def charger_contexte(lignes: list) -> dict:
             refus[numero] = decision["raison"]
     return {"paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
-            "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements}
+            "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements,
+            "paiements_par_reference": paiements_ref, "encaissements_par_reference": encaissements_ref,
+            "brouillons_par_reference": brouillons_ref, "refus_virements": refus_virements}
 
 
 def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
@@ -548,6 +628,7 @@ def _importer(mouvements: list, origine: str) -> dict:
     out = registry.upsert_movements(mouvements, origine=origine, banque=BANQUE)
     out.pop("cles", None)
     out["encaissements"] = encaisser_remises()
+    out["virements"] = encaisser_virements()
     out.update(classer_registre(persist=True))
     return out
 
@@ -753,7 +834,7 @@ def passage(refresh: bool = None) -> dict:
             refresh = False                            # reglage pas encore migre : pas de releve
     if refresh:
         return rafraichir()                            # importe, encaisse et classe
-    out = {"encaissements": encaisser_remises()}
+    out = {"encaissements": encaisser_remises(), "virements": encaisser_virements()}
     out.update(classer_registre(persist=True))
     return out
 
@@ -848,3 +929,113 @@ def capturer_solde(timeout: int = 300) -> dict:
     if not comptes:
         raise RuntimeError("aucun solde BIAT rendu par le service")
     return archiver_solde(comptes[0])
+
+
+# ---------------------------------------------------------------------------
+# Virements recus : la meme logique que Zitouna
+# ---------------------------------------------------------------------------
+
+def _script_sait_la_banque(marque: str = "custom_banque_depot") -> bool:
+    script = frappe.db.get_value("Server Script", {"name": "Traitement des encaissement", "disabled": 0}, "script") or ""
+    return marque in script
+
+
+def encaisser_virements(insert: bool = True, use_ai: bool = True) -> dict:
+    """Virements recus a la BIAT -> dettes client soldees, comme pour Zitouna (demande du 16/11/2026 :
+    « implemente la meme logique que Zitouna pour la BIAT »).
+
+    C'est LE MEME CODE que le flux Zitouna, applique aux lignes BIAT du registre :
+      - le client est identifie sur le libelle (`encaissement.party.identify` : noms appris des virements
+        deja rattaches — des DEUX banques —, alias forces, ressemblance, IA en dernier recours) ;
+      - le montant est reparti sur ses dettes (`encaissement.allocation.allocate` : dette exacte,
+        sous-ensemble exact, FIFO partiel ; un excedent n'est jamais reparti) ;
+      - un Encaissement Paiement est cree PAR VIREMENT, banque de depot BIAT, puis soumis (interrupteur
+        `encaissement_auto_submit`) : le server script solde les dettes et porte le paiement au compte
+        BIAT, avec « <reference bancaire> - BIAT » pour reference.
+    Idempotent (`consumed` : reference deja dans un encaissement ; `booked` : deja saisie a la main).
+    Ce qui n'est pas tranche est laisse, avec sa raison sur la ligne de l'identification.
+    -> {encaisses: [{reference, client, encaissement, soumis, total}], refus: {reference: raison}, erreurs: []}"""
+    from bank_retenue_sync.encaissement import builder, matching, party, pending
+
+    out = {"encaisses": [], "refus": {}, "erreurs": []}
+    if not frappe.db.has_column("Encaissement Paiement", "custom_banque_depot"):
+        return out
+    lignes = frappe.db.get_all(
+        registry.DOCTYPE, filters={"banque": BANQUE, "sens": "Credit", "ignore_manuel": 0}, limit_page_length=0,
+        order_by="date asc, creation asc", fields=["date", "operation", "reference", "credit", "lien_manuel"])
+    virements = [{"date": l.date, "operation": l.operation, "reference": l.reference, "credit": flt(l.credit, 3)}
+                 for l in lignes if not l.lien_manuel and l.reference
+                 and detecter(l.operation, "Credit")["regle"] == "vir_recu"]
+    if not virements:
+        if insert and _refus_virements():
+            _garder_refus_virements({})
+        return out
+    # ⚠️ Meme garde que pour les remises, sur la branche VIREMENT du script : sans elle, le paiement d'un
+    # virement recu a la BIAT serait porte au compte Zitouna.
+    if not _script_sait_la_banque("pe.paid_to=compte_depot"):
+        out["erreurs"].append({"erreur": "le script « Traitement des encaissement » ne porte pas encore les virements "
+                                         "à la banque de dépôt (customization_app à déployer) : aucun virement BIAT n’est encaissé"})
+        return out
+
+    diag = []
+    exclude = pending.already_encaissed_refs()
+    dettes = pending.get_pending_dettes(exclude) + pending.get_pending_dettes_aramex(exclude)
+    consumed = pending.consumed_bank_keys()["virement"]
+    booked = pending.bank_refs_already_booked([v["reference"] for v in virements])
+    # Les noms appris le sont sur les virements des DEUX banques : un client qui payait a Zitouna et vire
+    # maintenant a la BIAT est reconnu du premier coup.
+    historique = [m for m in (registry.registry_as_movements() or []) if matching.is_virement_credit(m)]
+    aliases = dict(party.learned_aliases(historique + virements))
+    aliases.update(party.manual_aliases())
+    resolver = None
+    if use_ai:
+        from bank_retenue_sync.ai import party_match
+        resolver = party_match.resolver(diag)
+    lots, d = matching.match_virements(virements, dettes, consumed=consumed, booked=booked,
+                                       ai_resolver=resolver, aliases=aliases)
+    diag += d
+    faits = {lot["n_virement"] for lot in lots}
+    for e in diag:
+        if e.get("type") == "virement" and e.get("ref") and e["ref"] not in faits and e.get("reason"):
+            out["refus"][e["ref"]] = e["reason"] + (f" ({e['client']})" if e.get("client") else "")
+    if not insert:
+        out["encaisses"] = [{"reference": lot["n_virement"], "client": lot["client"], "encaissement": "(essai)",
+                             "soumis": False, "total": lot["total"]} for lot in lots]
+        return out
+    _garder_refus_virements(out["refus"])
+
+    from frappe.utils.file_lock import LockTimeoutError
+    from frappe.utils.synchronization import filelock
+
+    auto = _soumission_automatique()
+    utilisateur = frappe.session.user
+    try:
+        with filelock("brs_biat_encaissement", timeout=120):
+            frappe.set_user("Administrator")           # cf. `encaisser_remises` : droits de la comptabilite
+            deja = pending.consumed_bank_keys()["virement"]     # relu SOUS le verrou
+            for lot in lots:
+                if lot["n_virement"] in deja:
+                    continue
+                lot["banque"] = BANQUE                 # « <reference> - BIAT » sur le paiement
+                doc = builder.build_encaissement(None, None, None, [lot], insert=False)
+                doc.custom_banque_depot = BANQUE
+                doc.insert(ignore_permissions=True)
+                frappe.db.commit()                     # le brouillon existe, quoi qu'il arrive a la soumission
+                soumis = False
+                if auto:
+                    try:
+                        frappe.get_doc("Encaissement Paiement", doc.name).submit()
+                        frappe.db.commit()
+                        soumis = True
+                    except Exception as e:
+                        frappe.db.rollback()
+                        frappe.log_error(title=f"BIAT : soumission de l'encaissement {doc.name}", message=frappe.get_traceback())
+                        out["erreurs"].append({"reference": lot["n_virement"], "encaissement": doc.name, "erreur": str(e)[:300]})
+                out["encaisses"].append({"reference": lot["n_virement"], "client": lot["client"], "encaissement": doc.name,
+                                         "soumis": soumis, "total": lot["total"]})
+    except LockTimeoutError:
+        out["erreurs"].append({"erreur": "un autre passage BIAT est en cours : remis au suivant"})
+    finally:
+        if frappe.session.user != utilisateur:
+            frappe.set_user(utilisateur)
+    return out

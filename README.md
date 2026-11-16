@@ -43,6 +43,13 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   si « Relevé BIAT automatique » est coché). Tolérance : 1 DT par chèque entre le crédit de la
   banque et les paiements ; l'écart est tracé (« Toléré ») et affiché sur la ligne. Ce qui n'est pas
   sûr n'est pas encaissé, et la raison se lit sur la ligne (« pas encaissé : … ») ;
+- **Virements reçus à la BIAT** — même logique que Zitouna, même code (`bank/biat.encaisser_virements`) :
+  le client est identifié sur le libellé (noms appris des virements des deux banques, alias,
+  ressemblance, IA), le montant est réparti sur ses dettes (exacte, sous-ensemble, FIFO partiel), un
+  Encaissement Paiement par virement est créé avec la banque de dépôt BIAT puis soumis ; le paiement
+  porte « <référence bancaire> - BIAT » et va au compte BIAT. Ce qui n'est pas tranché reste sur la
+  ligne avec sa raison (« pas encaissé — client non identifié… »). La vérification bancaire traite
+  les deux banques à chaque passage ;
 - **Tableau de bord par banque** — la page d'identification affiche EN PERMANENCE un bandeau par
   banque (Zitouna, BIAT), quelle que soit celle dont on regarde les mouvements : solde de la banque,
   solde ERPNext, écart, écart projeté. Pour la BIAT (`bank/biat.tableau_solde`), le solde est lu en
