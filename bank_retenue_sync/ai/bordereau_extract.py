@@ -19,9 +19,14 @@ import frappe
 from bank_retenue_sync.ai.invoice_extract import _get_client_model_temp
 
 _SYSTEM = (
-    "Tu lis un BORDEREAU DE REMISE d'une banque tunisienne (remise de cheques, ou remise d'effets / "
-    "traites), rempli A LA MAIN au stylo, scanne ou photographie. Le formulaire est imprime, les "
-    "valeurs sont manuscrites. Reponds STRICTEMENT en JSON (aucun texte hors JSON) avec ces cles : "
+    "Tu lis un BORDEREAU DE REMISE d'une banque tunisienne (remise de cheques, remise d'effets / "
+    "traites, ou versement d'especes), rempli A LA MAIN au stylo, scanne ou photographie. Le formulaire "
+    "est imprime, les valeurs sont manuscrites. Reponds STRICTEMENT en JSON (aucun texte hors JSON) avec "
+    "ces cles : "
+    "banque_remise (str ou null : la banque DONT c'est le bordereau — celle du logo et de l'en-tete "
+    "imprimes, ex « BIAT », « Banque Zitouna » ; ce n'est PAS la banque d'un cheque), "
+    "nature (« cheques », « traites » ou « especes » : ce que le bordereau remet, d'apres son titre "
+    "imprime), "
     "numero (str : le numero IMPRIME du bordereau, souvent en haut a droite apres « N° »), "
     "date_remise (YYYY-MM-DD ou null ; les dates sont ecrites jour/mois/annee), "
     "total (number ou null : le « Montant total » ecrit sur le bordereau), "
@@ -40,6 +45,8 @@ _SYSTEM = (
     "Lis chaque chiffre TEL QU'IL EST ECRIT, un par un. N'ajuste JAMAIS un montant pour que la somme "
     "tombe sur le total : un ecart est une information utile, un montant arrange est une faute. "
     "Un numero de cheque tunisien a 7 chiffres ; ne double pas un chiffre et n'en ajoute pas. "
+    "Pour un versement d'especes : pieces = [] (les lignes de billets ne sont pas des pieces) et total = "
+    "le montant verse. "
     "N'invente jamais une ligne : les lignes vides du tableau ne sont pas des pieces. Ignore les tampons, "
     "le filigrane « exemplaire client », la signature et le numero de compte."
 )
@@ -74,10 +81,28 @@ def json_du_modele(texte: str) -> dict:
     return json.loads(texte)
 
 
+def _banque_du_bordereau(v):
+    bas = _sans_accents(v)
+    return "BIAT" if "biat" in bas else "Zitouna" if "zitouna" in bas else None
+
+
+def _nature(v):
+    bas = _sans_accents(v)
+    return "Traites" if ("traite" in bas or "effet" in bas) else "Espèces" if "espece" in bas \
+        else "Chèques" if "cheque" in bas else None
+
+
+def _sans_accents(v) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFKD", str(v or "")).encode("ascii", "ignore").decode().lower()
+
+
 def normaliser(data: dict) -> dict:
     """Met la reponse du modele en forme sure : numeros en chiffres, montants en nombres, lignes vides
-    ecartees. Pur. -> {numero, date_remise, total, nombre, pieces: [{numero, banque, tireur, echeance,
-    montant, doute}], somme, total_concorde}"""
+    ecartees. Pur. -> {banque_remise (BIAT / Zitouna / None), nature (Chèques / Traites / Espèces / None),
+    numero, date_remise, total, nombre, pieces: [{numero, banque, tireur, echeance, montant, doute}],
+    somme, total_concorde}"""
     data = data if isinstance(data, dict) else {}
     pieces = []
     for p in data.get("pieces") or []:
@@ -97,7 +122,8 @@ def normaliser(data: dict) -> dict:
         nombre = int(data.get("nombre")) if data.get("nombre") not in (None, "") else None
     except (TypeError, ValueError):
         nombre = None
-    return {"numero": "".join(c for c in str(data.get("numero") or "") if c.isdigit()),
+    return {"banque_remise": _banque_du_bordereau(data.get("banque_remise")), "nature": _nature(data.get("nature")),
+            "numero": "".join(c for c in str(data.get("numero") or "") if c.isdigit()),
             "date_remise": _date(data.get("date_remise")),
             "total": round(total, 3) if total is not None else None, "nombre": nombre, "pieces": pieces,
             "somme": somme, "total_concorde": total is not None and abs(somme - total) < 0.0005}
@@ -224,7 +250,7 @@ def _modele_refuse(erreur: Exception) -> bool:
                                                              "not supported", "unsupported", "invalid model"))
 
 
-def lire(contenu: bytes, nom: str, nature: str = "Chèques", aujourd_hui: str = None) -> dict:
+def lire(contenu: bytes, nom: str, nature: str = None, aujourd_hui: str = None) -> dict:
     """Scan (PDF) ou photo d'un bordereau -> `normaliser(...)` + `_model`.
 
     ⚠️ LE MODELE COMPTE PLUS QUE LA CONSIGNE. Essais du 16/11/2026 sur le bordereau BIAT 7473685, image
@@ -245,7 +271,8 @@ def lire(contenu: bytes, nom: str, nature: str = "Chèques", aujourd_hui: str = 
         for vue in [image] + (agrandissements(image) if len(images) == 1 else []):
             pieces.append({"type": "input_image", "detail": "high",
                            "image_url": "data:image/jpeg;base64," + base64.b64encode(vue).decode()})
-    consigne = "Bordereau de remise d’effets (traites)." if nature == "Traites" else "Bordereau de remise de chèques."
+    consigne = {"Traites": "Bordereau de remise d’effets (traites).", "Chèques": "Bordereau de remise de chèques.",
+                "Espèces": "Bordereau de versement d’espèces."}.get(nature, "Bordereau de remise.")
     if len(pieces) > len(images):
         consigne += (" La première image montre le bordereau entier ; les suivantes en sont des agrandissements "
                      "(quarts qui se recouvrent) : sers-t’en pour lire les chiffres, sans compter une ligne deux fois.")

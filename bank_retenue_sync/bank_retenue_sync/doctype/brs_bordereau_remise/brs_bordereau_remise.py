@@ -30,5 +30,5 @@ class BRSBordereauRemise(Document):
                          "collectez-le à nouveau.")
 
     def after_insert(self):
-        if self.nature in B.NATURES_LUES:
+        if self.nature in B.NATURES_LUES and not self.flags.lecture_faite:
             B.lancer_lecture(self.name)

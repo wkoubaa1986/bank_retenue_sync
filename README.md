@@ -13,10 +13,14 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   ses frais vont dans une écriture mensuelle À PART (« BIAT frais bancaires MM-AAAA », tout en
   « Frais bancaire », même interrupteur et mêmes règles de remplacement que les frais Zitouna) ;
 - **Bordereaux de remise** — `BRS Bordereau Remise` : le scan du bordereau remis à la banque (BIAT ou
-  Zitouna ; chèques, traites, espèces), rangé avec sa banque, son numéro et sa date. Collecte depuis
-  la caisse journalière (bouton « Bordereaux de remise », app customization_app) ou la liste ; le nom
-  du fichier (« Ordre de versement Chèques Bq BIAT-7473685-du 09-11-2026.pdf ») remplit les champs.
-  La collecte est immédiate et ne dépend de rien. Ensuite, en arrière-plan, l'IA lit le scan
+  Zitouna ; chèques, traites, espèces), rangé avec sa banque, son numéro et sa date. Depuis la caisse
+  journalière (bouton « Bordereaux de remise », app customization_app), on donne seulement le scan —
+  photo ou fichier (`deposer`) : l'IA y lit aussi la banque, le numéro, la date et la nature, et le
+  bordereau est collecté tout seul (`collecter_par_ia`). Si elle ne peut pas l'identifier (banque
+  illisible, numéro du nom de fichier différent du numéro imprimé, panne), la saisie à la main est
+  proposée, préremplie ; le nom du fichier rangé à la façon de l'entreprise (« Ordre de versement
+  Chèques Bq BIAT-7473685-du 09-11-2026.pdf ») fait foi pour la banque, le numéro et la date. Depuis
+  la liste, la fiche se saisit à la main et la lecture suit. En arrière-plan, l'IA lit le scan
   (`ai/bordereau_extract` : page recadrée sur le bordereau, écriture manuscrite, modèle du réglage
   « Modèle IA de lecture des bordereaux », gpt-6.1-sol par défaut), liste les chèques ou les traites
   et cherche chacun parmi les paiements d'ERPNext (`api/bordereaux.rapprocher` : même numéro, numéro

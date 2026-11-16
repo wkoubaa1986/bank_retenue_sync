@@ -62,7 +62,7 @@ class TestRapprochement(unittest.TestCase):
         self.assertIn("écart 0,247", r[2]["remarque"])
         etat = B.bilan(r, {"numero": "7473685", "total": 3010.127, "nombre": 3}, {"numero": "7473685"})
         self.assertEqual(etat["resume"], "3 chèques : 2 trouvés, 1 à vérifier")
-        self.assertEqual(len(etat["remarques"]), 1)
+        self.assertEqual(len(etat["remarques"]), 1)                       # l'ecart, et rien d'autre
         self.assertIn("3 009,880 dans ERPNext, le bordereau 3 010,127 : écart de 0,247", etat["remarques"][0])
 
     def test_tous_trouves_et_zeros_de_tete(self):
@@ -131,6 +131,41 @@ class TestRapprochement(unittest.TestCase):
         self.assertIn("L’IA hésite", texte)
 
 
+class TestIdentite(unittest.TestCase):
+    """Le depot : on donne le scan, la banque, le numero, la nature et la date en sortent seuls."""
+
+    LU = {"banque_remise": "BIAT", "nature": "Chèques", "numero": "7473685", "date_remise": "2026-11-09"}
+
+    def test_photo_de_telephone(self):
+        # Le nom d'une photo ne dit rien — et surtout pas le numero du bordereau.
+        indices = B.lire_nom_fichier("IMG_20261116_101500.jpg")
+        q = B.identite(indices, self.LU, "2026-11-16")
+        self.assertEqual((q["banque"], q["numero"], q["nature"], q["date_remise"]), ("BIAT", "7473685", "Chèques", "2026-11-09"))
+        self.assertEqual((q["manque"], q["date_source"]), ([], "scan"))
+
+    def test_nom_range_a_la_facon_de_l_entreprise(self):
+        indices = B.lire_nom_fichier("Ordre de versement Traites EGES - Bq Zitouna-2702065-du 17-08-2026.pdf")
+        q = B.identite(indices, {"banque_remise": None, "nature": None, "numero": "", "date_remise": None}, "2026-11-16")
+        self.assertEqual((q["banque"], q["numero"], q["nature"], q["date_remise"], q["date_source"], q["manque"]),
+                         ("Zitouna", "2702065", "Traites", "2026-08-17", "nom", []))
+
+    def test_ce_qui_manque_est_demande(self):
+        q = B.identite({}, {"banque_remise": None, "numero": "12", "date_remise": None}, "2026-11-16")
+        self.assertEqual(sorted(q["manque"]), ["banque", "numero"])
+        self.assertEqual((q["nature"], q["date_remise"]), ("Chèques", "2026-11-16"))
+        # Le nom du fichier et le scan ne disent pas le meme numero : on ne tranche pas.
+        indices = B.lire_nom_fichier("Ordre de versement Chèques Bq BIAT-7473933-du 09-11-2026.pdf")
+        q = B.identite(indices, self.LU, "2026-11-16")
+        self.assertEqual(q["manque"], ["numero"])
+        self.assertIn("7473933", q["conflit"])
+        self.assertIn("7473685", q["conflit"])
+
+    def test_date_lue_invraisemblable(self):
+        for lue in ("2016-11-09", "2026-12-25", "2026-08-01", None):          # annee mal lue, futur, trop vieux
+            q = B.identite({}, dict(self.LU, date_remise=lue), "2026-11-16")
+            self.assertEqual((q["date_remise"], q["date_source"]), ("2026-11-16", "jour"), lue)
+
+
 class TestEchec(unittest.TestCase):
     def test_message_pour_la_caisse(self):
         self.assertIn("introuvable sur le serveur", B.message_d_echec(FileNotFoundError(2, "No such file")))
@@ -159,6 +194,12 @@ class TestLectureIA(unittest.TestCase):
         self.assertIsNone(lu["pieces"][2]["echeance"])               # date mal formee : ecartee
         self.assertTrue(lu["total_concorde"])
         self.assertEqual(X.normaliser(None)["pieces"], [])
+        self.assertEqual((X.normaliser(None)["banque_remise"], X.normaliser(None)["nature"]), (None, None))
+        for ecrit, banque in (("BIAT", "BIAT"), ("Banque Zitouna", "Zitouna"), ("بنك الزيتونة / Banque ZITOUNA", "Zitouna"), ("BNA", None)):
+            self.assertEqual(X.normaliser({"banque_remise": ecrit})["banque_remise"], banque)
+        for ecrit, nature in (("cheques", "Chèques"), ("Remise de chèques", "Chèques"), ("traites", "Traites"),
+                              ("remise d'effets", "Traites"), ("especes", "Espèces"), ("?", None)):
+            self.assertEqual(X.normaliser({"nature": ecrit})["nature"], nature)
         self.assertFalse(X.normaliser({"total": 10, "pieces": [{"numero": "1234567", "montant": 9}]})["total_concorde"])
 
     def test_json_du_modele(self):

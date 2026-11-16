@@ -8,6 +8,11 @@ identifier les cheques ou les traites, les lister et verifier s'ils existent dan
 caisse, sans bloquer »), l'IA lit le scan (`ai/bordereau_extract`), chaque piece lue est cherchee parmi les
 paiements d'ERPNext (`rapprocher`) et le resultat est pose sur le bordereau. C'est un CONTROLE : rien n'est
 comptabilise, rien n'empeche de collecter — une lecture ratee laisse le bordereau collecte.
+
+Depuis la caisse, on ne remplit plus rien (demande du meme jour : « lorsque je charge le fichier ou prends
+une photo, toutes les infos se font, c'est plus naturel ») : le scan est DEPOSE (`deposer`), l'IA y lit
+aussi la banque, le numero, la date et la nature, et le bordereau est collecte tout seul
+(`collecter_par_ia`). La saisie a la main reste le repli quand l'IA ne peut pas l'identifier.
 """
 from __future__ import annotations
 
@@ -216,6 +221,52 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
     return out
 
 
+def identite(indices: dict, lu: dict, aujourd_hui: str) -> dict:
+    """De quoi nommer le bordereau depose, sans rien demander : banque, numero, nature, date. Pur.
+
+    `indices` : ce que dit le nom du fichier (`lire_nom_fichier`) ; `lu` : ce que l'IA a lu sur le scan.
+    Le nom du fichier n'est cru que s'il NOMME LA BANQUE, comme le fait la facon de ranger de l'entreprise
+    (« … Bq BIAT-7473685-du 09-11-2026.pdf ») : une photo de telephone s'appelle « IMG_20261116_101500.jpg »,
+    et ses chiffres ne sont pas un numero de bordereau.
+    -> {banque, numero, nature, date_remise, date_source (« nom », « scan » ou « jour »), manque: [champs],
+        conflit: str|None}"""
+    indices = indices if (indices or {}).get("banque") else {}
+    lu = lu or {}
+    out = {"banque": indices.get("banque") or lu.get("banque_remise"), "numero": None,
+           "nature": indices.get("nature") or lu.get("nature") or "Chèques", "manque": [], "conflit": None}
+    du_nom, du_scan = _chiffres(indices.get("numero")), _chiffres(lu.get("numero"))
+    if du_nom and du_scan and du_nom != du_scan:
+        # Deux sources, deux numeros : on ne choisit pas a la place de la personne.
+        out["conflit"] = (f"Le nom du fichier dit n° {indices['numero']}, le numéro imprimé lu sur le scan est "
+                          f"{lu['numero']} : indiquez le bon.")
+        out["numero"] = indices.get("numero")
+        out["manque"].append("numero")
+    else:
+        try:
+            out["numero"] = numero_propre(indices.get("numero") or lu.get("numero"))
+        except ValueError:
+            out["manque"].append("numero")
+    if out["banque"] not in BANQUES:
+        out["banque"] = None
+        out["manque"].append("banque")
+    # La date : celle du nom du fichier ; sinon celle lue, si elle est vraisemblable (une remise est
+    # recente, et l'annee manuscrite se lit mal — « 2026 » lu « 2016 ») ; sinon aujourd'hui.
+    out["date_remise"], out["date_source"] = indices.get("date_remise"), "nom"
+    if not out["date_remise"]:
+        lue = lu.get("date_remise")
+        if lue and lue <= aujourd_hui and _jours_entre(lue, aujourd_hui) <= 60:
+            out["date_remise"], out["date_source"] = lue, "scan"
+        else:
+            out["date_remise"], out["date_source"] = aujourd_hui, "jour"
+    return out
+
+
+def _jours_entre(a: str, b: str) -> int:
+    from datetime import date
+
+    return abs((date.fromisoformat(b) - date.fromisoformat(a)).days)
+
+
 def message_d_echec(erreur: Exception) -> str:
     """Ce qu'on ecrit sur le bordereau quand la lecture echoue : une phrase pour la personne a la caisse,
     pas une trace technique (celle-ci va au journal des erreurs). Pur."""
@@ -276,8 +327,9 @@ def bilan(pieces: list, lecture: dict = None, saisi: dict = None, nature: str = 
         if not _egaux(erp, reference):
             remarques.append(f"Ces paiements font {_dt(erp)} dans ERPNext, le bordereau {_dt(reference)} : "
                              f"écart de {_dt(abs(erp - reference))}.")
-    if any(p.get("doute") and p.get("etat") != ETAT_TROUVE for p in pieces):
-        remarques.append("L’IA hésite sur un chiffre des lignes « à vérifier » ou « introuvable » : comparez avec le scan.")
+    if any(p.get("doute") and p.get("etat") == ETAT_INTROUVABLE for p in pieces):
+        # Une ligne « à vérifier » dit deja son ecart ; c'est pour l'introuvable qu'un chiffre mal lu est la piste.
+        remarques.append("L’IA hésite sur un chiffre d’une ligne introuvable : comparez avec le scan, corrigez sur la fiche.")
     return {"resume": resume, "remarques": remarques, "trouves": compte[ETAT_TROUVE],
             "a_verifier": compte[ETAT_A_VERIFIER], "introuvables": compte[ETAT_INTROUVABLE]}
 
@@ -313,13 +365,17 @@ def ajouter(banque: str, numero: str, date_remise: str, fichier: str, nature: st
                           "nature": nature, "fichier": fichier, "note": note,
                           "montant_total": frappe.utils.flt(montant_total) or None,
                           "nombre": frappe.utils.cint(nombre) or None}).insert()
-    # Le fichier televerse par le dialogue n'est rattache a rien : il devient la piece jointe du bordereau,
-    # donc lisible par qui peut lire le bordereau.
+    _rattacher(fichier, doc.name)
+    return {"name": doc.name, "deja": False, "lecture": doc.nature in NATURES_LUES}
+
+
+def _rattacher(fichier: str, name: str):
+    """Le fichier televerse par le dialogue n'est rattache a rien : il devient la piece jointe du
+    bordereau, donc lisible par qui peut lire le bordereau."""
     for f in frappe.get_all("File", filters={"file_url": fichier, "attached_to_name": ["is", "not set"],
                                              "owner": frappe.session.user}, pluck="name"):
-        frappe.db.set_value("File", f, {"attached_to_doctype": DOCTYPE, "attached_to_name": doc.name,
+        frappe.db.set_value("File", f, {"attached_to_doctype": DOCTYPE, "attached_to_name": name,
                                         "attached_to_field": "fichier"}, update_modified=False)
-    return {"name": doc.name, "deja": False, "lecture": doc.nature in NATURES_LUES}
 
 
 @frappe.whitelist()
@@ -386,8 +442,8 @@ def _paiements(nature: str, numeros: list):
 CHAMPS_PIECE = ("numero", "banque", "tireur", "echeance", "montant", "doute")
 
 
-def _poser(doc, pieces: list, lecture: dict = None):
-    """Rapproche `pieces` et ecrit le resultat sur le bordereau."""
+def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
+    """Rapproche `pieces` et ecrit le resultat sur le bordereau. `avant` : remarques a mettre en tete."""
     portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
     rapprochees = rapprocher(pieces, portefeuille, ailleurs)
     if lecture is None:
@@ -402,10 +458,20 @@ def _poser(doc, pieces: list, lecture: dict = None):
                               "montant_erp": p["montant_erp"], "remarque": p["remarque"]})
     doc.lecture_statut = LECTURE_LUE
     doc.lecture_resume = etat["resume"]
-    doc.lecture_message = "\n".join(etat["remarques"]) or None
+    doc.lecture_message = "\n".join(list(avant) + etat["remarques"]) or None
     doc.flags.ignore_permissions = True
     doc.save()
     return etat
+
+
+def _aujourd_hui_lisible() -> str:
+    return frappe.utils.formatdate(frappe.utils.today(), "dd/MM/yyyy")
+
+
+def _appliquer_lecture(doc, lu: dict, avant: list = ()):
+    doc.total_lu, doc.nombre_lu = lu.get("total"), lu.get("nombre")
+    doc.lecture_modele, doc.lecture_le = lu.get("_model"), frappe.utils.now()
+    return _poser(doc, lu.get("pieces") or [], lu, avant)
 
 
 def lire(bordereau: str):
@@ -415,11 +481,15 @@ def lire(bordereau: str):
 
     try:
         doc = frappe.get_doc(DOCTYPE, bordereau)
-        contenu, nom = _contenu(doc.fichier)
-        lu = bordereau_extract.lire(contenu, nom, doc.nature, aujourd_hui=frappe.utils.formatdate(frappe.utils.today(), "dd/MM/yyyy"))
-        doc.total_lu, doc.nombre_lu = lu.get("total"), lu.get("nombre")
-        doc.lecture_modele, doc.lecture_le = lu.get("_model"), frappe.utils.now()
-        _poser(doc, lu["pieces"], lu)
+        # Le scan vient peut-etre d'etre lu au depot (bordereau que l'IA n'a pas su nommer seule, complete
+        # a la main) : on ne paie pas une seconde lecture.
+        lu = frappe.cache.get_value(CLE_LECTURE + (doc.fichier or ""))
+        if lu:
+            frappe.cache.delete_value(CLE_LECTURE + doc.fichier)
+        else:
+            contenu, nom = _contenu(doc.fichier)
+            lu = bordereau_extract.lire(contenu, nom, doc.nature, aujourd_hui=_aujourd_hui_lisible())
+        _appliquer_lecture(doc, lu)
     except Exception as e:
         frappe.db.rollback()
         frappe.log_error(title="Bordereau de remise : lecture par l'IA", message=frappe.get_traceback())
@@ -467,3 +537,86 @@ def detail(name: str) -> dict:
             "pieces": [{champ: ligne.get(champ) for champ in
                         ("numero", "banque", "tireur", "echeance", "montant", "doute", "etat", "paiement", "client",
                          "montant_erp", "remarque")} for ligne in doc.pieces]}
+
+
+# ---------------------------------------------------------------------------
+# Depot : on donne le scan, l'IA fait le reste
+# ---------------------------------------------------------------------------
+#: Ou en est un scan depose ({etat, …}), et la lecture gardee quand il a fallu demander un complement.
+CLE_DEPOT, CLE_LECTURE = "brs_depot:", "brs_lecture:"
+UNE_JOURNEE = 86400
+DEPOT_EN_COURS, DEPOT_COLLECTE, DEPOT_DEJA = "en_cours", "collecte", "deja"
+DEPOT_A_COMPLETER, DEPOT_ECHEC = "a_completer", "echec"
+
+
+def _etat_depot(fichier: str, **etat):
+    frappe.cache.set_value(CLE_DEPOT + fichier, etat, expires_in_sec=UNE_JOURNEE)
+    frappe.publish_realtime("brs_bordereau_lu", {"fichier": fichier, **etat})
+
+
+@frappe.whitelist()
+def deposer(fichier: str) -> dict:
+    """Le scan (ou la photo) vient d'etre televerse : l'IA le lit en arriere-plan — banque, numero, date,
+    nature, pieces — et collecte le bordereau toute seule. Rend tout de suite ; suivre avec `etat_depot`
+    ou le signal temps reel `brs_bordereau_lu`."""
+    frappe.has_permission(DOCTYPE, "create", throw=True)
+    if not fichier or not str(fichier).startswith(("/files/", "/private/files/")) \
+            or not frappe.db.exists("File", {"file_url": fichier}):
+        frappe.throw("Joignez le scan ou la photo du bordereau.")
+    frappe.cache.set_value(CLE_DEPOT + fichier, {"etat": DEPOT_EN_COURS}, expires_in_sec=UNE_JOURNEE)
+    frappe.enqueue("bank_retenue_sync.api.bordereaux.collecter_par_ia", queue="default", timeout=600,
+                   enqueue_after_commit=True, fichier=fichier)
+    return {"etat": DEPOT_EN_COURS}
+
+
+@frappe.whitelist()
+def etat_depot(fichier: str) -> dict:
+    frappe.has_permission(DOCTYPE, "create", throw=True)
+    return frappe.cache.get_value(CLE_DEPOT + (fichier or "")) or {"etat": "inconnu"}
+
+
+def collecter_par_ia(fichier: str):
+    """LA TACHE DE FOND DU DEPOT. L'IA lit le scan ; si la banque et le numero en sortent, le bordereau est
+    collecte et ses pieces cherchees dans ERPNext. Sinon (banque illisible, numeros contradictoires, panne
+    de l'IA), rien n'est perdu : l'etat dit ce qui manque, et la caisse propose la saisie a la main."""
+    from bank_retenue_sync.ai import bordereau_extract
+
+    indices = {}
+    try:
+        contenu, nom = _contenu(fichier)
+        indices = lire_nom_fichier(nom)
+        indices = indices if indices.get("banque") else {}
+        lu = bordereau_extract.lire(contenu, nom, indices.get("nature"), aujourd_hui=_aujourd_hui_lisible())
+        qui = identite(indices, lu, frappe.utils.today())
+        propose = {"banque": qui["banque"], "numero": qui["numero"], "nature": qui["nature"],
+                   "date_remise": qui["date_remise"], "montant_total": lu.get("total"),
+                   "nombre": lu.get("nombre") or len(lu.get("pieces") or []) or None}
+        if qui["manque"]:
+            # La lecture est gardee : quand la personne aura complete, `lire` la reprendra sans rappeler l'IA.
+            frappe.cache.set_value(CLE_LECTURE + fichier, lu, expires_in_sec=UNE_JOURNEE)
+            manque = " et ".join({"banque": "la banque", "numero": "le numéro du bordereau"}[m] for m in qui["manque"])
+            _etat_depot(fichier, etat=DEPOT_A_COMPLETER, propose=propose,
+                        message=qui["conflit"] or f"L’IA n’a pas pu lire {manque} : complétez, puis collectez.")
+            return
+        name = nom_du_bordereau(qui["banque"], qui["numero"])
+        if frappe.db.exists(DOCTYPE, name):
+            _etat_depot(fichier, etat=DEPOT_DEJA, name=name)
+            return
+        doc = frappe.get_doc({"doctype": DOCTYPE, "banque": qui["banque"], "numero": qui["numero"],
+                              "nature": qui["nature"], "date_remise": qui["date_remise"], "fichier": fichier,
+                              "montant_total": propose["montant_total"], "nombre": propose["nombre"]})
+        doc.flags.lecture_faite = True                # `after_insert` ne relance pas une lecture
+        doc.insert()
+        _rattacher(fichier, doc.name)
+        if doc.nature in NATURES_LUES:
+            avant = [] if qui["date_source"] != "jour" else [
+                "Date illisible sur le bordereau : la date du jour a été mise — corrigez-la sur la fiche si besoin."]
+            _appliquer_lecture(doc, lu, avant)
+        _etat_depot(fichier, etat=DEPOT_COLLECTE, name=doc.name)
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(title="Bordereau de remise : dépôt lu par l'IA", message=frappe.get_traceback())
+        _etat_depot(fichier, etat=DEPOT_ECHEC, propose=indices,
+                    message=message_d_echec(e) + " Vous pouvez saisir le bordereau à la main.")
+    finally:
+        frappe.db.commit()
