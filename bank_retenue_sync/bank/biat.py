@@ -127,8 +127,9 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
             # Le bordereau papier est le seul document qui dit quels cheques composent une remise BIAT : on dit
             # s'il est deja collecte (`BRS Bordereau Remise`) ou s'il reste a recueillir a la caisse.
             collecte = contexte.get("bordereaux", {}).get(numero)
-            suite = f"bordereau collecté ({collecte}), chèques à rapprocher" if collecte \
-                else "bordereau à collecter (caisse → Bordereaux de remise)"
+            lecture = contexte.get("lectures", {}).get(numero)
+            suite = (f"bordereau collecté ({collecte}), " + (f"lu par l’IA — {lecture}" if lecture else "chèques à rapprocher")) \
+                if collecte else "bordereau à collecter (caisse → Bordereaux de remise)"
             out.update(statut=STATUT_ORPHELIN, raison=f"remise de chèques, bordereau {numero} : aucun paiement "
                        f"ne porte « BR:{numero} » — {suite}")
             return out
@@ -274,14 +275,17 @@ def charger_contexte(lignes: list) -> dict:
                                fields=["name", "cheque_no", "docstatus"]):
         mois, annee = e.cheque_no[len(PREFIXE_FRAIS):].split("-")[:2]
         mensuelles[f"{annee}-{mois}"] = {"name": e.name, "docstatus": e.docstatus}
-    bordereaux = {}
+    bordereaux, lectures = {}, {}
     if numeros and frappe.db.exists("DocType", "BRS Bordereau Remise"):
+        lu = frappe.db.has_column("BRS Bordereau Remise", "lecture_resume")
         for b in frappe.db.get_all("BRS Bordereau Remise", filters={"banque": BANQUE, "numero": ["in", list(numeros)]},
-                                   fields=["name", "numero"]):
+                                   fields=["name", "numero"] + (["lecture_resume"] if lu else [])):
             bordereaux[b.numero] = b.name
+            if b.get("lecture_resume"):
+                lectures[b.numero] = b.lecture_resume
     return {"paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
-            "bordereaux": bordereaux}
+            "bordereaux": bordereaux, "lectures": lectures}
 
 
 def classer_registre(persist: bool = True, _frais: bool = True) -> dict:

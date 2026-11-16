@@ -15,6 +15,10 @@ dependencies = [
     # les trois extractions (facture, declaration, remise) au premier appel, en silence jusque-la.
     # requests / openpyxl / pypdf sont deja fournis (et epingles) par frappe : ne pas les redoubler.
     "openai~=2.15",
+    # Lecture des bordereaux de remise scannes (`ai/bordereau_extract`) : la page PDF est rendue en image
+    # puis recadree sur le bordereau. Deja installe par customization_app et aquaworld_ia ; declare ici
+    # pour la meme raison qu'`openai`. (Pillow est fourni par frappe.)
+    "pymupdf>=1.24.3",
 ]
 
 [build-system]

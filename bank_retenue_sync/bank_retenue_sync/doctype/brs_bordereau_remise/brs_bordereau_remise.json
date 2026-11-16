@@ -12,6 +12,17 @@
   "fichier",
   "montant_total",
   "nombre",
+  "sb_pieces",
+  "lecture_statut",
+  "lecture_resume",
+  "cb_3",
+  "total_lu",
+  "nombre_lu",
+  "lecture_le",
+  "lecture_modele",
+  "sb_pieces_2",
+  "lecture_message",
+  "pieces",
   "sb_suivi",
   "note",
   "cb_2",
@@ -76,6 +87,82 @@
    "label": "Nombre de pièces (facultatif)"
   },
   {
+   "fieldname": "sb_pieces",
+   "fieldtype": "Section Break",
+   "label": "Pièces du bordereau (lecture par l’IA)"
+  },
+  {
+   "fieldname": "lecture_statut",
+   "fieldtype": "Select",
+   "label": "Lecture",
+   "options": "\nEn attente\nLue\nÉchec",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Après la collecte, l’IA lit le scan en arrière-plan, liste les chèques ou les traites et les cherche dans ERPNext. Rien n’est bloqué ni comptabilisé : c’est un contrôle."
+  },
+  {
+   "fieldname": "lecture_resume",
+   "fieldtype": "Data",
+   "label": "Résultat",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "cb_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_lu",
+   "fieldtype": "Currency",
+   "label": "Montant total lu",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "nombre_lu",
+   "fieldtype": "Int",
+   "label": "Nombre de pièces lu",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "lecture_le",
+   "fieldtype": "Datetime",
+   "label": "Lu le",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "lecture_modele",
+   "fieldtype": "Data",
+   "label": "Modèle",
+   "read_only": 1,
+   "no_copy": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "sb_pieces_2",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "lecture_message",
+   "fieldtype": "Small Text",
+   "label": "Remarques de la lecture",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "pieces",
+   "fieldtype": "Table",
+   "label": "Chèques / traites",
+   "options": "BRS Bordereau Remise Piece",
+   "no_copy": 1,
+   "description": "Une écriture manuscrite se lit mal : corrigez un numéro ou un montant si besoin, enregistrez, puis « Revérifier dans ERPNext »."
+  },
+  {
    "fieldname": "sb_suivi",
    "fieldtype": "Section Break",
    "label": "Suivi"
@@ -99,7 +186,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-16 15:00:00.000000",
+ "modified": "2026-11-16 17:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Bordereau Remise",

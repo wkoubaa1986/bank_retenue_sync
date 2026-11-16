@@ -16,8 +16,15 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   Zitouna ; chèques, traites, espèces), rangé avec sa banque, son numéro et sa date. Collecte depuis
   la caisse journalière (bouton « Bordereaux de remise », app customization_app) ou la liste ; le nom
   du fichier (« Ordre de versement Chèques Bq BIAT-7473685-du 09-11-2026.pdf ») remplit les champs.
-  Rien n'est lu ni rapproché à la collecte : l'identification dit seulement si le bordereau d'une
-  remise BIAT est collecté ou reste à recueillir ;
+  La collecte est immédiate et ne dépend de rien. Ensuite, en arrière-plan, l'IA lit le scan
+  (`ai/bordereau_extract` : page recadrée sur le bordereau, écriture manuscrite, modèle du réglage
+  « Modèle IA de lecture des bordereaux », gpt-6.1-sol par défaut), liste les chèques ou les traites
+  et cherche chacun parmi les paiements d'ERPNext (`api/bordereaux.rapprocher` : même numéro, numéro
+  à un chiffre près avec le même montant, montant unique du portefeuille, pièce déjà sortie du
+  portefeuille). Chaque ligne sort « Trouvé », « À vérifier » (l'écart est dit) ou « Introuvable ».
+  C'est un contrôle : rien n'est comptabilisé, une lecture ratée laisse le bordereau collecté, et
+  l'on peut corriger une ligne sur la fiche puis « Revérifier dans ERPNext ». L'identification d'une
+  remise BIAT reprend ce résultat dans sa raison ;
 - **Retenue à la source (TEJ)** — certificats reçus (ingestion, rapprochement, imputation) et
   **émis** (déclaration d'un certificat fournisseur depuis la facture d'achat, suivi du dépôt) ;
 - **Achats locaux** — contrôle des factures sur scan (OpenAI), retenue 1 %, matricule fournisseur ;

@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "creation": "2026-11-16 17:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "numero",
+  "banque",
+  "tireur",
+  "montant",
+  "echeance",
+  "doute",
+  "cb_1",
+  "etat",
+  "paiement",
+  "client",
+  "montant_erp",
+  "remarque"
+ ],
+ "fields": [
+  {
+   "fieldname": "numero",
+   "fieldtype": "Data",
+   "label": "N° de la pièce",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "banque",
+   "fieldtype": "Data",
+   "label": "Banque",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "tireur",
+   "fieldtype": "Data",
+   "label": "Tireur (lu)",
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "montant",
+   "fieldtype": "Currency",
+   "label": "Montant lu",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "echeance",
+   "fieldtype": "Date",
+   "label": "Échéance (traite)"
+  },
+  {
+   "fieldname": "doute",
+   "fieldtype": "Check",
+   "label": "Lecture incertaine",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "etat",
+   "fieldtype": "Select",
+   "label": "Dans ERPNext",
+   "options": "\nTrouvé\nÀ vérifier\nIntrouvable",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "paiement",
+   "fieldtype": "Link",
+   "label": "Paiement",
+   "options": "Payment Entry",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Data",
+   "label": "Client",
+   "read_only": 1
+  },
+  {
+   "fieldname": "montant_erp",
+   "fieldtype": "Currency",
+   "label": "Montant dans ERPNext",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarque",
+   "fieldtype": "Small Text",
+   "label": "Remarque",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-16 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Bordereau Remise Piece",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

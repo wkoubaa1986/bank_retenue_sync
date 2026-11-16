@@ -5,7 +5,8 @@ apres, l'identification bancaire fera le necessaire ; juste collecter les border
 la BIAT ne montre pas le detail d'une remise comme celui de Zitouna : le seul document qui dit quels
 cheques elle contient est le bordereau papier. On le range ici, avec les trois choses qui permettent
 de le retrouver depuis le releve — la banque, son numero (celui que la banque reprend dans le libelle
-du credit) et sa date. Rien n'est lu ni rapproche ici.
+du credit) et sa date. Une fois range, l'IA le lit en arriere-plan et cherche ses pieces dans ERPNext
+(`api/bordereaux.lire`) : un controle, qui ne bloque ni ne comptabilise rien.
 """
 import frappe
 from frappe.model.document import Document
@@ -27,3 +28,7 @@ class BRSBordereauRemise(Document):
         if not self.is_new() and self.name != B.nom_du_bordereau(self.banque, self.numero):
             frappe.throw("La banque et le numéro identifient le bordereau : pour les corriger, supprimez-le et "
                          "collectez-le à nouveau.")
+
+    def after_insert(self):
+        if self.nature in B.NATURES_LUES:
+            B.lancer_lecture(self.name)

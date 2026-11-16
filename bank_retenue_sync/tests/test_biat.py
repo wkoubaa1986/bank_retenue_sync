@@ -51,6 +51,11 @@ class TestClassement(unittest.TestCase):
         collecte = biat.classer_ligne(ligne(REMISE, credit=1500.0), {"bordereaux": {"1234567": "BR-BIAT-1234567"}})
         self.assertIn("bordereau collecté (BR-BIAT-1234567)", collecte["raison"])
         self.assertEqual(collecte["statut"], "Orphelin")                                   # collecter ne rapproche pas
+        self.assertIn("chèques à rapprocher", collecte["raison"])
+        lu = biat.classer_ligne(ligne(REMISE, credit=1500.0), {"bordereaux": {"1234567": "BR-BIAT-1234567"},
+                                                              "lectures": {"1234567": "3 chèques : tous trouvés"}})
+        self.assertIn("bordereau collecté (BR-BIAT-1234567), lu par l’IA — 3 chèques : tous trouvés", lu["raison"])
+        self.assertEqual(lu["statut"], "Orphelin")                                         # lire ne comptabilise pas
 
     def test_remise_portee_par_des_paiements(self):
         ctx = {"paiements_par_bordereau": {"1234567": [{"name": "PE-1", "montant": 1000.0, "docstatus": 1},
