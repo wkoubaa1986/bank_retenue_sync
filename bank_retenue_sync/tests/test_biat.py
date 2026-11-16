@@ -118,6 +118,89 @@ class TestCleParBanque(unittest.TestCase):
         self.assertEqual(registry.BANQUES, ("Zitouna", "BIAT"))
 
 
+class TestEncaissementParBordereau(unittest.TestCase):
+    """La BIAT ne publie pas le detail de ses remises : le bordereau collecte en tient lieu."""
+
+    LIGNE = {"date": "2026-11-12", "credit": 3010.127, "reference": "REF1"}
+    BORDEREAU = {"name": "BR-BIAT-7473685", "nature": "Chèques", "lecture_statut": "Lue", "a_signaler": None, "pieces": [
+        {"numero": "4001767", "montant": 270.0, "paiement": "PE-1", "client": "Ideale eau"},
+        {"numero": "4001066", "montant": 1045.0, "paiement": "PE-2", "client": "FM WATER PLUS"},
+        {"numero": "8965167", "montant": 1695.127, "paiement": "PE-3", "client": "Agro Techno Service"}]}
+    PAIEMENTS = {"PE-1": {"montant": 270.0, "compte": "Chèques - A&S", "docstatus": 1},
+                 "PE-2": {"montant": 1045.0, "compte": "Chèques - A&S", "docstatus": 1},
+                 "PE-3": {"montant": 1694.88, "compte": "Chèques - A&S", "docstatus": 1}}
+
+    def decider(self, ligne=None, bordereau=None, paiements=None, **change):
+        b = dict(self.BORDEREAU if bordereau is None else bordereau, **change)
+        return biat.decider_encaissement(ligne or self.LIGNE, "7473685", b, self.PAIEMENTS if paiements is None else paiements)
+
+    def test_cas_reel_encaisse_avec_son_petit_ecart(self):
+        d = self.decider()
+        self.assertTrue(d["faire"])
+        self.assertEqual((d["total"], d["ecart"]), (3009.88, 0.247))
+        self.assertEqual([(l["ref_paiement"], l["n_cheque"], l["valeur"], l["bon_remise"], l["date"], l["statut"]) for l in d["lignes"]],
+                         [("PE-1", "4001767", 270.0, "7473685", "2026-11-12", "Versé"),
+                          ("PE-2", "4001066", 1045.0, "7473685", "2026-11-12", "Versé"),
+                          ("PE-3", "8965167", 1694.88, "7473685", "2026-11-12", "Versé")])
+        # L'ecart est trace sur le cheque qui le porte, sans bloquer.
+        self.assertEqual([(e["sous_type"], e["bloquant"], e["suivi"], e["ref_paiement"], e["montant_piece"], e["montant_advice"], e["ecart"])
+                          for e in d["ecarts"]], [("Toléré", 0, "8965167", "PE-3", 1694.88, 1695.127, -0.247)])
+
+    def test_lecture_non_prouvee_pas_d_ecart_par_cheque(self):
+        # Un montant mal lu (somme lue != credit) : on encaisse sur les paiements, sans accuser un cheque.
+        pieces = [dict(p) for p in self.BORDEREAU["pieces"]]
+        pieces[0]["montant"] = 270.5
+        d = self.decider(pieces=pieces)
+        self.assertTrue(d["faire"])
+        self.assertEqual(d["ecarts"], [])
+
+    def test_refus_et_leur_raison(self):
+        self.assertIn("bordereau à collecter", biat.decider_encaissement(self.LIGNE, "7473685", None, {})["raison"])
+        self.assertIn("n’est pas une remise de chèques", self.decider(nature="Traites")["raison"])
+        self.assertIn("pas encore lu", self.decider(lecture_statut="En attente")["raison"])
+        self.assertIn("n’a pas pu lire", self.decider(lecture_statut="Échec")["raison"])
+        signale = self.decider(a_signaler="Chèque n° 1 : introuvable dans ERPNext.\nAutre chose.")
+        self.assertEqual((signale["faire"], signale["raison"]),
+                         (False, "à signaler sur le bordereau — Chèque n° 1 : introuvable dans ERPNext. (+1)"))
+        self.assertIn("aucun chèque", self.decider(pieces=[])["raison"])
+        sans = [dict(self.BORDEREAU["pieces"][0], paiement=None)]
+        self.assertIn("pas de paiement dans ERPNext", self.decider(pieces=sans)["raison"])
+        double = [self.BORDEREAU["pieces"][0], self.BORDEREAU["pieces"][0]]
+        self.assertIn("cité deux fois", self.decider(pieces=double)["raison"])
+
+    def test_cheque_deja_sorti_du_portefeuille(self):
+        ailleurs = dict(self.PAIEMENTS, **{"PE-2": {"montant": 1045.0, "compte": "STE430127B - Zitouna - A&S", "docstatus": 1}})
+        self.assertIn("n’est plus dans le portefeuille (« STE430127B - Zitouna - A&S »)", self.decider(paiements=ailleurs)["raison"])
+        annule = dict(self.PAIEMENTS, **{"PE-2": {"montant": 1045.0, "compte": "Chèques - A&S", "docstatus": 2}})
+        self.assertFalse(self.decider(paiements=annule)["faire"])
+        pris = dict(self.PAIEMENTS, **{"PE-2": {"montant": 1045.0, "compte": "Chèques - A&S", "docstatus": 1, "en_encaissement": True}})
+        self.assertIn("déjà sur un autre encaissement", self.decider(paiements=pris)["raison"])
+
+    def test_credit_qui_ne_tombe_pas(self):
+        # 1 DT par cheque de tolerance : 3 cheques -> 3 DT. Au-dela, on n'encaisse pas, et on dit de combien.
+        juste = self.decider(ligne=dict(self.LIGNE, credit=3012.5))
+        self.assertTrue(juste["faire"])
+        trop = self.decider(ligne=dict(self.LIGNE, credit=3110.127))
+        self.assertFalse(trop["faire"])
+        self.assertIn("diffèrent de 100.247", trop["raison"])
+
+    def test_ligne_encaissee_ouvre_l_encaissement(self):
+        ctx = {"paiements_par_bordereau": {"1234567": [{"name": "PE-1", "montant": 1000.0, "docstatus": 1},
+                                                       {"name": "PE-2", "montant": 499.753, "docstatus": 1}]},
+               "encaissements": {"1234567": "ENC-16-11-2026-00002"}}
+        c = biat.classer_ligne(ligne(REMISE, credit=1500.0), ctx)
+        self.assertEqual((c["statut"], c["document_type"], c["document_name"], c["ecart"]),
+                         ("Identifie", "Encaissement Paiement", "ENC-16-11-2026-00002", 0.247))
+        self.assertIn("(encaissement ENC-16-11-2026-00002) — petit écart de 0.247", c["raison"])
+
+    def test_la_raison_du_refus_se_lit_sur_la_ligne(self):
+        ctx = {"bordereaux": {"1234567": "BR-BIAT-1234567"}, "lectures": {"1234567": "2 chèques : 1 trouvé, 1 introuvable"},
+               "refus": {"1234567": "à signaler sur le bordereau — Chèque n° 9 : introuvable dans ERPNext."}}
+        c = biat.classer_ligne(ligne(REMISE, credit=1500.0), ctx)
+        self.assertEqual(c["statut"], "A verifier")
+        self.assertIn("pas encaissé : à signaler sur le bordereau — Chèque n° 9", c["raison"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

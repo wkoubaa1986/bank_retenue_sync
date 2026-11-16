@@ -111,6 +111,20 @@ def verification_bancaire():
 
 
 def verification_bancaire_job(declencheur: str = "planifié"):
+    """Le passage Zitouna, puis celui de la BIAT (releve si le robot est actif, encaissement des remises
+    dont le bordereau est collecte, classement). La BIAT passe APRES et a part : son echec ne touche pas
+    au passage Zitouna, deja journalise."""
+    out = _verification_zitouna_job(declencheur)
+    _safe("passage BIAT", _passage_biat)
+    return out
+
+
+def _passage_biat():
+    from bank_retenue_sync.bank import biat
+    return biat.passage()
+
+
+def _verification_zitouna_job(declencheur: str = "planifié"):
     """Le vrai passage, sur la queue `long` — journalise dans `BRS Sync Run` (14/10/2026 : le passage
     de 15h s'etait arrete sans laisser aucune trace, cf. tasks/passages)."""
     from bank_retenue_sync import orchestrator

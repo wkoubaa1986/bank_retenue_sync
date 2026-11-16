@@ -130,15 +130,27 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
             lecture = contexte.get("lectures", {}).get(numero)
             suite = (f"bordereau collecté ({collecte}), " + (f"lu par l’IA — {lecture}" if lecture else "chèques à rapprocher")) \
                 if collecte else "bordereau à collecter (caisse → Bordereaux de remise)"
-            out.update(statut=STATUT_ORPHELIN, raison=f"remise de chèques, bordereau {numero} : aucun paiement "
-                       f"ne porte « BR:{numero} » — {suite}")
+            # Un bordereau collecte et bon est encaisse tout seul (`encaisser_remises`) : s'il ne l'est pas,
+            # c'est qu'une chose l'empeche, et c'est elle qu'il faut lire ici.
+            refus = contexte.get("refus", {}).get(numero)
+            out.update(statut=STATUT_A_VERIFIER if (collecte and refus) else STATUT_ORPHELIN,
+                       raison=f"remise de chèques, bordereau {numero} : aucun paiement ne porte « BR:{numero} » — {suite}"
+                       + (f" ; pas encaissé : {refus}" if (collecte and refus) else ""))
             return out
         total = _m(sum(_m(p["montant"]) for p in paiements))
         brouillon = any(int(p.get("docstatus") or 0) == 0 for p in paiements)
-        out.update(statut=STATUT_BROUILLON if brouillon else STATUT_IDENTIFIE, document_type="Payment Entry",
-                   document_name=paiements[0]["name"] if len(paiements) == 1 else None,
+        # La piece a ouvrir depuis la ligne : l'encaissement du bordereau quand il existe (il liste les cheques
+        # et porte les ecarts), sinon le paiement s'il est seul.
+        encaissement = contexte.get("encaissements", {}).get(numero)
+        out.update(statut=STATUT_BROUILLON if brouillon else STATUT_IDENTIFIE,
+                   document_type="Encaissement Paiement" if encaissement else "Payment Entry",
+                   document_name=encaissement or (paiements[0]["name"] if len(paiements) == 1 else None),
                    montant_document=total, ecart=_m(montant - total))
         detail = f"remise de chèques, bordereau {numero} : {len(paiements)} paiement(s) portent « BR:{numero} »"
+        if encaissement:
+            detail += f" (encaissement {encaissement})"
+        if 0.0005 < abs(out["ecart"]) <= TOLERANCE_REMISE:
+            detail += f" — petit écart de {out['ecart']:.3f} avec le crédit de la banque"
         if abs(out["ecart"]) > TOLERANCE_REMISE:
             detail += f" pour {total:.3f} — écart de {out['ecart']:.3f} avec le crédit de la banque"
         out["raison"] = detail
@@ -225,6 +237,82 @@ def cumul_frais(lignes: list, periode: str) -> dict:
 # Avec le site
 # ---------------------------------------------------------------------------
 
+#: Ecart tolere PAR CHEQUE entre le credit de la banque et les paiements d'ERPNext — meme politique que les
+#: encaissements Zitouna (`encaissement.matching.TOLERANCE_PAIEMENT`, 1 DT par paiement).
+ECART_PAR_PIECE = 1.0
+COMPTE_CHEQUES = "Chèques - A&S"
+
+
+def decider_encaissement(ligne: dict, numero: str, bordereau: dict, paiements: dict) -> dict:
+    """Peut-on encaisser cette remise de cheques a partir de son bordereau collecte ? Pur.
+
+    LE BORDEREAU PAPIER TIENT LIEU DE PORTAIL. Zitouna publie le detail de chaque remise, que le robot
+    telecharge ; la BIAT ne publie rien : le seul document qui dit quels cheques composent la remise est le
+    bordereau depose a la caisse (`BRS Bordereau Remise`), lu par l'IA et rapproche des paiements. Le n° du
+    libelle bancaire est le n° imprime sur le papier — c'est le lien.
+
+    `ligne` : {date, credit, reference} du registre ; `bordereau` : None ou {name, nature, lecture_statut,
+    a_signaler, pieces: [{numero, montant, paiement, client}]} ; `paiements` : {nom: {montant, compte,
+    docstatus, en_encaissement}} des paiements cites par le bordereau.
+    -> {faire, raison, lignes: [lignes de « Liste Cheque »], total, ecart, ecarts: [diagnostics « Toléré »]}
+
+    Encaisse seulement ce qui est SUR : bordereau lu sans rien a signaler, chaque cheque encore en
+    portefeuille, et un credit bancaire qui tombe sur le total des paiements a `ECART_PAR_PIECE` pres par
+    cheque. Tout le reste est refuse AVEC SA RAISON, qui s'affiche sur la ligne de l'identification."""
+    non = lambda raison: {"faire": False, "raison": raison, "lignes": [], "total": 0.0, "ecart": 0.0, "ecarts": []}  # noqa: E731
+    if not bordereau:
+        return non("bordereau à collecter (caisse → Bordereaux de remise)")
+    if bordereau.get("nature") != "Chèques":
+        return non(f"le bordereau collecté ({bordereau.get('name')}) n’est pas une remise de chèques")
+    if bordereau.get("lecture_statut") != "Lue":
+        return non("le bordereau n’est pas encore lu par l’IA" if bordereau.get("lecture_statut") != "Échec"
+                   else "l’IA n’a pas pu lire le bordereau : relisez-le ou saisissez ses chèques sur sa fiche")
+    signale = [l for l in (bordereau.get("a_signaler") or "").split("\n") if l.strip()]
+    if signale:
+        return non("à signaler sur le bordereau — " + signale[0] + (f" (+{len(signale) - 1})" if len(signale) > 1 else ""))
+    pieces = bordereau.get("pieces") or []
+    if not pieces:
+        return non("aucun chèque sur le bordereau collecté")
+    vus, lignes, total = set(), [], 0.0
+    for p in pieces:
+        nom = p.get("paiement")
+        pe = (paiements or {}).get(nom) if nom else None
+        if not pe:
+            return non(f"chèque n° {p.get('numero') or '?'} : pas de paiement dans ERPNext")
+        if nom in vus:
+            return non(f"le paiement {nom} est cité deux fois par le bordereau")
+        vus.add(nom)
+        if int(pe.get("docstatus") or 0) != 1 or pe.get("compte") != COMPTE_CHEQUES:
+            return non(f"chèque n° {p.get('numero') or '?'} : le paiement {nom} n’est plus dans le portefeuille "
+                       f"(« {pe.get('compte') or 'annulé'} »)")
+        if pe.get("en_encaissement"):
+            return non(f"chèque n° {p.get('numero') or '?'} : le paiement {nom} est déjà sur un autre encaissement")
+        montant = _m(pe.get("montant"))
+        total = _m(total + montant)
+        lignes.append({"ref_paiement": nom, "n_cheque": p.get("numero"), "valeur": montant, "emmeteur": p.get("client"),
+                       "bon_remise": numero, "date": ligne.get("date"), "statut": "Versé"})
+    credit = _m(ligne.get("credit") or ligne.get("montant"))
+    ecart = _m(credit - total)
+    if abs(ecart) > ECART_PAR_PIECE * len(lignes) + 0.0005:
+        return non(f"le crédit de la banque ({credit:.3f}) et les chèques du bordereau dans ERPNext ({total:.3f}) "
+                   f"diffèrent de {abs(ecart):.3f}")
+    # Les petits ecarts, cheque par cheque : traces (« Toléré »), jamais bloquants. On ne les detaille que si la
+    # lecture du bordereau est PROUVEE par le credit de la banque (somme des montants lus = credit) ; sinon un
+    # montant mal lu passerait pour un ecart de paiement, et seul l'ecart global de la ligne fait foi.
+    ecarts = []
+    lus = [p.get("montant") for p in pieces]
+    if all(v is not None for v in lus) and abs(_m(sum(_m(v) for v in lus)) - credit) <= 0.0005:
+        for p, l in zip(pieces, lignes):
+            delta = _m(l["valeur"] - _m(p["montant"]))
+            if abs(delta) > 0.0005:
+                ecarts.append({"type": "ecart", "flux": "cheque", "sous_type": "Toléré", "bloquant": 0,
+                               "reason": "ecart <= tolerance", "reference": ligne.get("reference") or "",
+                               "credit": credit, "bon": numero, "suivi": p.get("numero") or "",
+                               "client": p.get("client"), "ref_paiement": l["ref_paiement"],
+                               "montant_piece": l["valeur"], "montant_advice": _m(p["montant"]), "ecart": delta})
+    return {"faire": True, "raison": "", "lignes": lignes, "total": total, "ecart": ecart, "ecarts": ecarts}
+
+
 def compte() -> str:
     """Le compte comptable de la BIAT : celui du Bank Account de la societe, sinon « BIAT - A&S »."""
     return frappe.db.get_value("Bank Account", {"bank": BANQUE, "is_company_account": 1, "disabled": 0}, "account") \
@@ -283,9 +371,34 @@ def charger_contexte(lignes: list) -> dict:
             bordereaux[b.numero] = b.name
             if b.get("lecture_resume"):
                 lectures[b.numero] = b.lecture_resume
+    # L'encaissement soumis de chaque bordereau, pour l'ouvrir depuis la ligne.
+    encaissements = {}
+    if paiements and frappe.db.has_column("Encaissement Paiement", "custom_banque_depot"):
+        for nom, bon in frappe.db.sql(
+                """select c.parent, c.bon_remise from `tabListe Cheque` c
+                   join `tabEncaissement Paiement` e on e.name = c.parent
+                   where c.parenttype = 'Encaissement Paiement' and e.docstatus = 1
+                     and ifnull(e.custom_banque_depot, '') = %s and c.bon_remise in %s""", (BANQUE, list(paiements))):
+            encaissements[bon] = nom
+    # Pourquoi une remise dont le bordereau est collecte n'est pas (encore) encaissee.
+    refus = {}
+    migre = bool(bordereaux) and frappe.db.has_column("Encaissement Paiement", "custom_banque_depot")
+    for ligne in (lignes if migre else []):
+        vu = detecter(ligne.get("operation"), ligne.get("sens") or ("Debit" if flt(ligne.get("debit")) else "Credit"))
+        numero = vu["numero"]
+        if vu["regle"] != "enc_cheque" or not numero or numero in paiements or numero not in bordereaux:
+            continue
+        brouillon = _encaissement_en_cours(numero)
+        if brouillon:
+            refus[numero] = f"l’encaissement {brouillon} est en brouillon (à soumettre)"
+            continue
+        b = _bordereau(numero)
+        decision = decider_encaissement(ligne, numero, b, _etat_paiements([p.get("paiement") for p in (b or {}).get("pieces", [])]))
+        if not decision["faire"]:
+            refus[numero] = decision["raison"]
     return {"paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
-            "bordereaux": bordereaux, "lectures": lectures}
+            "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements}
 
 
 def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
@@ -380,6 +493,7 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
 def _importer(mouvements: list, origine: str) -> dict:
     out = registry.upsert_movements(mouvements, origine=origine, banque=BANQUE)
     out.pop("cles", None)
+    out["encaissements"] = encaisser_remises()
     out.update(classer_registre(persist=True))
     return out
 
@@ -414,3 +528,185 @@ def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
         frappe.log_error(f"rafraichissement BIAT echoue\n{e}", "brs page")
         out.update(classer_registre(persist=True))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Encaissement des remises de cheques, a partir du bordereau collecte
+# ---------------------------------------------------------------------------
+
+def _bordereau(numero: str):
+    """Le bordereau BIAT collecte sous ce numero, avec ses pieces — ou None."""
+    name = frappe.db.get_value("BRS Bordereau Remise", {"banque": BANQUE, "numero": numero}, "name")
+    if not name:
+        return None
+    doc = frappe.get_doc("BRS Bordereau Remise", name)
+    return {"name": doc.name, "nature": doc.nature, "lecture_statut": doc.lecture_statut, "a_signaler": doc.a_signaler,
+            "pieces": [{"numero": p.numero, "montant": p.montant, "paiement": p.paiement, "client": p.client}
+                       for p in doc.pieces]}
+
+
+def _etat_paiements(noms: list) -> dict:
+    from bank_retenue_sync.encaissement import pending
+
+    noms = [n for n in noms if n]
+    if not noms:
+        return {}
+    deja = pending.already_encaissed_refs()
+    return {pe.name: {"montant": pe.paid_amount, "compte": pe.paid_to, "docstatus": pe.docstatus,
+                      "en_encaissement": pe.name in deja}
+            for pe in frappe.get_all("Payment Entry", filters={"name": ["in", noms]},
+                                     fields=["name", "paid_amount", "paid_to", "docstatus"])}
+
+
+def _encaissement_en_cours(numero: str):
+    """Un Encaissement Paiement en BROUILLON qui porte deja ce bordereau (soumission automatique coupee, ou
+    soumission precedente en echec) — pour ne pas en creer un second."""
+    lignes = frappe.db.sql(
+        """select distinct c.parent from `tabListe Cheque` c
+           join `tabEncaissement Paiement` e on e.name = c.parent
+           where c.parenttype = 'Encaissement Paiement' and c.bon_remise = %s and e.docstatus = 0
+             and ifnull(e.custom_banque_depot, '') = %s""", (numero, BANQUE))
+    return lignes[0][0] if lignes else None
+
+
+def _soumission_automatique() -> bool:
+    return bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "encaissement_auto_submit")))
+
+
+def encaisser_remises(insert: bool = True) -> dict:
+    """LE FLUX CONTINU (demande du 16/11/2026 : « je veux tout automatiser, pas de validation ; s'il y a des
+    ecarts c'est facile a trouver »). Pour chaque remise de cheques BIAT creditee dont le bordereau est
+    collecte et bon : un Encaissement Paiement est cree avec ses cheques, banque de depot BIAT, puis soumis
+    (meme interrupteur `encaissement_auto_submit` que Zitouna). Le server script « Traitement des
+    encaissement » fait le reste : chaque cheque quitte « Chèques - A&S » pour le compte BIAT et porte
+    « BR:<n°> », ce que le classement reconnait.
+
+    Idempotent : une remise deja encaissee (paiements « BR:<n°> ») ou deja en brouillon n'est pas refaite.
+    Rien n'est force : ce qui n'est pas sur est laisse, avec sa raison sur la ligne de l'identification.
+    -> {encaisses: [{bordereau, encaissement, soumis, total, ecart}], refus: {n°: raison}, erreurs: [...]}"""
+    from bank_retenue_sync.encaissement import builder
+    from bank_retenue_sync.encaissement import ecarts as _ecarts
+
+    out = {"encaisses": [], "refus": {}, "erreurs": []}
+    if not frappe.db.exists("DocType", "BRS Bordereau Remise") \
+            or not frappe.db.has_column("Encaissement Paiement", "custom_banque_depot"):
+        return out                                     # pas encore migre : rien a faire, rien a casser
+    # ⚠️ LE SCRIPT COMPTABLE DOIT CONNAITRE LA BANQUE DE DEPOT. C'est lui (customization_app, « Traitement des
+    # encaissement ») qui choisit le compte ; une version qui ne lit pas `custom_banque_depot` enverrait une
+    # remise BIAT sur le compte Zitouna. Les deux apps se deploient separement : on verifie, on ne suppose pas.
+    script = frappe.db.get_value("Server Script", {"name": "Traitement des encaissement", "disabled": 0}, "script") or ""
+    if "custom_banque_depot" not in script:
+        out["erreurs"].append({"erreur": "le script « Traitement des encaissement » ne lit pas encore la banque de "
+                                         "dépôt (customization_app à déployer) : aucune remise BIAT n’est encaissée"})
+        return out
+    lignes = frappe.db.get_all(
+        registry.DOCTYPE, filters={"banque": BANQUE, "sens": "Credit", "ignore_manuel": 0}, limit_page_length=0,
+        order_by="date asc, creation asc",
+        fields=["name as cle", "date", "operation", "reference", "credit", "montant", "sens", "lien_manuel"])
+    auto = _soumission_automatique()
+    utilisateur = frappe.session.user
+    if insert:
+        # UN SEUL PASSAGE A LA FOIS. Le depot d'un bordereau et le passage planifie peuvent tomber ensemble :
+        # sans verrou, chacun verrait la remise « pas encore encaissee » et creerait le sien.
+        from frappe.utils.file_lock import LockTimeoutError
+        from frappe.utils.synchronization import filelock
+
+        try:
+            with filelock("brs_biat_encaissement", timeout=120):
+                return _encaisser(lignes, auto, utilisateur, out, True, builder, _ecarts)
+        except LockTimeoutError:
+            out["erreurs"].append({"erreur": "un autre passage BIAT est en cours : remis au suivant"})
+            return out
+    return _encaisser(lignes, auto, utilisateur, out, False, builder, _ecarts)
+
+
+def _encaisser(lignes, auto, utilisateur, out, insert, builder, _ecarts) -> dict:
+    try:
+        if insert:
+            # Le server script annule et recree des paiements : il lui faut les droits de la comptabilite,
+            # que n'a pas la personne dont le depot de bordereau declenche ce passage.
+            frappe.set_user("Administrator")
+        for ligne in lignes:
+            if ligne.lien_manuel:
+                continue
+            vu = detecter(ligne.operation, "Credit")
+            numero = vu["numero"]
+            if vu["regle"] != "enc_cheque" or not numero:
+                continue
+            if frappe.db.sql("select name from `tabPayment Entry` where docstatus < 2 and reference_no regexp %s limit 1",
+                             ("BR:[[:space:]]*" + numero + "([^0-9]|$)",)):
+                continue                               # deja encaissee
+            brouillon = _encaissement_en_cours(numero)
+            if not brouillon:
+                bordereau = _bordereau(numero)
+                decision = decider_encaissement(
+                    ligne, numero, bordereau, _etat_paiements([p.get("paiement") for p in (bordereau or {}).get("pieces", [])]))
+                if not decision["faire"]:
+                    out["refus"][numero] = decision["raison"]
+                    continue
+                if not insert:
+                    out["encaisses"].append({"bordereau": numero, "encaissement": "(essai)", "soumis": False,
+                                             "total": decision["total"], "ecart": decision["ecart"]})
+                    continue
+                doc = builder.build_encaissement(decision["lignes"], insert=False)
+                doc.custom_banque_depot = BANQUE
+                doc.insert(ignore_permissions=True)
+                _ecarts.persister(doc.name, decision["ecarts"])
+                frappe.db.commit()                     # le brouillon existe, quoi qu'il arrive a la soumission
+                brouillon, total, ecart = doc.name, decision["total"], decision["ecart"]
+            else:
+                total = ecart = None
+                if not insert:
+                    continue
+            soumis = False
+            if auto:
+                try:
+                    frappe.get_doc("Encaissement Paiement", brouillon).submit()
+                    frappe.db.commit()
+                    soumis = True
+                except Exception as e:
+                    frappe.db.rollback()
+                    frappe.log_error(title=f"BIAT : soumission de l'encaissement {brouillon}", message=frappe.get_traceback())
+                    out["erreurs"].append({"bordereau": numero, "encaissement": brouillon, "erreur": str(e)[:300]})
+            out["encaisses"].append({"bordereau": numero, "encaissement": brouillon, "soumis": soumis,
+                                     "total": total, "ecart": ecart})
+    finally:
+        if insert and frappe.session.user != utilisateur:
+            frappe.set_user(utilisateur)
+    return out
+
+
+def actif() -> bool:
+    try:
+        return bool(frappe.db.get_single_value("Bank Retenue Sync Settings", "enabled"))
+    except Exception:
+        return False
+
+
+def passage(refresh: bool = None) -> dict:
+    """Un passage BIAT complet : releve (si le robot est actif), encaissement des remises, classement.
+    Appele par le planificateur apres chaque verification Zitouna, et par le depot d'un bordereau."""
+    if not actif():
+        return {}
+    if refresh is None:
+        try:
+            refresh = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
+        except Exception:
+            refresh = False                            # reglage pas encore migre : pas de releve
+    if refresh:
+        return rafraichir()                            # importe, encaisse et classe
+    out = {"encaissements": encaisser_remises()}
+    out.update(classer_registre(persist=True))
+    return out
+
+
+def passage_job():
+    """Declenche par le depot (ou la reverification) d'un bordereau BIAT : la remise est peut-etre deja
+    creditee, auquel cas elle s'encaisse tout de suite. Jamais de releve ici — le robot a ses heures."""
+    try:
+        out = passage(refresh=False)
+        frappe.db.commit()
+        return out
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(title="BIAT : passage après dépôt d'un bordereau", message=frappe.get_traceback())

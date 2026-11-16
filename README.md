@@ -32,6 +32,17 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   C'est un contrôle : rien n'est comptabilisé, une lecture ratée laisse le bordereau collecté, et
   l'on peut corriger une ligne sur la fiche puis « Revérifier dans ERPNext ». L'identification d'une
   remise BIAT reprend ce résultat dans sa raison ;
+- **Remises de chèques BIAT, flux continu** — la BIAT ne publie pas le détail de ses remises : le
+  bordereau collecté en tient lieu. Dès que la remise est créditée (libellé « … borde : <n°> ») ET que
+  son bordereau est collecté sans rien à signaler, `bank/biat.encaisser_remises` crée l'Encaissement
+  Paiement de ses chèques avec « Banque de dépôt » = BIAT (champ `custom_banque_depot`, patch
+  `banque_depot_encaissement`) et le soumet (même interrupteur `encaissement_auto_submit` que
+  Zitouna) : le server script « Traitement des encaissement » (customization_app) porte alors chaque
+  chèque de « Chèques - A&S » au compte BIAT avec « BR:<n°> », et la ligne passe « Identifié ».
+  Déclenché par le dépôt du bordereau et par chaque vérification bancaire (relevé BIAT par le robot
+  si « Relevé BIAT automatique » est coché). Tolérance : 1 DT par chèque entre le crédit de la
+  banque et les paiements ; l'écart est tracé (« Toléré ») et affiché sur la ligne. Ce qui n'est pas
+  sûr n'est pas encaissé, et la raison se lit sur la ligne (« pas encaissé : … ») ;
 - **Retenue à la source (TEJ)** — certificats reçus (ingestion, rapprochement, imputation) et
   **émis** (déclaration d'un certificat fournisseur depuis la facture d'achat, suivi du dépôt) ;
 - **Achats locaux** — contrôle des factures sur scan (OpenAI), retenue 1 %, matricule fournisseur ;

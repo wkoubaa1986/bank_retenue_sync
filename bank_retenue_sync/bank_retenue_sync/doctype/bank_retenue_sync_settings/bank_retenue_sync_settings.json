@@ -78,7 +78,9 @@
   "ecarter_sorties_de_charge",
   "comptes_hors_dossier",
   "section_bordereaux",
-  "modele_lecture_bordereau"
+  "modele_lecture_bordereau",
+  "column_break_bordereaux",
+  "biat_robot_actif"
  ],
  "fields": [
   {
@@ -554,7 +556,7 @@
   {
    "fieldname": "section_bordereaux",
    "fieldtype": "Section Break",
-   "label": "Bordereaux de remise"
+   "label": "Bordereaux de remise et BIAT"
   },
   {
    "fieldname": "modele_lecture_bordereau",
@@ -562,11 +564,22 @@
    "label": "Modèle IA de lecture des bordereaux",
    "default": "gpt-6.1-sol",
    "description": "Le modèle OpenAI qui lit les bordereaux de remise remplis à la main (chèques, traites). L’écriture manuscrite demande un modèle récent : sur le bordereau BIAT 7473685, gpt-6.1-sol lit juste à chaque essai, gpt-5.2 se trompe d’un montant une fois sur trois. Vide : gpt-6.1-sol. Si OpenAI refuse ce modèle, celui des AI Settings prend le relais."
+  },
+  {
+   "fieldname": "column_break_bordereaux",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "biat_robot_actif",
+   "fieldtype": "Check",
+   "label": "Relevé BIAT automatique (robot)",
+   "default": "0",
+   "description": "À cocher une fois le robot BIAT déployé et reconnu par le portail (code SMS saisi une fois). Le relevé BIAT est alors rapporté à chaque vérification bancaire. Décoché : les remises BIAT déjà au registre sont quand même encaissées dès que leur bordereau est collecté."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-16 17:30:00.000000",
+ "modified": "2026-11-16 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",

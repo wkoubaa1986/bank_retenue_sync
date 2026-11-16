@@ -494,6 +494,11 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
     doc.a_signaler = "\n".join(etat["signalements"]) or None
     doc.flags.ignore_permissions = True
     doc.save()
+    if doc.banque == "BIAT" and doc.nature == "Chèques":
+        # La BIAT ne publie pas le detail de ses remises : ce bordereau est ce qui permet d'encaisser la
+        # sienne. Si elle est deja creditee, elle part tout de suite (`bank/biat.encaisser_remises`).
+        frappe.enqueue("bank_retenue_sync.bank.biat.passage_job", queue="default", timeout=900,
+                       enqueue_after_commit=True, job_id="brs-biat-passage", deduplicate=True)
     return etat
 
 

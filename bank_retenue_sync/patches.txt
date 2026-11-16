@@ -29,3 +29,4 @@ bank_retenue_sync.patches.corriger_traite_eges_plus_011644580146
 bank_retenue_sync.patches.comptes_hors_dossier_initiaux
 bank_retenue_sync.patches.sorties_de_charge_ecartees
 bank_retenue_sync.patches.banque_du_registre
+bank_retenue_sync.patches.banque_depot_encaissement
