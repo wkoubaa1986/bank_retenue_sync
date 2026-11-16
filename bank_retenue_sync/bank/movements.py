@@ -203,7 +203,7 @@ def _horizon_portail():
     """Date de la derniere operation ANNONCEE par le portail (lue sur les captures de solde),
     None si inconnue. C'est la seule source qui voit les operations a date de valeur FUTURE."""
     try:
-        return frappe.db.get_value("BRS Solde Bancaire", {}, "max(derniere_operation)")
+        return frappe.db.get_value("BRS Solde Bancaire", {"banque": "Zitouna"}, "max(derniere_operation)")
     except Exception:
         return None
 

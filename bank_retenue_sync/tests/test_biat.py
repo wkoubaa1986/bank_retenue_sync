@@ -201,6 +201,47 @@ class TestEncaissementParBordereau(unittest.TestCase):
         self.assertIn("pas encaissé : à signaler sur le bordereau — Chèque n° 9", c["raison"])
 
 
+class TestTableauDeBord(unittest.TestCase):
+    """Le cas reel du 16/11/2026, apres l'encaissement du bordereau 7473685."""
+
+    LIGNES = [
+        {"date": "2026-11-02", "sens": "Credit", "credit": 500.0, "statut": "Identifie", "ecart": 0.0},
+        {"date": "2026-11-12", "sens": "Debit", "debit": 2.678, "statut": "Identifie", "ecart": 0.0},
+        {"date": "2026-11-12", "sens": "Credit", "credit": 3010.127, "statut": "Identifie", "ecart": 0.247},
+        {"date": "2026-11-16", "sens": "Debit", "debit": 0.893, "statut": "Identifie", "ecart": 0.0},
+        {"date": "2026-11-16", "sens": "Debit", "debit": 0.893, "statut": "Identifie", "ecart": 0.0},
+        {"date": "2026-11-16", "sens": "Credit", "credit": 581.0, "statut": "Orphelin", "operation": "remise 7473932"},
+        {"date": "2026-11-16", "sens": "Credit", "credit": 1523.125, "statut": "Orphelin", "operation": "remise 7473933"}]
+
+    def test_sans_robot_le_solde_est_le_cumul_du_registre(self):
+        t = biat.resume_solde(self.LIGNES, 3505.416)
+        self.assertEqual((t["solde_banque"], t["source"], t["cumul_registre"]), (5609.788, "registre", 5609.788))
+        self.assertEqual((t["erpnext"], t["ecart"]), (3505.416, 2104.372))
+        self.assertEqual((t["en_attente"]["nb"], t["en_attente"]["net"], t["en_attente"]["credits"]), (2, 2104.125, 2104.125))
+        self.assertEqual((t["petits_ecarts"]["nb"], t["petits_ecarts"]["total"]), (1, 0.247))
+        self.assertEqual((t["ecart_projete"], t["hors_registre"], t["inexplique"]), (0.247, 0.0, 0.0))
+        self.assertEqual((t["premiere_operation"], t["derniere_operation"]), ("2026-11-02", "2026-11-16"))
+
+    def test_avec_le_solde_lu_par_le_robot(self):
+        t = biat.resume_solde(self.LIGNES, 3505.416, {"solde": 5609.788, "date": "2026-11-16"})
+        self.assertEqual((t["source"], t["solde_banque"], t["hors_registre"], t["inexplique"]), ("portail", 5609.788, 0.0, 0.0))
+        # Le portail en sait plus que le registre : 100 de mouvements pas encore importes.
+        t = biat.resume_solde(self.LIGNES, 3505.416, {"solde": 5709.788, "date": "2026-11-17"})
+        self.assertEqual((t["ecart"], t["hors_registre"], t["inexplique"]), (2204.372, 100.0, 0.0))
+
+    def test_debit_en_attente_et_ligne_ignoree(self):
+        lignes = [{"date": "2026-11-20", "sens": "Debit", "debit": 40.0, "statut": "A verifier"},
+                  {"date": "2026-11-20", "sens": "Credit", "credit": 10.0, "statut": "Orphelin", "ignore_manuel": 1},
+                  {"date": "2026-11-21", "sens": "Debit", "debit": 5.0, "statut": "Identifie", "ecart": 0.5}]
+        t = biat.resume_solde(lignes, -4.5)             # ERPNext : seul le debit identifie, pour 4,5
+        self.assertEqual((t["solde_banque"], t["ecart"]), (-35.0, -30.5))
+        self.assertEqual((t["en_attente"]["nb"], t["en_attente"]["net"], t["en_attente"]["debits"]), (1, -40.0, 40.0))
+        self.assertEqual(t["petits_ecarts"]["total"], -0.5)
+        # La ligne ecartee a la main pese sur l'ecart sans etre « en attente » : elle a sa propre case.
+        self.assertEqual((t["ecart_projete"], t["ignores"], t["inexplique"]), (9.5, {"nb": 1, "net": 10.0}, 0.0))
+        self.assertEqual(biat.resume_solde([], 0.0)["solde_banque"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

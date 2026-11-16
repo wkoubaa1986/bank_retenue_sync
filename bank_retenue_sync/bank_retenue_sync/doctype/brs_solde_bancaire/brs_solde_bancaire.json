@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "date_solde",
+  "banque",
   "compte",
   "type_solde",
   "column_break_head",
@@ -36,6 +37,16 @@
    "in_list_view": 1,
    "columns": 1,
    "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "banque",
+   "fieldtype": "Data",
+   "label": "Banque",
+   "default": "Zitouna",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "search_index": 1
   },
   {
@@ -182,7 +193,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-08 10:00:00.000000",
+ "modified": "2026-11-16 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Solde Bancaire",

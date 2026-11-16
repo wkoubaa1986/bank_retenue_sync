@@ -313,6 +313,60 @@ def decider_encaissement(ligne: dict, numero: str, bordereau: dict, paiements: d
     return {"faire": True, "raison": "", "lignes": lignes, "total": total, "ecart": ecart, "ecarts": ecarts}
 
 
+def resume_solde(lignes: list, erpnext: float, lu: dict = None) -> dict:
+    """Le tableau de bord de la BIAT, a partir des lignes du registre. Pur.
+
+    `lignes` : [{date, sens, debit, credit, statut, ignore_manuel, ecart, operation, raison}] ; `erpnext` :
+    solde du compte BIAT en comptabilite ; `lu` : le dernier solde lu sur le portail par le robot
+    ({solde, date, lu_le}), s'il existe.
+
+    LE SOLDE DE LA BANQUE. Lu sur le portail quand le robot tourne ; sinon c'est le CUMUL du registre — le
+    compte a ete ouvert le 02/11/2026 et le registre porte tous ses mouvements depuis l'ouverture (verifie
+    le 16/11/2026 : cumul 5 609,788 = solde lu par le robot). Quand les deux existent, leur difference
+    (`hors_registre`) dit qu'il manque des mouvements au registre : cela ne se corrige pas par une ecriture.
+
+    L'ECART (banque − ERPNext) se decompose : ce qui est au releve mais pas encore en comptabilite
+    (`en_attente` : lignes ni identifiees ni ignorees), les petits ecarts des lignes identifiees
+    (`petits_ecarts`), les lignes ecartees a la main (`ignores`), le hors-registre, et ce qui reste
+    (`inexplique`, qui doit valoir zero).
+    `ecart_projete` : l'ecart une fois comptabilise ce qui est en attente."""
+    credits = _m(sum(_m(l.get("credit")) for l in lignes))
+    debits = _m(sum(_m(l.get("debit")) for l in lignes))
+    cumul = _m(credits - debits)
+    dates = [str(l.get("date")) for l in lignes if l.get("date")]
+    attente, petits, ignores = [], [], []
+    for l in lignes:
+        sens = l.get("sens") or ("Debit" if _m(l.get("debit")) else "Credit")
+        signe = -1 if sens == "Debit" else 1
+        montant = _m(l.get("debit") if sens == "Debit" else l.get("credit"))
+        if l.get("statut") == STATUT_IDENTIFIE:
+            if abs(_m(l.get("ecart"))) > 0.0005:
+                petits.append({"date": str(l.get("date") or ""), "operation": l.get("operation"),
+                               "montant": montant, "effet": _m(signe * _m(l.get("ecart")))})
+        elif int(l.get("ignore_manuel") or 0):
+            ignores.append(_m(signe * montant))        # ecartee a la main : la banque a bouge, pas la comptabilite
+        else:
+            attente.append({"date": str(l.get("date") or ""), "operation": l.get("operation"), "sens": sens,
+                            "montant": montant, "effet": _m(signe * montant), "statut": l.get("statut") or "",
+                            "raison": l.get("raison") or ""})
+    banque = _m(lu["solde"]) if lu and lu.get("solde") is not None else cumul
+    ecart = _m(banque - _m(erpnext))
+    net_attente = _m(sum(a["effet"] for a in attente))
+    total_petits = _m(sum(p["effet"] for p in petits))
+    hors_registre = _m(banque - cumul)
+    net_ignores = _m(sum(ignores))
+    return {"solde_banque": banque, "source": "portail" if (lu and lu.get("solde") is not None) else "registre",
+            "lu": lu or None, "cumul_registre": cumul, "mouvements": len(lignes),
+            "premiere_operation": min(dates) if dates else None, "derniere_operation": max(dates) if dates else None,
+            "erpnext": _m(erpnext), "ecart": ecart, "ecart_projete": _m(ecart - net_attente),
+            "en_attente": {"nb": len(attente), "net": net_attente,
+                           "credits": _m(sum(a["montant"] for a in attente if a["sens"] == "Credit")),
+                           "debits": _m(sum(a["montant"] for a in attente if a["sens"] == "Debit")), "lignes": attente},
+            "petits_ecarts": {"nb": len(petits), "total": total_petits, "lignes": petits},
+            "ignores": {"nb": len(ignores), "net": net_ignores}, "hors_registre": hors_registre,
+            "inexplique": _m(ecart - net_attente - total_petits - hors_registre - net_ignores) + 0.0}   # jamais « -0.0 »
+
+
 def compte() -> str:
     """Le compte comptable de la BIAT : celui du Bank Account de la societe, sinon « BIAT - A&S »."""
     return frappe.db.get_value("Bank Account", {"bank": BANQUE, "is_company_account": 1, "disabled": 0}, "account") \
@@ -523,6 +577,10 @@ def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
         r = requests.get(mv._base_url() + "/biat/mouvements/export/latest", headers=mv._headers(), timeout=60)
         r.raise_for_status()
         out.update(_importer(mv._parse_movements_xlsx(r.content), "export"))
+        try:
+            out["solde"] = capturer_solde(timeout=timeout)       # le solde suit le releve ; son echec ne l'annule pas
+        except Exception as e:
+            out["solde"] = {"erreur": str(e)[:200]}
     except Exception as e:
         out["erreur"] = str(e)[:300]
         frappe.log_error(f"rafraichissement BIAT echoue\n{e}", "brs page")
@@ -710,3 +768,83 @@ def passage_job():
     except Exception:
         frappe.db.rollback()
         frappe.log_error(title="BIAT : passage après dépôt d'un bordereau", message=frappe.get_traceback())
+
+
+# ---------------------------------------------------------------------------
+# Tableau de bord : solde de la banque, solde ERPNext, ecart
+# ---------------------------------------------------------------------------
+DOCTYPE_SOLDE = "BRS Solde Bancaire"
+
+
+def dernier_solde_lu():
+    """Le dernier solde BIAT lu sur le portail par le robot (`BRS Solde Bancaire`), ou None."""
+    if not frappe.db.has_column(DOCTYPE_SOLDE, "banque"):
+        return None
+    rows = frappe.db.get_all(DOCTYPE_SOLDE, filters={"banque": BANQUE}, limit_page_length=1,
+                             order_by="capture_datetime desc, creation desc",
+                             fields=["name", "solde_banque", "date_solde", "capture_datetime", "compte", "type_solde"])
+    if not rows:
+        return None
+    r = rows[0]
+    return {"solde": flt(r.solde_banque, 3), "date": str(r.date_solde), "lu_le": str(r.capture_datetime or ""),
+            "compte": r.compte, "name": r.name}
+
+
+def tableau_solde() -> dict:
+    """Ce que la page d'identification affiche pour la BIAT. Lecture seule."""
+    from bank_retenue_sync.bank import solde as S
+
+    le_compte = compte()
+    lignes = frappe.db.get_all(
+        registry.DOCTYPE, filters={"banque": BANQUE}, limit_page_length=0, order_by="date asc, creation asc",
+        fields=["date", "sens", "debit", "credit", "statut", "ignore_manuel", "ecart", "operation", "raison"])
+    out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu())
+    out.update(banque=BANQUE, compte=le_compte)
+    try:
+        out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
+    except Exception:
+        out["robot"] = False
+    return out
+
+
+def archiver_solde(lu: dict) -> dict:
+    """Range un solde lu par le robot (un element de `GET /biat/soldes/latest`) dans `BRS Solde Bancaire`.
+    Le solde est lu EN CHIFFRES sur le portail (pas de capture a faire lire par l'IA) : une seule source,
+    exacte. Idempotent sur le nom du fichier. -> {statut, name?}"""
+    from bank_retenue_sync.bank import solde as S
+
+    solde = lu.get("solde_comptable")
+    if solde is None:
+        raise ValueError("le service n'a pas rendu de solde comptable pour la BIAT")
+    fichier = lu.get("filename") or f"biat-{lu.get('lu_le') or frappe.utils.now()}"
+    if frappe.db.exists(DOCTYPE_SOLDE, {"banque": BANQUE, "fichier": fichier}):
+        return {"statut": "deja_archive", "fichier": fichier}
+    jour = str(lu.get("date_solde") or lu.get("lu_le") or frappe.utils.nowdate())[:10].replace("/", "-")
+    cumul = frappe.db.sql("select ifnull(sum(credit - debit), 0), max(date) from `tabBRS Bank Movement` where banque = %s", BANQUE)[0]
+    erpnext = S.solde_erpnext(jour, compte=compte())
+    doc = frappe.get_doc({
+        "doctype": DOCTYPE_SOLDE, "banque": BANQUE, "date_solde": frappe.utils.getdate(jour), "compte": lu.get("compte"),
+        "type_solde": "Comptable", "solde_banque": flt(solde, 3), "devise": lu.get("devise") or "TND",
+        "capture_datetime": str(lu.get("lu_le") or frappe.utils.now()).replace("T", " "), "fichier": fichier,
+        "concordance": 1, "confiance": 1, "montant_service": flt(solde, 3), "derniere_operation": cumul[1],
+        "solde_erpnext": erpnext, "ecart": flt(flt(solde) - erpnext, 3), "solde_cumule": flt(cumul[0], 3),
+        "ecart_import": flt(flt(solde) - flt(cumul[0]), 3),
+        "notes": "Solde lu en chiffres sur le portail MyBIAT par le robot."})
+    doc.insert(ignore_permissions=True)
+    return {"statut": "archive", "name": doc.name, "solde_banque": doc.solde_banque}
+
+
+def capturer_solde(timeout: int = 300) -> dict:
+    """Demande au robot de lire le solde du compte sur le portail, et l'archive. Leve si le service ne
+    repond pas (robot pas encore deploye, portail qui redemande un code SMS)."""
+    import requests
+
+    from bank_retenue_sync.bank import movements as mv
+
+    mv.wait_job(mv.start_job("/jobs/biat/soldes", {}), timeout=timeout)
+    r = requests.get(mv._base_url() + "/biat/soldes/latest", headers=mv._headers(), timeout=60)
+    r.raise_for_status()
+    comptes = [c for c in (r.json() or []) if c.get("solde_comptable") is not None]
+    if not comptes:
+        raise RuntimeError("aucun solde BIAT rendu par le service")
+    return archiver_solde(comptes[0])

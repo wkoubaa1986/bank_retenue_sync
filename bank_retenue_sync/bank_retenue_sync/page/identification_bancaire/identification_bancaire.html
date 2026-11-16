@@ -116,6 +116,11 @@
   .ib-empty, .ib-loading { padding: 28px; text-align: center; color: var(--text-muted); }
 
   /* --- bandeau de solde ------------------------------------------------ */
+  .ib-banque { display: inline-block; margin: 10px 0 4px; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+               font-weight: 600; cursor: pointer; border: 1px solid var(--border-color);
+               background: var(--control-bg); color: var(--text-muted); }
+  .ib-banque.active { background: var(--text-color); color: var(--bg-color, #fff); border-color: var(--text-color); }
+  .ib-banque + .ib-solde { margin-top: 0; }
   .ib-solde { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
               gap: 10px; margin-bottom: 14px; padding: 12px;
               border: 1px solid var(--border-color); border-radius: 8px; }
@@ -134,7 +139,11 @@
 <div class="ib-wrap">
   <div class="ib-alert" data-role="alert"></div>
 
+  <!-- Un bandeau par banque, TOUJOURS affiches tous les deux : le solde d une banque se lit sans changer de vue. -->
+  <div class="ib-banque" data-role="titre-solde" data-banque="Zitouna" style="display:none">Banque Zitouna</div>
   <div class="ib-solde" data-role="solde"></div>
+  <div class="ib-banque" data-role="titre-solde" data-banque="BIAT" style="display:none">BIAT</div>
+  <div class="ib-solde" data-role="solde-biat" style="display:none"></div>
 
   <div class="ib-kpis" data-role="kpis"></div>
   <div class="ib-cover" data-role="cover"></div>

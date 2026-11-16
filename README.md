@@ -43,6 +43,12 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   si « Relevé BIAT automatique » est coché). Tolérance : 1 DT par chèque entre le crédit de la
   banque et les paiements ; l'écart est tracé (« Toléré ») et affiché sur la ligne. Ce qui n'est pas
   sûr n'est pas encaissé, et la raison se lit sur la ligne (« pas encaissé : … ») ;
+- **Tableau de bord par banque** — la page d'identification affiche EN PERMANENCE un bandeau par
+  banque (Zitouna, BIAT), quelle que soit celle dont on regarde les mouvements : solde de la banque,
+  solde ERPNext, écart, écart projeté. Pour la BIAT (`bank/biat.tableau_solde`), le solde est lu en
+  chiffres par le robot (`BRS Solde Bancaire`, champ `banque`) ou, à défaut, c'est le cumul du relevé
+  depuis l'ouverture du compte ; « D'où vient l'écart ? » le décompose : au relevé mais pas encore
+  comptabilisé, petits écarts des encaissements, mouvements écartés, hors relevé, reste inexpliqué ;
 - **Retenue à la source (TEJ)** — certificats reçus (ingestion, rapprochement, imputation) et
   **émis** (déclaration d'un certificat fournisseur depuis la facture d'achat, suivi du dépôt) ;
 - **Achats locaux** — contrôle des factures sur scan (OpenAI), retenue 1 %, matricule fournisseur ;

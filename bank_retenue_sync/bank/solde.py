@@ -396,6 +396,7 @@ def archiver_solde(fichier: str, image: bytes, lu: dict, details: dict = None,
 
     doc = frappe.new_doc(DOCTYPE_SOLDE)
     doc.update({
+        "banque": BANQUE,
         "date_solde": getdate(date_solde),
         "compte": lu.get("compte") or details.get("compte"),
         "type_solde": type_solde,
@@ -433,7 +434,7 @@ def archiver_solde(fichier: str, image: bytes, lu: dict, details: dict = None,
 def dernier_solde():
     """Dernier releve archive, ou None."""
     rows = frappe.db.get_all(
-        DOCTYPE_SOLDE, limit_page_length=1, order_by="date_solde desc, creation desc",
+        DOCTYPE_SOLDE, filters={"banque": BANQUE}, limit_page_length=1, order_by="date_solde desc, creation desc",
         fields=["name", "date_solde", "solde_banque", "solde_erpnext", "ecart", "type_solde",
                 "concordance", "compte", "derniere_operation", "capture_datetime"])
     return rows[0] if rows else None
@@ -486,7 +487,7 @@ def solde_derive(date_max=None) -> dict | None:
 def historique(limite: int = 30) -> list:
     """Historique des soldes, du plus recent au plus ancien."""
     return frappe.db.get_all(
-        DOCTYPE_SOLDE, limit_page_length=limite, order_by="date_solde desc, creation desc",
+        DOCTYPE_SOLDE, filters={"banque": BANQUE}, limit_page_length=limite, order_by="date_solde desc, creation desc",
         fields=["name", "date_solde", "capture_datetime", "derniere_operation", "compte",
                 "type_solde", "solde_banque", "solde_erpnext", "ecart", "ecart_import",
                 "concordance", "confiance", "montant_service", "fichier"])

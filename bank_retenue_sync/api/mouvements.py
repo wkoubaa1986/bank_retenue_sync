@@ -1169,13 +1169,32 @@ def download_excel(date_from=None, date_to=None, statut=None, categorie=None, se
 
 
 @frappe.whitelist()
-def get_solde(date_max=None, capture=False) -> dict:
+def get_solde(date_max=None, capture=False, banque=None) -> dict:
     """Solde bancaire reel, solde ERPNext, et l'ecart entre les deux.
 
     `capture=True` declenche une NOUVELLE capture du portail (lente, et payante en appel OpenAI).
     Par defaut on rend le dernier releve archive : c'est ce que la page affiche a chaque ouverture.
     """
     _guard()
+    if banque and banque != "Zitouna":
+        # La BIAT a son propre tableau de bord (`bank/biat.tableau_solde`) : solde lu en chiffres par le robot,
+        # ou cumul du registre ; pas de capture d'ecran a faire lire.
+        from bank_retenue_sync.bank import biat
+        from bank_retenue_sync.bank import registry as _registre
+
+        _registre.filtre_banque(banque)
+        erreur = None
+        if frappe.utils.cint(capture):
+            frappe.only_for("System Manager")
+            try:
+                biat.capturer_solde()
+                frappe.db.commit()
+            except Exception as e:
+                erreur = str(e)[:200]
+        out = biat.tableau_solde()
+        if erreur:
+            out["erreur"] = erreur
+        return out
     from bank_retenue_sync.bank import solde as S
 
     out = {"erpnext": S.solde_erpnext(date_max), "banque": None, "ecart": None,

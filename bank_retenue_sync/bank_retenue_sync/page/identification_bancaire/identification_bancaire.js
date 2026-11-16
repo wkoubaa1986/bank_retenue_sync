@@ -74,6 +74,7 @@ class IdentificationBancaire {
       const f = r.message || {};
       // Banque (16/11/2026) : Zitouna par défaut ; le choix n'apparaît que si le registre en porte une autre.
       const banques = f.banques || ["Zitouna"];
+      this._banques = banques;
       this._fill("banque", banques);
       this.$root.find('[data-role="banque"]').toggle(banques.length > 1);
       this._fill("sens", f.sens || []);
@@ -110,6 +111,7 @@ class IdentificationBancaire {
     }
     this.load();
     this._load_solde();
+    this._load_solde_biat();
   }
 
   _m(fn) {
@@ -146,10 +148,19 @@ class IdentificationBancaire {
     } catch (e) {
       console.error("identification-bancaire: get_filtres (banque)", e);
     }
-    // Le bandeau du solde est celui du compte Zitouna : masqué pour une autre banque.
-    this.$root.find('[data-role="solde"]').toggle(!autre);
+    // Les bandeaux de solde restent affichés pour les DEUX banques, quelle que soit celle dont on regarde
+    // les mouvements : seul le titre de la banque choisie est mis en avant.
+    this._marquer_banque();
     this.load();
-    if (!autre) this._load_solde();
+    this._load_solde();
+    this._load_solde_biat();
+  }
+
+  _marquer_banque() {
+    const banque = this._banque();
+    this.$root.find('[data-role="titre-solde"]').each((_i, el) => {
+      $(el).toggleClass("active", $(el).attr("data-banque") === banque);
+    });
   }
 
   _fill(name, values, labels) {
@@ -230,6 +241,17 @@ class IdentificationBancaire {
       this._creer($(e.currentTarget).attr("data-creer"))
     );
     this.$root.on("click", '[data-action="historique-solde"]', () => this._historique_solde());
+    this.$root.on("click", '[data-action="decomposer-biat"]', () => this._decomposer_biat());
+    this.$root.on("click", '[data-action="capturer-biat"]', () => {
+      frappe.confirm(__("Le robot va lire le solde du compte BIAT sur le portail. Continuer ?"),
+        () => this._load_solde_biat(true));
+    });
+    // Le titre d'un bandeau choisit la banque dont on regarde les mouvements.
+    this.$root.on("click", '[data-role="titre-solde"]', (e) => {
+      const banque = $(e.currentTarget).attr("data-banque");
+      const $sel = this.$root.find('[data-f="banque"]');
+      if ($sel.val() !== banque && $sel.find(`option[value="${banque}"]`).length) $sel.val(banque).trigger("change");
+    });
     this.$root.on("click", '[data-action="decomposer"]', () => this._decomposer_ecart());
     this.$root.on("click", '[data-action="rapprochement"]', () => this._rapprochement());
     this.$root.on("click", '[data-action="capturer"]', () =>
@@ -643,6 +665,128 @@ class IdentificationBancaire {
         : msg.slice(0, 120) || "solde indisponible";
       this._render_solde();
     }
+  }
+
+  /* ── Le tableau de bord de la BIAT ────────────────────────────────────────────────────────────
+     Toujours affiché sous celui de Zitouna dès que le registre porte la BIAT. Son solde de banque est
+     lu en chiffres par le robot ; tant que le robot ne tourne pas, c'est le cumul du relevé depuis
+     l'ouverture du compte — et la page le dit. */
+  async _load_solde_biat(capture = false) {
+    if (!(this._banques || []).includes("BIAT")) return;
+    try {
+      const r = await frappe.call({
+        method: this._m("get_solde"),
+        args: { banque: "BIAT", capture: capture ? 1 : 0 },
+        freeze: capture,
+        freeze_message: __("Lecture du solde BIAT sur le portail…"),
+      });
+      this._solde_biat = r.message || {};
+      if (capture && this._solde_biat.erreur) {
+        frappe.msgprint({
+          title: __("Solde BIAT non lu"),
+          message: frappe.utils.escape_html(this._solde_biat.erreur),
+          indicator: "orange",
+        });
+      }
+    } catch (e) {
+      console.error("identification-bancaire: get_solde BIAT", e);
+      this._solde_biat = { indisponible: true };
+    }
+    this._render_solde_biat();
+  }
+
+  _render_solde_biat() {
+    const s = this._solde_biat || {};
+    const $z = this.$root.find('[data-role="solde-biat"]');
+    this.$root.find('[data-role="titre-solde"]').show();
+    this._marquer_banque();
+    $z.show();
+    if (s.indisponible || s.solde_banque === undefined) {
+      $z.html(`<div><div class="lbl">Solde banque</div><div class="val">—</div>
+        <div class="sub">tableau de bord BIAT indisponible</div></div>`);
+      return;
+    }
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => (v === null || v === undefined ? "—" : format_number(v, null, 3));
+    const signe = (v) => (flt(v, 3) > 0 ? "+" : "") + nb(v);
+    const jour = (d) => (d ? frappe.datetime.str_to_user(String(d).substring(0, 10)) : "—");
+    const nul = Math.abs(flt(s.ecart, 3)) < 0.005;
+    const pnul = Math.abs(flt(s.ecart_projete, 3)) < 0.005;
+    const att = s.en_attente || {};
+    const pe = s.petits_ecarts || {};
+    const lu = s.source === "portail" && s.lu;
+    const banque = lu
+      ? `<div class="sub">lu sur le portail le ${jour(s.lu.lu_le || s.lu.date)} · solde comptable</div>
+         <div class="sub">dernière opération au relevé : ${jour(s.derniere_operation)}</div>`
+      : `<div class="sub">calculé d’après le relevé : ${s.mouvements} mouvement${s.mouvements > 1 ? "s" : ""}
+           depuis le ${jour(s.premiere_operation)}</div>
+         <div class="sub">dernière opération : ${jour(s.derniere_operation)} · pas encore lu sur le portail</div>`;
+    const hors = Math.abs(flt(s.hors_registre, 3)) >= 0.005
+      ? `<div class="sub" style="color:var(--text-on-orange,#b9770e)">⚠ ${signe(s.hors_registre)} d’opérations
+           pas encore au relevé importé</div>` : "";
+    $z.html(`
+      <div>
+        <div class="lbl">Solde banque (${lu ? "réel" : "calculé"})</div>
+        <div class="val">${nb(s.solde_banque)}</div>
+        ${banque}
+      </div>
+      <div>
+        <div class="lbl">Solde ERPNext</div>
+        <div class="val">${nb(s.erpnext)}</div>
+        <div class="sub">${esc("compte " + (s.compte || "BIAT"))}</div>
+      </div>
+      <div class="delta ${nul ? "ok" : ""}">
+        <div class="lbl">Écart</div>
+        <div class="val">${nb(s.ecart)}</div>
+        <div class="sub">${nul ? "les deux soldes concordent" : "reste à comptabiliser"}</div>
+        ${hors}
+      </div>
+      <div class="delta ${pnul ? "ok" : ""}">
+        <div class="lbl">Écart projeté</div>
+        <div class="val" style="${Math.abs(flt(s.ecart_projete, 3)) < Math.abs(flt(s.ecart, 3)) ? "color:var(--text-on-green,#28a745)" : ""}">${nb(s.ecart_projete)}</div>
+        <div class="sub">${att.nb || 0} mouvement(s) en attente de comptabilisation (${signe(att.net || 0)})</div>
+        ${pe.nb ? `<div class="sub">petits écarts d’encaissement : ${signe(pe.total)}</div>` : ""}
+      </div>
+      <div class="ib-solde-actions" style="gap:6px">
+        ${s.robot ? `<button data-action="capturer-biat">Lire le solde</button>` : ""}
+        <button data-action="decomposer-biat">D'où vient l'écart ?</button>
+      </div>
+    `);
+  }
+
+  _decomposer_biat() {
+    const s = this._solde_biat || {};
+    if (s.solde_banque === undefined) return;
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => format_number(v || 0, null, 3);
+    const signe = (v) => (flt(v, 3) > 0 ? "+" : "") + nb(v);
+    const ligne = (libelle, montant, detail) => `<tr><td>${libelle}${detail ? `<div class="text-muted small">${detail}</div>` : ""}</td>
+      <td style="text-align:right;white-space:nowrap">${signe(montant)}</td></tr>`;
+    const att = s.en_attente || { lignes: [] };
+    const pe = s.petits_ecarts || { lignes: [] };
+    const detail_att = (att.lignes || []).map((l) => `<tr>
+        <td style="white-space:nowrap">${frappe.datetime.str_to_user(l.date)}</td>
+        <td>${esc(l.operation || "")}<div class="text-muted small">${esc(l.raison || "")}</div></td>
+        <td style="text-align:right;white-space:nowrap">${signe(l.effet)}</td></tr>`).join("");
+    const detail_pe = (pe.lignes || []).map((l) => `<tr>
+        <td style="white-space:nowrap">${frappe.datetime.str_to_user(l.date)}</td><td>${esc(l.operation || "")}</td>
+        <td style="text-align:right;white-space:nowrap">${signe(l.effet)}</td></tr>`).join("");
+    const d = new frappe.ui.Dialog({ title: __("BIAT — d'où vient l'écart ?"), size: "large" });
+    d.$body.html(`<div style="padding:12px 16px;font-size:13px">
+      <p>Solde de la banque <b>${nb(s.solde_banque)}</b> − solde ERPNext <b>${nb(s.erpnext)}</b> = écart <b>${signe(s.ecart)}</b>.</p>
+      <table class="table table-bordered" style="font-size:13px"><tbody>
+        ${ligne(__("Au relevé, pas encore comptabilisé"), att.net || 0, __("{0} mouvement(s) : détail ci-dessous", [att.nb || 0]))}
+        ${ligne(__("Petits écarts des encaissements"), pe.total || 0, __("la banque a crédité un peu plus ou un peu moins que les paiements"))}
+        ${(s.ignores || {}).nb ? ligne(__("Mouvements écartés à la main"), s.ignores.net, __("{0} mouvement(s) ignoré(s)", [s.ignores.nb])) : ""}
+        ${Math.abs(flt(s.hors_registre, 3)) >= 0.005 ? ligne(__("Opérations pas encore au relevé importé"), s.hors_registre, __("le portail en sait plus que le relevé : attendre le prochain passage")) : ""}
+        ${ligne(`<b>${__("Reste inexpliqué")}</b>`, s.inexplique || 0, Math.abs(flt(s.inexplique, 3)) < 0.005 ? __("tout l'écart est expliqué") : __("à chercher : une écriture passée sur le compte BIAT sans mouvement au relevé, ou l'inverse"))}
+      </tbody></table>
+      ${detail_att ? `<h6>${__("Au relevé, pas encore comptabilisé")}</h6>
+        <table class="table table-bordered" style="font-size:12px"><tbody>${detail_att}</tbody></table>` : ""}
+      ${detail_pe ? `<h6>${__("Petits écarts des encaissements")}</h6>
+        <table class="table table-bordered" style="font-size:12px"><tbody>${detail_pe}</tbody></table>` : ""}
+    </div>`);
+    d.show();
   }
 
   _render_solde() {
