@@ -303,6 +303,48 @@ class TestRemiseSansBordereau(unittest.TestCase):
         self.assertEqual(biat.proposer_cheques(581.0, []), [])
 
 
+class TestEcartsAbsorbesDansLesFrais(unittest.TestCase):
+    """Comme pour Zitouna : les petits ecarts des encaissements rejoignent l'ecriture mensuelle des frais."""
+
+    LIGNES = [
+        {"date": "2026-11-12", "sens": "Debit", "debit": 2.678, "categorie": "frais_bancaires", "statut": "Identifie"},
+        {"date": "2026-11-16", "sens": "Debit", "debit": 0.893, "categorie": "frais_bancaires", "statut": "Identifie"},
+        {"date": "2026-11-16", "sens": "Debit", "debit": 0.893, "categorie": "frais_bancaires", "statut": "Identifie"},
+        {"date": "2026-11-12", "sens": "Credit", "credit": 3010.127, "categorie": "encaissement", "statut": "Identifie", "ecart": 0.247},
+        {"date": "2026-11-16", "sens": "Credit", "credit": 581.0, "categorie": "encaissement", "statut": "Identifie", "ecart": 0.0}]
+
+    def test_cas_reel_novembre(self):
+        c = biat.cumul_frais(self.LIGNES, "2026-11")
+        # 4,464 de commissions, moins 0,247 que la banque a credite en plus : 4,217 a crediter au compte BIAT.
+        self.assertEqual((c["frais"], c["ecarts"], c["nb_ecarts"], c["total"], c["nb"]), (4.464, 0.247, 1, 4.217, 3))
+
+    def test_sens_et_limites(self):
+        f = biat.ecart_a_absorber
+        self.assertEqual(f({"statut": "Identifie", "sens": "Credit", "ecart": 0.247}), 0.247)       # la banque a plus
+        self.assertEqual(f({"statut": "Identifie", "sens": "Credit", "ecart": -0.8}), -0.8)         # frais retenus
+        self.assertEqual(f({"statut": "Identifie", "sens": "Debit", "ecart": 1.0}), -1.0)           # debitee de plus
+        self.assertEqual(f({"statut": "Identifie", "sens": "Credit", "ecart": 12.0}), 0.0)          # au-dela du seuil
+        self.assertEqual(f({"statut": "A verifier", "sens": "Credit", "ecart": 0.247}), 0.0)        # pas identifiee
+        self.assertEqual(f({"statut": "Identifie", "sens": "Credit", "ecart": 0.247, "ignore_manuel": 1}), 0.0)
+        self.assertEqual(f({"statut": "Identifie", "sens": "Debit", "ecart": 0.5, "categorie": "frais_bancaires"}), 0.0)
+
+    def test_les_ecarts_peuvent_depasser_les_frais(self):
+        lignes = [{"date": "2026-12-03", "sens": "Credit", "credit": 100.9, "statut": "Identifie", "ecart": 0.9}]
+        c = biat.cumul_frais(lignes, "2026-12")
+        self.assertEqual((c["frais"], c["ecarts"], c["total"], c["jour"]), (0.0, 0.9, -0.9, "2026-12-03"))
+
+    def test_tableau_de_bord_une_fois_l_ecriture_soumise(self):
+        lignes = [dict(l) for l in self.LIGNES] + [{"date": "2026-11-02", "sens": "Credit", "credit": 500.0, "statut": "Identifie"},
+                                                   {"date": "2026-11-16", "sens": "Credit", "credit": 1523.125, "statut": "Identifie"}]
+        # Ecriture de novembre soumise a 4,217 : ERPNext = 500 + 3009,880 + 581 + 1523,125 − 4,217 = 5 609,788.
+        t = biat.resume_solde(lignes, 5609.788, mois_comptabilises={"2026-11"})
+        self.assertEqual((t["solde_banque"], t["ecart"], t["ecart_projete"], t["inexplique"]), (5609.788, 0.0, 0.0, 0.0))
+        self.assertEqual((t["petits_ecarts"]["nb"], t["absorbes"]["nb"], t["absorbes"]["total"]), (0, 1, 0.247))
+        # Tant que l'ecriture n'est pas soumise, l'ecart reste a expliquer par ce petit ecart.
+        t = biat.resume_solde(lignes, 5609.541)
+        self.assertEqual((t["ecart"], t["petits_ecarts"]["total"], t["absorbes"]["nb"], t["inexplique"]), (0.247, 0.247, 0, 0.0))
+
+
 if __name__ == "__main__":
     unittest.main()
 

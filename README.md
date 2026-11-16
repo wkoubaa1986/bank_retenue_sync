@@ -11,7 +11,9 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   n'est créé pour la BIAT (ni écriture ni encaissement) : l'Encaissement Paiement vise encore le
   compte Zitouna. Tout le reste de l'app ne lit que Zitouna (`registry.BANQUE_DEFAUT`) ;
   ses frais vont dans une écriture mensuelle À PART (« BIAT frais bancaires MM-AAAA », tout en
-  « Frais bancaire », même interrupteur et mêmes règles de remplacement que les frais Zitouna) ;
+  « Frais bancaire », même interrupteur et mêmes règles de remplacement que les frais Zitouna). Cette
+  écriture absorbe aussi les petits écarts des encaissements identifiés (≤ 5 DT, dans les deux sens :
+  `ecart_a_absorber`), pour que le compte BIAT retombe sur la banque ; au-delà, l'écart reste affiché ;
 - **Bordereaux de remise** — `BRS Bordereau Remise` : le scan du bordereau remis à la banque (BIAT ou
   Zitouna ; chèques, traites, espèces), rangé avec sa banque, son numéro et sa date. Depuis la caisse
   journalière (bouton « Bordereaux de remise », app customization_app), on donne seulement le scan —

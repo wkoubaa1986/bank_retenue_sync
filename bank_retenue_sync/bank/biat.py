@@ -186,9 +186,12 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
         detail = f"remise de chèques, bordereau {numero} : {len(paiements)} paiement(s) portent « BR:{numero} »"
         if encaissement:
             detail += f" (encaissement {encaissement})"
-        if 0.0005 < abs(out["ecart"]) <= TOLERANCE_REMISE:
-            detail += f" — petit écart de {out['ecart']:.3f} avec le crédit de la banque"
-        if abs(out["ecart"]) > TOLERANCE_REMISE:
+        if 0.0005 < abs(out["ecart"]) <= SEUIL_ECART_ABSORBE:
+            du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
+            detail += f" — petit écart de {out['ecart']:.3f} avec le crédit de la banque" + (
+                f", porté par l’écriture mensuelle {cle_frais(periode_de(ligne.get('date')))}" if du_mois
+                else ", à porter dans l’écriture mensuelle des frais")
+        if abs(out["ecart"]) > SEUIL_ECART_ABSORBE:
             detail += f" pour {total:.3f} — écart de {out['ecart']:.3f} avec le crédit de la banque"
         out["raison"] = detail
         return out
@@ -258,15 +261,47 @@ def cle_frais(periode: str) -> str:
     return "%s%s-%s" % (PREFIXE_FRAIS, mois, annee)
 
 
+#: En deca de ce seuil, l'ecart d'une ligne identifiee est repute etre des frais ou un arrondi : il rejoint
+#: l'ecriture mensuelle. Au-dela ce n'est plus un frais mais une erreur ou un impaye : il reste affiche, a
+#: traiter. Meme seuil que la page (`api.mouvements.SEUIL_ECART_DEFAUT`, « écarts de paiement au-delà de 5 »).
+SEUIL_ECART_ABSORBE = 5.0
+
+
+def ecart_a_absorber(ligne: dict) -> float:
+    """Le petit ecart d'une ligne IDENTIFIEE, vu du compte bancaire : banque − comptabilite. Pur.
+    Positif : la banque a plus que la comptabilite (un cheque credite 0,247 de plus que le paiement saisi) ;
+    negatif : elle a moins (frais retenus sur un virement). 0 si la ligne n'est pas identifiee, est ecartee a
+    la main, est elle-meme un frais, ou si l'ecart depasse `SEUIL_ECART_ABSORBE`."""
+    if ligne.get("statut") != STATUT_IDENTIFIE or int(ligne.get("ignore_manuel") or 0) \
+            or ligne.get("categorie") == "frais_bancaires":
+        return 0.0
+    ecart = _m(ligne.get("ecart"))
+    if abs(ecart) < 0.0005 or abs(ecart) > SEUIL_ECART_ABSORBE:
+        return 0.0
+    sens = ligne.get("sens") or ("Debit" if _m(ligne.get("debit")) else "Credit")
+    return ecart if sens != "Debit" else _m(-ecart)
+
+
 def cumul_frais(lignes: list, periode: str) -> dict:
-    """Le cumul des frais BIAT d'un mois : lignes de debit de categorie « frais_bancaires », hors
-    lignes ignorees a la main. -> {periode, cle, total, nb, jour (dernier frais), references}"""
+    """Le cumul mensuel de la BIAT : ses frais, ET les petits ecarts de ses encaissements — une seule
+    ecriture, comme pour Zitouna (« il y a un process qui absorbe les ecarts de paiement dans les frais »,
+    16/11/2026). Pur.
+
+      frais   : lignes de debit de categorie « frais_bancaires », hors lignes ecartees a la main ;
+      ecarts  : somme des `ecart_a_absorber` du mois (banque − comptabilite) ;
+      total   : frais − ecarts = ce qu'il faut porter au CREDIT du compte BIAT pour que la comptabilite
+                retombe sur la banque. Negatif quand les ecarts favorables depassent les frais du mois.
+    -> {periode, cle, frais, ecarts, nb_ecarts, total, nb, jour (derniere ligne), references}"""
     retenues = [ligne for ligne in lignes
                 if (ligne.get("categorie") == "frais_bancaires" and not ligne.get("ignore_manuel")
                     and periode_de(ligne.get("date")) == periode and _m(ligne.get("debit")) > 0)]
-    return {"periode": periode, "cle": cle_frais(periode), "nb": len(retenues),
-            "total": _m(sum(_m(ligne.get("debit")) for ligne in retenues)),
-            "jour": max((str(ligne.get("date")) for ligne in retenues), default=None),
+    portes = [(ligne, ecart_a_absorber(ligne)) for ligne in lignes if periode_de(ligne.get("date")) == periode]
+    portes = [(ligne, e) for ligne, e in portes if e]
+    frais = _m(sum(_m(ligne.get("debit")) for ligne in retenues))
+    ecarts = _m(sum(e for _l, e in portes))
+    return {"periode": periode, "cle": cle_frais(periode), "nb": len(retenues), "frais": frais,
+            "ecarts": ecarts, "nb_ecarts": len(portes), "total": _m(frais - ecarts),
+            "jour": max((str(ligne.get("date")) for ligne in retenues + [l for l, _e in portes]), default=None),
             "references": sorted({(ligne.get("reference") or "").strip() for ligne in retenues} - {""})}
 
 
@@ -373,7 +408,7 @@ def decider_encaissement(ligne: dict, numero: str, bordereau: dict, paiements: d
     return {"faire": True, "raison": "", "lignes": lignes, "total": total, "ecart": ecart, "ecarts": ecarts}
 
 
-def resume_solde(lignes: list, erpnext: float, lu: dict = None) -> dict:
+def resume_solde(lignes: list, erpnext: float, lu: dict = None, mois_comptabilises=()) -> dict:
     """Le tableau de bord de la BIAT, a partir des lignes du registre. Pur.
 
     `lignes` : [{date, sens, debit, credit, statut, ignore_manuel, ecart, operation, raison}] ; `erpnext` :
@@ -389,20 +424,28 @@ def resume_solde(lignes: list, erpnext: float, lu: dict = None) -> dict:
     (`en_attente` : lignes ni identifiees ni ignorees), les petits ecarts des lignes identifiees
     (`petits_ecarts`), les lignes ecartees a la main (`ignores`), le hors-registre, et ce qui reste
     (`inexplique`, qui doit valoir zero).
-    `ecart_projete` : l'ecart une fois comptabilise ce qui est en attente."""
+    `ecart_projete` : l'ecart une fois comptabilise ce qui est en attente.
+
+    `mois_comptabilises` : les mois (« YYYY-MM ») dont l'ecriture mensuelle des frais est SOUMISE. Elle porte
+    deja les petits ecarts de ses encaissements (`ecart_a_absorber`) : ils sont rendus a part (`absorbes`) et
+    ne pesent plus sur l'ecart — ils sont en comptabilite."""
     credits = _m(sum(_m(l.get("credit")) for l in lignes))
     debits = _m(sum(_m(l.get("debit")) for l in lignes))
     cumul = _m(credits - debits)
     dates = [str(l.get("date")) for l in lignes if l.get("date")]
-    attente, petits, ignores = [], [], []
+    attente, petits, ignores, absorbes = [], [], [], []
     for l in lignes:
         sens = l.get("sens") or ("Debit" if _m(l.get("debit")) else "Credit")
         signe = -1 if sens == "Debit" else 1
         montant = _m(l.get("debit") if sens == "Debit" else l.get("credit"))
         if l.get("statut") == STATUT_IDENTIFIE:
             if abs(_m(l.get("ecart"))) > 0.0005:
-                petits.append({"date": str(l.get("date") or ""), "operation": l.get("operation"),
-                               "montant": montant, "effet": _m(signe * _m(l.get("ecart")))})
+                piece = {"date": str(l.get("date") or ""), "operation": l.get("operation"),
+                         "montant": montant, "effet": _m(signe * _m(l.get("ecart")))}
+                if ecart_a_absorber(l) and periode_de(l.get("date")) in set(mois_comptabilises or ()):
+                    absorbes.append(piece)
+                else:
+                    petits.append(piece)
         elif int(l.get("ignore_manuel") or 0):
             ignores.append(_m(signe * montant))        # ecartee a la main : la banque a bouge, pas la comptabilite
         else:
@@ -423,6 +466,7 @@ def resume_solde(lignes: list, erpnext: float, lu: dict = None) -> dict:
                            "credits": _m(sum(a["montant"] for a in attente if a["sens"] == "Credit")),
                            "debits": _m(sum(a["montant"] for a in attente if a["sens"] == "Debit")), "lignes": attente},
             "petits_ecarts": {"nb": len(petits), "total": total_petits, "lignes": petits},
+            "absorbes": {"nb": len(absorbes), "total": _m(sum(a["effet"] for a in absorbes)), "lignes": absorbes},
             "ignores": {"nb": len(ignores), "net": net_ignores}, "hors_registre": hors_registre,
             "inexplique": _m(ecart - net_attente - total_petits - hors_registre - net_ignores) + 0.0}   # jamais « -0.0 »
 
@@ -610,9 +654,10 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
     from bank_retenue_sync.expenses import fees, journal
 
     lignes = frappe.db.get_all(
-        registry.DOCTYPE, filters={"banque": BANQUE, "categorie": "frais_bancaires"}, limit_page_length=0,
-        fields=["name", "date", "reference", "debit", "categorie", "ignore_manuel"])
-    periodes = [periode] if periode else sorted({periode_de(ligne.date) for ligne in lignes})
+        registry.DOCTYPE, filters={"banque": BANQUE}, limit_page_length=0,
+        fields=["name", "date", "reference", "debit", "credit", "sens", "categorie", "statut", "ecart", "ignore_manuel"])
+    periodes = [periode] if periode else sorted({periode_de(ligne.date) for ligne in lignes
+                                                 if ligne.categorie == "frais_bancaires" or ecart_a_absorber(ligne)})
     if not fees.is_enabled():
         return [{"periode": p, "statut": "inactif"} for p in periodes]
     bilan = []
@@ -620,10 +665,23 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
         cumul = cumul_frais(lignes, p)
         existant = frappe.db.get_value("Journal Entry", {"cheque_no": cumul["cle"], "docstatus": ["<", 2]},
                                        ["name", "total_debit", "docstatus"], as_dict=True)
-        if not cumul["total"]:
+        if abs(cumul["total"]) < 0.0005:
+            # Rien a porter (aucun frais, ou des ecarts qui les compensent au millime) : une ecriture restee
+            # d'un passage precedent n'a plus lieu d'etre.
+            if existant and insert and (cumul["nb"] or cumul["nb_ecarts"]):
+                fees._supprimer_ecriture(existant.name)
+                existant = None
             bilan.append({"periode": p, "statut": "vide", "total": 0.0, "je": existant.name if existant else None})
             continue
-        if existant and abs(_m(existant.total_debit) - cumul["total"]) < 0.005:
+        # L'ecriture en place est la bonne si elle porte le meme montant DANS LE MEME SENS (credit du compte
+        # BIAT quand le total est positif).
+        en_place = None
+        if existant:
+            credit_banque = flt(frappe.db.sql(
+                """select ifnull(sum(credit_in_account_currency - debit_in_account_currency), 0)
+                   from `tabJournal Entry Account` where parent = %s and account = %s""", (existant.name, compte()))[0][0], 3)
+            en_place = abs(credit_banque - cumul["total"]) < 0.0005
+        if existant and en_place:
             statut = "inchangee"
             if insert and existant.docstatus == 0 and journal._auto_submit_enabled():
                 try:
@@ -637,18 +695,25 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
         remplacee = "%s (%s)" % (existant.name, fees._supprimer_ecriture(existant.name)) if existant and insert else None
         jour = fees.date_ecriture(cumul["jour"])
         centre = frappe.db.get_value("Company", COMPANY, "cost_center")
+        montant = abs(cumul["total"])
+        # Total positif : la banque a pris des frais -> credit du compte BIAT. Negatif (les encaissements
+        # ont rapporte plus que les frais n'ont coute) : l'ecriture s'inverse.
+        cote_banque, cote_frais = ("credit", "debit") if cumul["total"] > 0 else ("debit", "credit")
+        detail = "%d opérations bancaires cumulées : %.3f" % (cumul["nb"], cumul["frais"])
+        if cumul["nb_ecarts"]:
+            detail += "\nPetits écarts de %d encaissement(s), banque − comptabilité : %+.3f" % (cumul["nb_ecarts"], cumul["ecarts"])
         je = journal.build_journal_entry(
             COMPANY, jour,
-            [{"account": compte(), "credit": cumul["total"]},
-             {"account": COMPTE_FRAIS, "debit": cumul["total"], "cost_center": centre}],
-            remark="%s\n%d opérations bancaires cumulées\nRéf. banque %s" % (
-                cumul["cle"], cumul["nb"], ", ".join(cumul["references"][:20])),
+            [{"account": compte(), cote_banque: montant},
+             {"account": COMPTE_FRAIS, cote_frais: montant, "cost_center": centre}],
+            remark="%s\n%s\nRéf. banque %s" % (cumul["cle"], detail, ", ".join(cumul["references"][:20])),
             cheque_no=cumul["cle"], cheque_date=jour)
         if insert:
             je.insert(ignore_permissions=True)
             if etait_soumise or journal._auto_submit_enabled():
                 je.submit()
         bilan.append({"periode": p, "statut": "remplacee" if remplacee else "cree", "total": cumul["total"],
+                      "frais": cumul["frais"], "ecarts": cumul["ecarts"],
                       "je": je.name if insert else "(essai)", "remplacee": remplacee})
     return bilan
 
@@ -907,8 +972,13 @@ def tableau_solde() -> dict:
     le_compte = compte()
     lignes = frappe.db.get_all(
         registry.DOCTYPE, filters={"banque": BANQUE}, limit_page_length=0, order_by="date asc, creation asc",
-        fields=["date", "sens", "debit", "credit", "statut", "ignore_manuel", "ecart", "operation", "raison"])
-    out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu())
+        fields=["date", "sens", "debit", "credit", "statut", "categorie", "ignore_manuel", "ecart", "operation", "raison"])
+    comptabilises = set()
+    for e in frappe.db.get_all("Journal Entry", filters={"cheque_no": ["like", PREFIXE_FRAIS + "%"], "docstatus": 1},
+                               fields=["cheque_no"]):
+        mois, annee = e.cheque_no[len(PREFIXE_FRAIS):].split("-")[:2]
+        comptabilises.add(f"{annee}-{mois}")
+    out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu(), comptabilises)
     out.update(banque=BANQUE, compte=le_compte)
     try:
         out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))

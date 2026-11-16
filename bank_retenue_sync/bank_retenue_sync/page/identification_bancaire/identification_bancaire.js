@@ -766,7 +766,8 @@ class IdentificationBancaire {
         <div class="lbl">Écart projeté</div>
         <div class="val" style="${Math.abs(flt(s.ecart_projete, 3)) < Math.abs(flt(s.ecart, 3)) ? "color:var(--text-on-green,#28a745)" : ""}">${nb(s.ecart_projete)}</div>
         <div class="sub">${att.nb || 0} mouvement(s) en attente de comptabilisation (${signe(att.net || 0)})</div>
-        ${pe.nb ? `<div class="sub">petits écarts d’encaissement : ${signe(pe.total)}</div>` : ""}
+        ${pe.nb ? `<div class="sub">petits écarts d’encaissement à porter dans les frais : ${signe(pe.total)}</div>` : ""}
+        ${(s.absorbes || {}).nb ? `<div class="sub">petits écarts déjà portés par l’écriture des frais : ${signe(s.absorbes.total)}</div>` : ""}
       </div>
       <div class="ib-solde-actions">
         <button class="principal" data-action="decomposer-biat">D'où vient l'écart ?</button>
@@ -859,7 +860,8 @@ class IdentificationBancaire {
       <p>Solde de la banque <b>${nb(s.solde_banque)}</b> − solde ERPNext <b>${nb(s.erpnext)}</b> = écart <b>${signe(s.ecart)}</b>.</p>
       <table class="table table-bordered" style="font-size:13px"><tbody>
         ${ligne(__("Au relevé, pas encore comptabilisé"), att.net || 0, __("{0} mouvement(s) : détail ci-dessous", [att.nb || 0]))}
-        ${ligne(__("Petits écarts des encaissements"), pe.total || 0, __("la banque a crédité un peu plus ou un peu moins que les paiements"))}
+        ${ligne(__("Petits écarts des encaissements, pas encore dans l'écriture des frais"), pe.total || 0, __("la banque a crédité un peu plus ou un peu moins que les paiements ; ils rejoignent l'écriture mensuelle au prochain passage"))}
+        ${(s.absorbes || {}).nb ? `<tr><td class="text-muted">${__("Pour mémoire : {0} petit(s) écart(s) déjà portés par l'écriture mensuelle des frais ({1}) — ils ne pèsent plus sur l'écart", [s.absorbes.nb, signe(s.absorbes.total)])}</td><td></td></tr>` : ""}
         ${(s.ignores || {}).nb ? ligne(__("Mouvements écartés à la main"), s.ignores.net, __("{0} mouvement(s) ignoré(s)", [s.ignores.nb])) : ""}
         ${Math.abs(flt(s.hors_registre, 3)) >= 0.005 ? ligne(__("Opérations pas encore au relevé importé"), s.hors_registre, __("le portail en sait plus que le relevé : attendre le prochain passage")) : ""}
         ${ligne(`<b>${__("Reste inexpliqué")}</b>`, s.inexplique || 0, Math.abs(flt(s.inexplique, 3)) < 0.005 ? __("tout l'écart est expliqué") : __("à chercher : une écriture passée sur le compte BIAT sans mouvement au relevé, ou l'inverse"))}
