@@ -121,19 +121,27 @@
                background: var(--control-bg); color: var(--text-muted); }
   .ib-banque.active { background: var(--text-color); color: var(--bg-color, #fff); border-color: var(--text-color); }
   .ib-banque + .ib-solde { margin-top: 0; }
-  .ib-solde { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-              gap: 10px; margin-bottom: 14px; padding: 12px;
+  .ib-solde { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 14px; padding: 12px;
               border: 1px solid var(--border-color); border-radius: 8px; }
+  .ib-solde > div { flex: 1 1 190px; min-width: 0; }
   .ib-solde .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
                    color: var(--text-muted); margin-bottom: 4px; }
   .ib-solde .val { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .ib-solde .sub { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
   .ib-solde .delta .val { color: var(--text-on-red, #c0392b); }
   .ib-solde .delta.ok .val { color: var(--text-on-green, #28a745); }
-  .ib-solde-actions { display: flex; align-items: flex-end; }
-  .ib-solde-actions button { font-size: 12px; padding: 4px 10px; border-radius: 6px;
-                             border: 1px solid var(--border-color); background: var(--control-bg);
-                             color: var(--text-color); cursor: pointer; }
+  /* Les boutons d un bandeau tiennent sur UNE ligne, sous les chiffres : dans une case de la grille ils
+     se tassaient (libelles coupes sur trois lignes) et le dernier sortait du cadre. */
+  .ib-solde > .ib-solde-actions { flex: 1 1 100%; }
+  .ib-solde-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+                      padding-top: 10px; margin-top: 2px; border-top: 1px solid var(--border-color); }
+  .ib-solde-actions button { font-size: 12px; line-height: 1.3; padding: 5px 12px; border-radius: 6px;
+                             white-space: nowrap; border: 1px solid var(--border-color);
+                             background: var(--control-bg); color: var(--text-color); cursor: pointer; }
+  .ib-solde-actions button:hover { background: var(--fg-hover-color, #f0f0f0); }
+  .ib-solde-actions button.principal { background: var(--text-color); color: var(--bg-color, #fff);
+                                       border-color: var(--text-color); }
+  .ib-solde-actions .note { font-size: 11px; color: var(--text-muted); margin-left: auto; }
 </style>
 
 <div class="ib-wrap">

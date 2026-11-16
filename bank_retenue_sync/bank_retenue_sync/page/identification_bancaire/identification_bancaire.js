@@ -158,6 +158,7 @@ class IdentificationBancaire {
 
   _marquer_banque() {
     const banque = this._banque();
+    this._outils_de_la_banque();
     this.$root.find('[data-role="titre-solde"]').each((_i, el) => {
       $(el).toggleClass("active", $(el).attr("data-banque") === banque);
     });
@@ -242,6 +243,11 @@ class IdentificationBancaire {
     );
     this.$root.on("click", '[data-action="historique-solde"]', () => this._historique_solde());
     this.$root.on("click", '[data-action="decomposer-biat"]', () => this._decomposer_biat());
+    this.$root.on("click", '[data-action="voir-biat"]', () => {
+      const $sel = this.$root.find('[data-f="banque"]');
+      if ($sel.val() !== "BIAT") $sel.val("BIAT").trigger("change");
+      this.$root.find(".ib-kpis")[0].scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     this.$root.on("click", '[data-action="capturer-biat"]', () => {
       frappe.confirm(__("Le robot va lire le solde du compte BIAT sur le portail. Continuer ?"),
         () => this._load_solde_biat(true));
@@ -271,22 +277,34 @@ class IdentificationBancaire {
       () => this._reclassifier(),
       "refresh"
     );
-    this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement());
+    // CE QUI NE VAUT QUE POUR ZITOUNA est rangé dans `_zitouna` et masqué quand on regarde une autre
+    // banque : ces outils lisent le relevé Zitouna (virements émis, lettres de crédit, chèques revenus
+    // impayés, écarts banque ↔ ERPNext). Les laisser affichés sur la BIAT ferait croire qu'ils la traitent.
+    this._zitouna = [];
+    const zitouna = ($el) => { this._zitouna.push($el); return $el; };
+    zitouna(this.page.add_menu_item(__("Écarts banque ↔ ERPNext"), () => this._rapprochement()));
     // « Générer les règlements » ne réglait RIEN (il décrit la colonne Règlement) : renommé le 14/10/2026,
     // le vrai règlement des dettes a son bouton ci-dessous.
-    this.page.add_menu_item(__("Décrire les règlements (colonne Règlement)"), () => this._reglements());
-    this.page.add_menu_item(__("Frais de LC par fournisseur (%)"), () => this._rapport_frais_lc());
-    this.page.add_inner_button(__("Régler les dettes (Aramex / honoraires)"), () => this._regler_dettes());
-    this.page.add_menu_item(__("Lancer la vérification bancaire maintenant"), () => this._lancer_verification());
+    zitouna(this.page.add_menu_item(__("Décrire les règlements (colonne Règlement)"), () => this._reglements()));
+    zitouna(this.page.add_menu_item(__("Frais de LC par fournisseur (%)"), () => this._rapport_frais_lc()));
+    zitouna(this.page.add_inner_button(__("Régler les dettes (Aramex / honoraires)"), () => this._regler_dettes()));
+    // Le passage traite Zitouna PUIS la BIAT (relevé du robot s'il est activé, encaissement des remises).
+    this.page.add_menu_item(__("Lancer la vérification bancaire maintenant (toutes les banques)"), () => this._lancer_verification());
     this.page.add_menu_item(__("Dernières vérifications bancaires"), () => this._verifications());
-    this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes());
+    zitouna(this.page.add_menu_item(__("Chèques impayés → sans provision"), () => this._impayes()));
     // bouton visible dans l'en-tête (pas seulement dans le menu « ··· »)
-    this.page.add_inner_button(__("Régulariser un chèque impayé"), () => this._regulariser_impaye());
-    this.page.add_menu_item(__("Rafraîchir l'export bancaire"), () => this._rafraichir());
-    this.page.add_menu_item(__("Exporter en Excel"), () => this._excel());
-    this.page.add_menu_item(__("Régler les dépenses récurrentes"), () =>
+    zitouna(this.page.add_inner_button(__("Régulariser un chèque impayé"), () => this._regulariser_impaye()));
+    this._menu_rafraichir = this.page.add_menu_item(__("Rafraîchir le relevé de la banque affichée"), () => this._rafraichir());
+    this.page.add_menu_item(__("Exporter en Excel (banque affichée)"), () => this._excel());
+    this.page.add_menu_item(__("Réglages (dépenses récurrentes, banques, robot)"), () =>
       frappe.set_route("Form", "Bank Retenue Sync Settings")
     );
+  }
+
+  // Affiche ou masque les outils propres à Zitouna selon la banque regardée.
+  _outils_de_la_banque() {
+    const autre = this._autre_banque();
+    (this._zitouna || []).forEach(($el) => $el && $el.toggle && $el.toggle(!autre));
   }
 
   // ------------------------------------------------- règlement des dettes et passages (14/10/2026)
@@ -747,9 +765,11 @@ class IdentificationBancaire {
         <div class="sub">${att.nb || 0} mouvement(s) en attente de comptabilisation (${signe(att.net || 0)})</div>
         ${pe.nb ? `<div class="sub">petits écarts d’encaissement : ${signe(pe.total)}</div>` : ""}
       </div>
-      <div class="ib-solde-actions" style="gap:6px">
+      <div class="ib-solde-actions">
+        <button class="principal" data-action="decomposer-biat">D'où vient l'écart ?</button>
         ${s.robot ? `<button data-action="capturer-biat">Lire le solde</button>` : ""}
-        <button data-action="decomposer-biat">D'où vient l'écart ?</button>
+        <button data-action="voir-biat">Voir les mouvements BIAT</button>
+        ${s.robot ? "" : `<span class="note">relevé automatique pas encore activé : solde calculé d’après les mouvements importés</span>`}
       </div>
     `);
   }
@@ -904,11 +924,11 @@ class IdentificationBancaire {
         ${retard}
       </div>
       ${projete}
-      <div class="ib-solde-actions" style="gap:6px">
-        <button data-action="capturer">Capturer le solde</button>
-        <button data-action="decomposer">D'où vient l'écart ?</button>
+      <div class="ib-solde-actions">
+        <button class="principal" data-action="decomposer">D'où vient l'écart ?</button>
         <button data-action="rapprochement">Écarts des deux côtés</button>
-        <button data-action="historique-solde">Historique</button>
+        <button data-action="capturer">Capturer le solde</button>
+        <button data-action="historique-solde">Historique des soldes</button>
       </div>
     `);
   }
@@ -1711,21 +1731,23 @@ class IdentificationBancaire {
       freeze_message: __("Reclassification…"),
     });
     const m = r.message || {};
+    const enc = ((m.encaissements || {}).encaisses || []).filter((e) => e.soumis).length;
     frappe.show_alert({
       message: __("{0} mouvements reclassés, {1} laissés en l'état (arbitrage manuel)", [
         m.maj || 0,
         m.ignores || 0,
-      ]),
+      ]) + (enc ? " · " + __("{0} remise(s) encaissée(s)", [enc]) : ""),
       indicator: "green",
     });
     this.load();
+    this._load_solde();
+    this._load_solde_biat();
   }
 
   async _rafraichir() {
     frappe.confirm(
-      __(
-        "Un nouvel export bancaire va être demandé au service. L'opération dure plusieurs minutes. Continuer ?"
-      ),
+      __("Un nouveau relevé {0} va être demandé au robot. L'opération dure plusieurs minutes. Continuer ?",
+         [this._banque()]),
       async () => {
         const r = await frappe.call({
           method: this._m("rafraichir"),

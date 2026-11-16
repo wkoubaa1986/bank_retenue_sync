@@ -169,8 +169,10 @@ def reclassifier(date_from=None, date_to=None, banque=None) -> dict:
     _guard(write=True)
     frappe.only_for("System Manager")
     if registry.filtre_banque(banque)["banque"] == "BIAT":
+        # Pour la BIAT, reclasser c'est aussi encaisser ce qui peut l'etre (remise creditee + bordereau
+        # collecte) : meme passage que celui du planificateur, sans appeler le robot.
         from bank_retenue_sync.bank import biat
-        return biat.classer_registre(persist=True)
+        return biat.passage(refresh=False) or biat.classer_registre(persist=True)
     return C.run(date_from=date_from, date_to=date_to, persist=True)
 
 
