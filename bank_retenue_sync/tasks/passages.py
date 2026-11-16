@@ -33,6 +33,8 @@ ETAPES = (
     ("impayes", "Chèques impayés"), ("reglements", "Règlement des dettes (Aramex, honoraires)"),
     ("reclassification", "Reclassification"), ("carte", "Carte technologique"),
     ("ecritures", "Écriture mensuelle de frais"), ("reclassification_frais", "Reclassification (frais)"),
+    # La BIAT passe apres Zitouna, dans le MEME journal : une connexion refusee par son portail se voit ici.
+    ("biat", "BIAT (relevé, remises, virements)"),
 )
 #: compteurs de l'import (pas des etapes) : repris dans la ligne « Export bancaire »
 COMPTEURS = ("crees", "revus")
@@ -68,6 +70,10 @@ def _detail_de(cle, valeur, out=None) -> str:
         return "%s — %s nouveau(x), %s revu(s)" % (valeur or "—", out.get("crees", 0), out.get("revus", 0))
     if valeur is None:
         return "non lancée"
+    if cle == "biat" and isinstance(valeur, dict):
+        releve = ("relevé : %s nouveau(x)" % (valeur.get("nouveaux") or 0)) if valeur.get("robot") \
+            else "relevé automatique non activé"
+        return "%s ; %d remise(s) et %d virement(s) encaissés" % (releve, valeur.get("remises") or 0, valeur.get("virements") or 0)
     if cle == "reglements" and isinstance(valeur, list):
         regles = [v for v in valeur if isinstance(v, dict) and v.get("status") == "regle"]
         attente = [v for v in valeur if isinstance(v, dict) and v.get("status") in ("en attente", "ambigu")]

@@ -742,6 +742,13 @@ class IdentificationBancaire {
       : `<div class="sub">calculé d’après le relevé : ${s.mouvements} mouvement${s.mouvements > 1 ? "s" : ""}
            depuis le ${jour(s.premiere_operation)}</div>
          <div class="sub">dernière opération : ${jour(s.derniere_operation)} · pas encore lu sur le portail</div>`;
+    // Le relevé automatique en panne (connexion refusée, code SMS redemandé…) se dit ICI, là où l'on regarde
+    // le solde — en plus de la notification et du journal des vérifications.
+    const rl = s.releve || {};
+    const panne = rl.quand && rl.ok === false
+      ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique en échec le ${frappe.datetime.str_to_user(rl.quand)} :
+           ${esc(rl.erreur || "")}${rl.dernier_succes ? ` — dernier relevé réussi : ${frappe.datetime.str_to_user(rl.dernier_succes)}` : ""}</div>`
+      : (rl.quand && s.robot ? `<div class="sub">dernier relevé automatique : ${frappe.datetime.str_to_user(rl.quand)}</div>` : "");
     const hors = Math.abs(flt(s.hors_registre, 3)) >= 0.005
       ? `<div class="sub" style="color:var(--text-on-orange,#b9770e)">⚠ ${signe(s.hors_registre)} d’opérations
            pas encore au relevé importé</div>` : "";
@@ -750,6 +757,7 @@ class IdentificationBancaire {
         <div class="lbl">Solde banque (${lu ? "réel" : "calculé"})</div>
         <div class="val">${nb(s.solde_banque)}</div>
         ${banque}
+        ${panne}
       </div>
       <div>
         <div class="lbl">Solde ERPNext</div>

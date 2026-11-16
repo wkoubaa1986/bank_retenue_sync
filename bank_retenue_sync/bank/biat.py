@@ -500,6 +500,29 @@ def proposer_cheques(credit: float, cheques: list, maximum: int = 6) -> list:
     return []
 
 
+def resume_passage(out: dict) -> dict:
+    """Ce que le JOURNAL des verifications retient du passage BIAT (`tasks/passages`). Pur.
+    Une cle « erreur » fait passer la verification en « etape en erreur » : notification aux responsables,
+    ligne rouge dans « Dernieres verifications ». C'est ainsi qu'une connexion refusee par le portail, un code
+    SMS redemande ou un encaissement qui n'a pas pu etre soumis se SAVENT, au lieu de dormir dans un journal
+    technique (demande du 16/11/2026 : « comment je sais, lors du cron, qu'une connexion a ete refusee ? »)."""
+    out = out or {}
+    erreurs = []
+    if out.get("erreur"):
+        erreurs.append("relevé du portail : " + str(out["erreur"]))
+    if isinstance(out.get("solde"), dict) and out["solde"].get("erreur"):
+        erreurs.append("lecture du solde : " + str(out["solde"]["erreur"]))
+    for cle, nom in (("encaissements", "remises"), ("virements", "virements")):
+        for e in (out.get(cle) or {}).get("erreurs") or []:
+            erreurs.append(f"{nom} : " + str(e.get("erreur") or e))
+    remises = len([e for e in (out.get("encaissements") or {}).get("encaisses") or [] if e.get("soumis")])
+    virements = len([e for e in (out.get("virements") or {}).get("encaisses") or [] if e.get("soumis")])
+    res = {"robot": bool(out.get("robot")), "nouveaux": out.get("crees"), "remises": remises, "virements": virements}
+    if erreurs:
+        res["erreur"] = " ; ".join(erreurs)[:300]
+    return res
+
+
 def compte() -> str:
     """Le compte comptable de la BIAT : celui du Bank Account de la societe, sinon « BIAT - A&S »."""
     return frappe.db.get_value("Bank Account", {"bank": BANQUE, "is_company_account": 1, "disabled": 0}, "account") \
@@ -735,6 +758,35 @@ def importer_fichier(contenu: bytes) -> dict:
     return _importer(_parse_movements_xlsx(contenu), "manuel")   # `origine` : export | bank_transaction | manuel
 
 
+#: La derniere tentative de releve par le robot ({quand, ok, erreur, dernier_succes}), gardee en base pour le
+#: bandeau de la page : un releve en panne doit se voir la ou l'on regarde le solde.
+CLE_DERNIER_RELEVE = "brs_biat_dernier_releve"
+
+
+def dernier_releve() -> dict:
+    import json
+
+    try:
+        brut = frappe.db.sql("select defvalue from `tabDefaultValue` where parent = '__global' and defkey = %s limit 1",
+                             CLE_DERNIER_RELEVE)
+        return json.loads((brut[0][0] if brut else None) or "{}")
+    except Exception:
+        return {}
+
+
+def _noter_releve(ok: bool, erreur: str = None):
+    import json
+
+    try:
+        avant = dernier_releve()
+        maintenant = str(frappe.utils.now_datetime())[:19]
+        frappe.db.set_global(CLE_DERNIER_RELEVE, json.dumps({
+            "quand": maintenant, "ok": bool(ok), "erreur": None if ok else (erreur or "")[:300],
+            "dernier_succes": maintenant if ok else avant.get("dernier_succes")}, ensure_ascii=False))
+    except Exception:
+        pass                                           # une trace d'affichage ne fait jamais echouer le releve
+
+
 def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
     """Demande au service un nouvel export BIAT, le range au registre, puis reclasse. Non fatal :
     si le service ne repond pas, ou si le portail redemande un code SMS, le registre reste tel quel
@@ -756,8 +808,10 @@ def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
             out["solde"] = capturer_solde(timeout=timeout)       # le solde suit le releve ; son echec ne l'annule pas
         except Exception as e:
             out["solde"] = {"erreur": str(e)[:200]}
+        _noter_releve(True)
     except Exception as e:
         out["erreur"] = str(e)[:300]
+        _noter_releve(False, out["erreur"])
         frappe.log_error(f"rafraichissement BIAT echoue\n{e}", "brs page")
         out.update(classer_registre(persist=True))
     return out
@@ -927,8 +981,10 @@ def passage(refresh: bool = None) -> dict:
         except Exception:
             refresh = False                            # reglage pas encore migre : pas de releve
     if refresh:
-        return rafraichir()                            # importe, encaisse et classe
-    out = {"encaissements": encaisser_remises(), "virements": encaisser_virements()}
+        out = rafraichir()                             # importe, encaisse et classe
+        out["robot"] = True
+        return out
+    out = {"robot": False, "encaissements": encaisser_remises(), "virements": encaisser_virements()}
     out.update(classer_registre(persist=True))
     return out
 
@@ -979,7 +1035,7 @@ def tableau_solde() -> dict:
         mois, annee = e.cheque_no[len(PREFIXE_FRAIS):].split("-")[:2]
         comptabilises.add(f"{annee}-{mois}")
     out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu(), comptabilises)
-    out.update(banque=BANQUE, compte=le_compte)
+    out.update(banque=BANQUE, compte=le_compte, releve=dernier_releve())
     try:
         out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
     except Exception:

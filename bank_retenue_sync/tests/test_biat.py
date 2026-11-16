@@ -345,6 +345,40 @@ class TestEcartsAbsorbesDansLesFrais(unittest.TestCase):
         self.assertEqual((t["ecart"], t["petits_ecarts"]["total"], t["absorbes"]["nb"], t["inexplique"]), (0.247, 0.247, 0, 0.0))
 
 
+class TestJournalDuPassage(unittest.TestCase):
+    """Une panne du robot BIAT doit se SAVOIR : etape en erreur dans le journal, donc notification."""
+
+    def test_connexion_refusee(self):
+        from bank_retenue_sync.tasks import passages
+
+        out = biat.resume_passage({"robot": True, "erreur": "Connexion BIAT refusee : Invalid username or password."})
+        self.assertIn("relevé du portail : Connexion BIAT refusee", out["erreur"])
+        r = passages.resume({"refresh": "ok", "crees": 2, "revus": 5, "biat": out})
+        self.assertEqual(r["statut"], "Partial")
+        self.assertEqual(r["erreurs"], ["BIAT (relevé, remises, virements) — relevé du portail : Connexion BIAT refusee : Invalid username or password."])
+        etape = [e for e in r["etapes"] if e["cle"] == "biat"][0]
+        self.assertFalse(etape["ok"])
+
+    def test_code_sms_et_encaissement_non_soumis(self):
+        out = biat.resume_passage({"robot": True, "erreur": "MyBIAT demande un code SMS : ce navigateur n'est pas reconnu.",
+                                   "encaissements": {"encaisses": [], "erreurs": [{"encaissement": "ENC-1", "erreur": "soumission refusée"}]}})
+        self.assertIn("code SMS", out["erreur"])
+        self.assertIn("remises : soumission refusée", out["erreur"])
+
+    def test_passage_sans_histoire(self):
+        from bank_retenue_sync.tasks import passages
+
+        out = biat.resume_passage({"robot": True, "crees": 3, "encaissements": {"encaisses": [{"soumis": True}, {"soumis": False}]},
+                                   "virements": {"encaisses": [{"soumis": True}]}})
+        self.assertNotIn("erreur", out)
+        r = passages.resume({"refresh": "ok", "biat": out})
+        self.assertEqual(r["statut"], "Success")
+        self.assertEqual([e["detail"] for e in r["etapes"] if e["cle"] == "biat"],
+                         ["relevé : 3 nouveau(x) ; 1 remise(s) et 1 virement(s) encaissés"])
+        sans_robot = passages.resume({"biat": biat.resume_passage({"robot": False})})
+        self.assertEqual(sans_robot["etapes"][0]["detail"], "relevé automatique non activé ; 0 remise(s) et 0 virement(s) encaissés")
+
+
 if __name__ == "__main__":
     unittest.main()
 

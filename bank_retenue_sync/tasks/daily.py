@@ -111,22 +111,13 @@ def verification_bancaire():
 
 
 def verification_bancaire_job(declencheur: str = "planifié"):
-    """Le passage Zitouna, puis celui de la BIAT (releve si le robot est actif, encaissement des remises
-    dont le bordereau est collecte, classement). La BIAT passe APRES et a part : son echec ne touche pas
-    au passage Zitouna, deja journalise."""
-    out = _verification_zitouna_job(declencheur)
-    _safe("passage BIAT", _passage_biat)
-    return out
-
-
-def _passage_biat():
-    from bank_retenue_sync.bank import biat
-    return biat.passage()
-
-
-def _verification_zitouna_job(declencheur: str = "planifié"):
     """Le vrai passage, sur la queue `long` — journalise dans `BRS Sync Run` (14/10/2026 : le passage
-    de 15h s'etait arrete sans laisser aucune trace, cf. tasks/passages)."""
+    de 15h s'etait arrete sans laisser aucune trace, cf. tasks/passages).
+
+    Zitouna, PUIS la BIAT (releve si le robot est actif, encaissement des remises et des virements,
+    classement), dans la MEME fiche de passage : une connexion refusee par le portail BIAT, un code SMS
+    redemande ou un encaissement non soumis y apparaissent comme une etape en erreur, et declenchent la meme
+    notification. La BIAT passe meme si Zitouna a echoue ; son echec ne touche pas au passage Zitouna."""
     from bank_retenue_sync import orchestrator
     from bank_retenue_sync.tasks import passages
 
@@ -136,17 +127,37 @@ def _verification_zitouna_job(declencheur: str = "planifié"):
         nom = passages.ouvrir(declencheur)
     except Exception as e:
         frappe.log_error(f"ouverture du journal de passage echouee\n{e}", "brs verification")
-        return _safe("verification_bancaire", lambda: orchestrator.run_verification_bancaire())
+        out = _safe("verification_bancaire", lambda: orchestrator.run_verification_bancaire())
+        _passage_biat()
+        return out
     try:
         out = orchestrator.run_verification_bancaire()
         frappe.db.commit()
     except Exception as e:
         frappe.db.rollback()
         frappe.log_error(f"tache verification_bancaire echouee\n{e}", "brs scheduler")
+        biat = _passage_biat()
+        if biat.get("erreur"):
+            e = RuntimeError(f"{e} | BIAT : {biat['erreur']}")
         passages.fermer(nom, exception=e)
         return None
+    out["biat"] = _passage_biat()
     passages.fermer(nom, out=out)
     return out
+
+
+def _passage_biat() -> dict:
+    """Le passage BIAT, resume pour le journal. Ne leve jamais."""
+    try:
+        from bank_retenue_sync.bank import biat
+
+        out = biat.passage() or {}
+        frappe.db.commit()
+        return biat.resume_passage(out)
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(f"passage BIAT echoue\n{frappe.get_traceback()}", "brs scheduler")
+        return {"erreur": str(e)[:300]}
 
 
 def sync_bancaire():
