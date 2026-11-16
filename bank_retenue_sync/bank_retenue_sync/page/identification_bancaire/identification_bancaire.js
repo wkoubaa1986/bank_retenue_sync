@@ -246,6 +246,7 @@ class IdentificationBancaire {
     );
     this.$root.on("click", '[data-action="historique-solde"]', () => this._historique_solde());
     this.$root.on("click", '[data-action="decomposer-biat"]', () => this._decomposer_biat());
+    this.$root.on("click", '[data-action="activer-biat"]', () => this._activer_biat());
     // Le bandeau de la somme s'ouvre et se referme d'un clic, où que l'on clique dessus.
     this.$root.on("click", '[data-role="solde-total"]', () => {
       try { localStorage.setItem("ib_banques_ouvertes", this._banques_ouvertes() ? "0" : "1"); } catch (e) { /* stockage refusé */ }
@@ -786,6 +787,8 @@ class IdentificationBancaire {
         <button class="principal" data-action="decomposer-biat">D'où vient l'écart ?</button>
         ${s.robot ? `<button data-action="capturer-biat">Lire le solde</button>` : ""}
         <button data-action="voir-biat">Voir les mouvements BIAT</button>
+        ${frappe.user.has_role("System Manager") && (!s.robot || rl.ok === false)
+          ? `<button data-action="activer-biat">${s.robot ? "Refaire la validation SMS du robot" : "Activer le relevé automatique"}</button>` : ""}
         ${s.robot ? "" : `<span class="note">relevé automatique pas encore activé : solde calculé d’après les mouvements importés</span>`}
       </div>
     `);
@@ -907,6 +910,72 @@ class IdentificationBancaire {
         <button data-action="deplier-banques">${ouvert ? "▾ Masquer le détail par banque" : "▸ Détail par banque"}</button>
       </div>
     `);
+  }
+
+  /* Activer le robot BIAT : le portail ne laisse entrer un navigateur inconnu qu'après un code SMS. Le robot
+     se connecte, on saisit ici le code reçu (une centaine de secondes), et le relevé automatique s'active.
+     Chaque SMS vient d'un geste de la personne : rien n'est relancé tout seul. */
+  _activer_biat() {
+    const RB = "bank_retenue_sync.api.biat_robot";
+    const esc = frappe.utils.escape_html;
+    let job = null, veille = null, fini = false;
+    const d = new frappe.ui.Dialog({
+      title: __("Activer le relevé automatique BIAT"),
+      fields: [
+        { fieldtype: "HTML", fieldname: "texte" },
+        { fieldtype: "Data", fieldname: "code", label: __("Code reçu par SMS"), hidden: 1 },
+      ],
+      primary_action_label: __("Démarrer"),
+      primary_action: () => (job ? envoyer() : demarrer()),
+    });
+    const dire = (html, couleur) => d.fields_dict.texte.$wrapper.html(
+      `<div style="font-size:13px;${couleur ? `color:${couleur}` : ""}">${html}</div>`);
+    dire(`${__("Le robot va se connecter au portail MyBIAT avec les identifiants enregistrés dans le service bancaire.")}<br>
+      ${__("Si le portail ne reconnaît pas encore son navigateur, <b>vous recevrez un SMS</b> : gardez votre téléphone à portée, vous aurez environ une minute et demie pour saisir le code ici.")}`);
+    const terminer = (html, couleur) => {
+      fini = true; clearTimeout(veille);
+      dire(html, couleur);
+      d.set_df_property("code", "hidden", 1);
+      d.set_primary_action(__("Fermer"), () => d.hide());
+      this._load_solde_biat();
+    };
+    const suivre = () => {
+      if (fini || !job) return;
+      frappe.call({ method: RB + ".etat", args: { job } }).then((r) => {
+        const e = r.message || {};
+        if (e.statut === "reussi") {
+          terminer(`✔ <b>${__("Robot BIAT activé.")}</b> ${e.code_saisi ? __("Le code a été accepté.") : __("Son navigateur était déjà reconnu, aucun code n’était nécessaire.")}
+            <br>${__("Un premier relevé est lancé en arrière-plan ; les mouvements arriveront dans quelques minutes.")}`, "#1a7f37");
+        } else if (e.statut === "echec") {
+          terminer(`✖ <b>${__("Activation impossible")}</b> : ${esc(e.erreur || "")}<br>
+            <span class="text-muted">${__("Rien n’a été modifié. Vous pouvez recommencer : un nouveau SMS sera envoyé si le portail en demande un.")}</span>`, "#c0392b");
+        } else {
+          d.fields_dict.texte.$wrapper.find("[data-etape]").text(e.etape || "");
+          veille = setTimeout(suivre, 3000);
+        }
+      }).catch(() => { veille = setTimeout(suivre, 5000); });
+    };
+    const demarrer = () => {
+      frappe.call({ method: RB + ".demarrer", freeze: true, freeze_message: __("Démarrage du robot…") }).then((r) => {
+        job = (r.message || {}).job;
+        if (!job) return;
+        dire(`⏳ ${__("Le robot se connecte au portail…")} <span class="text-muted" data-etape></span><br>
+          ${__("Si vous recevez un SMS de la BIAT, saisissez son code ci-dessous puis « Envoyer le code ». Sans SMS, attendez simplement : le robot dira s’il est déjà reconnu.")}`);
+        d.set_df_property("code", "hidden", 0);
+        d.set_primary_action(__("Envoyer le code"), () => envoyer());
+        veille = setTimeout(suivre, 3000);
+      });
+    };
+    const envoyer = () => {
+      const code = String(d.get_value("code") || "").replace(/\D/g, "");
+      if (code.length < 4) { frappe.msgprint(__("Saisissez le code reçu par SMS.")); return; }
+      frappe.call({ method: RB + ".deposer_code", args: { code }, freeze: true }).then(() => {
+        d.set_value("code", "");
+        frappe.show_alert({ indicator: "blue", message: __("Code transmis au robot : vérification en cours…") });
+      });
+    };
+    d.onhide = () => { fini = true; clearTimeout(veille); };
+    d.show();
   }
 
   _decomposer_biat() {

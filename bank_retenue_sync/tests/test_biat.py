@@ -413,6 +413,27 @@ class TestRepriseDuDev(unittest.TestCase):
         self.assertEqual(round(sum(m["credit"] - m["debit"] for m in self.R.MOUVEMENTS), 3), 5609.788)       # le solde lu par le robot
 
 
+class TestActivationDuRobot(unittest.TestCase):
+    def test_code_sms(self):
+        from bank_retenue_sync.api import biat_robot as R
+
+        self.assertEqual(R.code_propre(" 549 865 "), "549865")
+        self.assertEqual(R.code_propre("007421"), "007421")                 # zeros de tete gardes
+        for mauvais in ("", "12", "abc", "123456789", None):
+            with self.assertRaises(ValueError):
+                R.code_propre(mauvais)
+
+    def test_lecture_du_job(self):
+        from bank_retenue_sync.api import biat_robot as R
+
+        self.assertEqual(R.lire_job({"status": "running", "progress": {"step": "connexion, attente du code SMS"}})["statut"], "en_cours")
+        ok = R.lire_job({"status": "succeeded", "result": {"details": {"code_saisi": True, "comptes": ["x"]}}})
+        self.assertEqual((ok["statut"], ok["code_saisi"], ok["comptes"], ok["erreur"]), ("reussi", True, 1, ""))
+        ko = R.lire_job({"status": "failed", "error": "Aucun code SMS depose a temps."})
+        self.assertEqual((ko["statut"], ko["erreur"]), ("echec", "Aucun code SMS depose a temps."))
+        self.assertEqual(R.lire_job(None)["statut"], "en_cours")
+
+
 if __name__ == "__main__":
     unittest.main()
 
