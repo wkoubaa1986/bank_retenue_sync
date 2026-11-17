@@ -749,67 +749,94 @@ window.CertificatsRAS = class CertificatsRAS {
           return;
         }
         const p = m.plan || {};
-        const dt = (v) => format_currency(v, "TND");
+        const esc = frappe.utils.escape_html;
+        // LES MONTANTS SANS SYMBOLE DE DEVISE, ET DE GAUCHE À DROITE. Le symbole du dinar est en écriture arabe :
+        // « 667,200 د.ت → 650,580 د.ت » s'affichait à l'envers (650,580 → 667,200), et faisait lire une dette qui
+        // MONTE au lieu de descendre (17/11/2026 : « c'est un petit peu confusing »).
+        const nb = (v) => `<span dir="ltr" style="unicode-bidi:isolate;white-space:nowrap">${format_number(flt(v, 3), null, 3)}</span>`;
+        const fleche = (avant, apres) => `<span dir="ltr" style="unicode-bidi:isolate;white-space:nowrap">${format_number(flt(avant, 3), null, 3)} → <b>${format_number(flt(apres, 3), null, 3)}</b></span>`;
+        const ligne_cert = (this._data.certificats || []).find((l) => l.name === reference) || {};
+        const client = esc(ligne_cert.customer || __("Le client"));
         const d = new frappe.ui.Dialog({
-          title: __("Loger la retenue dans une facture déjà soldée"),
+          title: __("Retenue à la source sur une facture déjà payée"),
           size: "large",
           fields: [{ fieldtype: "HTML", fieldname: "corps" }],
         });
-        // Deux gestes bien distincts, et l'écran doit dire lequel : de l'argent compté (espèces,
-        // chèque, virement) ne se réduit jamais — c'est son affectation qui bouge.
-        // Chaque réaffectation dit la dette qu'elle éteint : c'est cette ligne-là que l'utilisateur
-        // vérifie — « je vois pas la dette » est le seul reproche qui compte ici.
+        // UNE PHRASE QUI DIT CE QUI S'EST PASSÉ, puis ce qui va changer, en trois lignes. Le détail des écritures
+        // est replié : il sert au contrôle, pas à la décision.
+        // Deux situations : de l'ARGENT REÇU (espèces, chèque, traite, virement) ne se réduit jamais — le client a
+        // payé en trop ; une DETTE enregistrée pour le montant entier se réduit simplement.
         const reaff = (p.reaffectations || [])
-          .map(
-            (a) =>
-              `<a href="/app/${frappe.router.slug(a.doctype)}/${encodeURIComponent(a.name)}">${frappe.utils.escape_html(a.name)}</a> (${dt(a.montant)})
-               — ${__("dette")} <a href="/app/payment-entry/${encodeURIComponent(a.dette_pe)}">${frappe.utils.escape_html(a.dette_pe)}</a> → ${dt(a.dette_reste)}`
-          )
+          .map((a) => `${__("sa dette sur")} <a href="/app/${frappe.router.slug(a.doctype)}/${encodeURIComponent(a.name)}" target="_blank">${esc(a.name)}</a>
+                       ${__("baisse de")} ${nb(a.montant)}${a.dette_reste !== undefined ? ` (${__("il restera")} ${nb(a.dette_reste)})` : ""}`)
           .join("<br>");
-        const lignes_argent = p.argent_compte
-          ? `<tr><td>${__("Montant du règlement")}</td><td><b>${dt(p.reglement_avant)}</b> — ${__("inchangé : cet argent a été compté")}</td></tr>
-             <tr><td>${__("Imputé à cette facture")}</td><td><b>${dt(p.allocation_avant)}</b> → <b>${dt(p.allocation_apres)}</b></td></tr>
-             <tr><td>${__("Part libérée ({0})", [dt(p.retenue)])}</td>
-                 <td>${reaff || `<b>${__("aucune écriture « Dette non payée » chez ce client")}</b> — ${dt(p.non_affecte)} ${__("resteront en avance à son crédit")}`}</td></tr>`
-          : `<tr><td>${__("Montant du règlement")}</td><td><b>${dt(p.reglement_avant)}</b> → <b>${dt(p.reglement_apres)}</b> (${__("dette : aucun argent compté")})</td></tr>`;
+        const quoi = p.argent_compte
+          ? __("{0} a déjà payé la facture {1} en entier ({2} de {3}), et il a en plus retenu {4} à la source. Il a donc payé {4} de trop.",
+               [`<b>${client}</b>`, esc(p.facture), esc(p.reglement_mode || ""), nb(p.reglement_avant), `<b>${nb(p.retenue)}</b>`])
+          : __("{0} a retenu {1} à la source sur la facture {2}, mais sa dette a été enregistrée pour le montant entier.",
+               [`<b>${client}</b>`, `<b>${nb(p.retenue)}</b>`, esc(p.facture)]);
+        const changements = p.argent_compte
+          ? `<tr><td>${__("Son paiement")} (${esc(p.reglement_mode || "")})</td><td>${nb(p.reglement_avant)} — ${__("ne change pas : c’est de l’argent reçu")}</td></tr>
+             <tr><td>${__("Retenue à la source")}</td><td><b>${nb(p.retenue)}</b> ${__("enregistrés sur la facture")}</td></tr>
+             <tr><td>${__("Les {0} payés en trop", [nb(p.retenue)])}</td>
+                 <td>${reaff || `<b>${__("avoir de {0} pour le client", [nb(p.non_affecte)])}</b> — ${__("utilisable sur sa prochaine commande (bouton « Utiliser un avoir »)")}`}</td></tr>`
+          : (p.dette_soldee
+              ? `<tr><td>${__("Sa dette")}</td><td>${fleche(p.reglement_avant, 0)} — ${__("elle n’était que la retenue : elle est soldée")}</td></tr>`
+              : `<tr><td>${__("Sa dette")}</td><td>${fleche(p.reglement_avant, p.reglement_apres)}</td></tr>`)
+            + `<tr><td>${__("Retenue à la source")}</td><td><b>${nb(p.retenue)}</b> ${__("enregistrés sur la facture")}</td></tr>`;
         d.fields_dict.corps.$wrapper.html(`
-          <p>${p.argent_compte
-              ? __("La facture {0} est soldée, mais le client a retenu {1}. Le règlement est en {2} : son montant ne bouge pas — c'est son affectation qui change.", [p.facture, dt(p.retenue), p.reglement_mode])
-              : __("La facture {0} est soldée, mais le règlement porte le TTC entier alors que le client a retenu {1}. Le total encaissé ne change pas — c'est sa composition qui devient juste.", [p.facture, dt(p.retenue)])}</p>
-          <table class="table table-bordered" style="font-size:12px">
-            <tr><td>${__("Règlement à reprendre")}</td>
-                <td><a href="/app/payment-entry/${encodeURIComponent(p.reglement)}">${p.reglement}</a> (${frappe.utils.escape_html(p.reglement_mode || "")})</td></tr>
-            ${lignes_argent}
-            <tr><td>${__("Écriture de retenue créée")}</td><td><b>${dt(p.retenue)}</b> — Dr ${__("Avance impôt société")} / Cr ${__("Débiteurs")}</td></tr>
-            <tr><td>${__("Total imputé à la facture")}</td><td>${dt(p.allocation_apres + p.retenue)} (${__("inchangé")})</td></tr>
+          <p style="font-size:14px">${quoi}</p>
+          <p style="font-weight:600;margin:12px 0 6px">${__("Ce qui va changer")}</p>
+          <table class="table table-bordered" style="font-size:13px;margin-bottom:8px">
+            ${changements}
+            <tr><td>${__("La facture")}</td><td>${__("reste entièrement payée")}</td></tr>
           </table>
-          <div style="padding:10px;border-radius:4px;background:var(--rsv-warn-bg);color:var(--rsv-warn)">
-            ${p.brouillon
-              ? __("Le règlement d'origine sera annulé et refait ; les deux écritures resteront en BROUILLON. Tant qu'elles ne sont pas validées, cette facture réapparaîtra comme due, et le règlement annulé sera conservé. (Réglage « Valider automatiquement les écritures de retenue » dans Bank Retenue Sync Settings.)")
-              : __("Le règlement d'origine sera annulé, refait et validé, et la retenue validée dans la foulée. Le règlement annulé sera ensuite <b>supprimé</b> — il ne reste que l'écriture juste — sauf si un autre document le référence encore. Le certificat PDF sera demandé au portail et attaché à la facture.")}
-          </div>`);
+          ${p.brouillon
+            ? `<div style="padding:10px;border-radius:4px;background:var(--rsv-warn-bg);color:var(--rsv-warn)">
+                 ${__("Attention : les écritures resteront en BROUILLON. Tant qu’elles ne sont pas validées, la facture réapparaît comme due. (Réglage « Valider automatiquement les écritures de retenue ».)")}</div>`
+            : `<p class="text-muted" style="font-size:12px">${__("Le certificat PDF sera téléchargé sur le portail et rangé sur la facture, d’ici quelques minutes.")}</p>`}
+          <details style="font-size:12px;margin-top:6px">
+            <summary class="text-muted" style="cursor:pointer">${__("Détail des écritures (pour le contrôle)")}</summary>
+            <div style="padding:8px 0 0 4px;line-height:1.7">
+              ${__("Paiement repris")} : <a href="/app/payment-entry/${encodeURIComponent(p.reglement)}" target="_blank">${esc(p.reglement)}</a>
+                (${esc(p.reglement_mode || "")}) — ${__("annulé puis refait à l’identique")}${p.brouillon ? "" : `, ${__("l’ancien est supprimé")}`}.<br>
+              ${p.argent_compte
+                ? `${__("Part imputée à la facture")} : ${fleche(p.allocation_avant, p.allocation_apres)}.<br>`
+                : `${__("Montant du paiement")} : ${fleche(p.reglement_avant, p.reglement_apres)}.<br>`}
+              ${__("Écriture de retenue")} : ${nb(p.retenue)} — ${__("débit « Avance impôt société », crédit du client")}.
+            </div>
+          </details>`);
         d.set_primary_action(__("Régulariser"), () => {
           frappe
             .call({
               method: "bank_retenue_sync.api.certificats.ajuster",
               args: { reference, insert: 1, reglement: p.reglement },
               freeze: true,
-              freeze_message: __("Reprise du règlement…"),
+              freeze_message: __("Enregistrement de la retenue…"),
             })
             .then((r2) => {
               const res = r2.message || {};
               d.hide();
-              const suite = res.valide
-                ? (res.reglement_supprime
-                    ? `<br>${__("Le règlement annulé {0} a été supprimé.", [res.reglement])}`
-                    : `<br><b>${__("Règlement annulé conservé")}</b> : ${frappe.utils.escape_html(res.suppression_raison || "")}`) +
-                  (res.pdf === "demande" ? `<br>${__("Certificat PDF demandé au portail : il sera attaché à la facture d'ici quelques minutes.")}` : "")
-                : `<br><b>${__("Les deux écritures sont en brouillon : à valider.")}</b>`;
+              // Le résultat, dans les mêmes mots que l'annonce : ce qui est fait, puis ce qu'il reste à savoir.
+              const fait = [__("Retenue de {0} enregistrée sur la facture {1}.", [nb(res.retenue), esc(res.facture || p.facture)])];
+              if (res.argent_compte) {
+                if (flt(res.avoir_retenue, 3) > 0) {
+                  fait.push(__("<b>Avoir de {0}</b> pour {1} : utilisable sur sa prochaine commande.", [nb(res.avoir_retenue), client]));
+                } else if ((res.reaffectations || []).length) {
+                  fait.push(__("Les {0} payés en trop ont réduit sa dette sur {1}.", [nb(res.retenue), (res.reaffectations || []).map((a) => esc(a.name)).join(", ")]));
+                }
+              } else {
+                fait.push(res.dette_soldee ? __("Sa dette est soldée.") : __("Sa dette passe à {0}.", [nb(res.reglement_apres)]));
+              }
+              if (!res.valide) fait.push(`<b>${__("Les écritures sont en brouillon : à valider.")}</b>`);
+              else if (res.pdf === "demande") fait.push(__("Le certificat PDF arrive sur la facture d’ici quelques minutes."));
+              if (res.valide && !res.reglement_supprime && res.suppression_raison) {
+                fait.push(`<span class="text-muted">${__("Ancien paiement conservé")} : ${esc(res.suppression_raison)}</span>`);
+              }
+              const refs = [res.reglement_repris, res.payment_entry].filter(Boolean).map((n) => esc(n)).join(" · ");
               frappe.msgprint({
-                title: __("Retenue logée"),
-                message: __("Règlement {0} repris en {1} ({2}), retenue {3} créée.", [
-                  res.reglement, res.reglement_repris, dt(res.reglement_apres), res.payment_entry,
-                ]) + suite,
+                title: __("Retenue enregistrée"),
+                message: fait.join("<br>") + (refs ? `<br><span class="text-muted small">${refs}</span>` : ""),
                 indicator: res.valide ? "green" : "orange",
               });
               this.refresh();
