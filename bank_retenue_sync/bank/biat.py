@@ -518,6 +518,10 @@ def resume_passage(out: dict) -> dict:
     remises = len([e for e in (out.get("encaissements") or {}).get("encaisses") or [] if e.get("soumis")])
     virements = len([e for e in (out.get("virements") or {}).get("encaisses") or [] if e.get("soumis")])
     res = {"robot": bool(out.get("robot")), "nouveaux": out.get("crees"), "remises": remises, "virements": virements}
+    if out.get("suspendu"):
+        # L'alerte est partie au passage ou le portail a demande le code ; les suivants le rappellent dans le
+        # journal sans alerter de nouveau (sept notifications par jour n'apprendraient rien de plus).
+        res["suspendu"] = True
     if erreurs:
         res["erreur"] = " ; ".join(erreurs)[:300]
     return res
@@ -774,17 +778,67 @@ def dernier_releve() -> dict:
         return {}
 
 
+#: Ce que disent le passage et la page tant que le portail attend un code : le robot ne se connecte plus.
+MESSAGE_SUSPENDU = ("relevé automatique suspendu : le portail MyBIAT attend une validation par code SMS "
+                    "(Identification bancaire › BIAT › « Refaire la validation SMS du robot »)")
+
+
+def code_sms_demande(erreur) -> bool:
+    """L'echec vient-il du portail qui REDEMANDE un code SMS (navigateur du robot plus reconnu) ? Pur."""
+    return bool(re.search(r"code\s+sms|BiatCodeRequis", str(erreur or ""), re.IGNORECASE))
+
+
+def etat_releve(avant: dict, ok: bool, erreur: str, maintenant: str) -> dict:
+    """La trace du releve apres une tentative. Pur.
+    `validation_requise` : le portail a redemande un code SMS. Tant qu'elle est vraie, PLUS AUCUNE connexion
+    n'est tentee toute seule — constat du 17/11/2026 en production : chaque passage planifie retentait, donc
+    le portail renvoyait un SMS toutes les deux heures, sans personne pour saisir le code (et un compte dont
+    les connexions restent sans suite finit par se verrouiller). Seule la validation faite par la personne
+    (`api/biat_robot`) ou un releve reussi la leve."""
+    avant = avant or {}
+    return {"quand": maintenant, "ok": bool(ok), "erreur": None if ok else (erreur or "")[:300],
+            "dernier_succes": maintenant if ok else avant.get("dernier_succes"),
+            "validation_requise": (not ok) and code_sms_demande(erreur)}
+
+
 def _noter_releve(ok: bool, erreur: str = None):
     import json
 
     try:
-        avant = dernier_releve()
-        maintenant = str(frappe.utils.now_datetime())[:19]
-        frappe.db.set_global(CLE_DERNIER_RELEVE, json.dumps({
-            "quand": maintenant, "ok": bool(ok), "erreur": None if ok else (erreur or "")[:300],
-            "dernier_succes": maintenant if ok else avant.get("dernier_succes")}, ensure_ascii=False))
+        frappe.db.set_global(CLE_DERNIER_RELEVE, json.dumps(
+            etat_releve(dernier_releve(), ok, erreur, str(frappe.utils.now_datetime())[:19]), ensure_ascii=False))
     except Exception:
         pass                                           # une trace d'affichage ne fait jamais echouer le releve
+
+
+def suspendu_d_apres(etat: dict) -> bool:
+    """La trace du dernier releve dit-elle que le portail attend un code SMS ? Pur.
+    Une trace ecrite avant le 17/11/2026 n'a pas la cle `validation_requise` : on lit alors son erreur, pour
+    que le tout premier passage apres la mise a jour ne fasse pas partir un SMS de plus."""
+    etat = etat or {}
+    if etat.get("ok") is not False:
+        return False
+    if "validation_requise" in etat:
+        return bool(etat["validation_requise"])
+    return code_sms_demande(etat.get("erreur"))
+
+
+def releve_suspendu() -> bool:
+    """Le portail attend-il un code SMS ? Alors aucune connexion du robot ne part sans la personne."""
+    return suspendu_d_apres(dernier_releve())
+
+
+def lever_suspension():
+    """Appele quand la personne vient de faire reconnaitre le navigateur du robot (code SMS accepte)."""
+    import json
+
+    try:
+        etat = dernier_releve()
+        if suspendu_d_apres(etat):
+            etat["validation_requise"] = False
+            frappe.db.set_global(CLE_DERNIER_RELEVE, json.dumps(etat, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
@@ -797,6 +851,11 @@ def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
 
     jours = int(lookback_days or 45)
     out = {"export": jours, "erreur": None}
+    if releve_suspendu():
+        # Pas d'appel au service : une connexion de plus = un SMS de plus, et toujours pas de releve.
+        out.update(erreur=MESSAGE_SUSPENDU, suspendu=True)
+        out.update(classer_registre(persist=True))
+        return out
     try:
         job = mv.start_job("/jobs/biat/mouvements/export",
                            {"date_from": str(add_days(nowdate(), -jours)), "date_to": nowdate()})
@@ -985,13 +1044,18 @@ def passage(refresh: bool = None) -> dict:
             refresh = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
         except Exception:
             refresh = False                            # reglage pas encore migre : pas de releve
-    if refresh:
+    suspendu = bool(refresh) and releve_suspendu()
+    if refresh and not suspendu:
         out = rafraichir()                             # importe, encaisse et classe
         out["robot"] = True
         if reprise:
             out["reprise"] = reprise
         return out
-    out = {"robot": False, "encaissements": encaisser_remises(), "virements": encaisser_virements()}
+    # Sans releve (robot non active, ou suspendu en attendant un code SMS) : ce qui est deja au registre
+    # s'encaisse et se classe quand meme.
+    out = {"robot": suspendu, "encaissements": encaisser_remises(), "virements": encaisser_virements()}
+    if suspendu:
+        out["suspendu"] = True
     out.update(classer_registre(persist=True))
     if reprise:
         out["reprise"] = reprise
@@ -1044,7 +1108,9 @@ def tableau_solde() -> dict:
         mois, annee = e.cheque_no[len(PREFIXE_FRAIS):].split("-")[:2]
         comptabilises.add(f"{annee}-{mois}")
     out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu(), comptabilises)
-    out.update(banque=BANQUE, compte=le_compte, releve=dernier_releve())
+    releve = dernier_releve()
+    releve["suspendu"] = suspendu_d_apres(releve)       # le portail attend un code SMS : la page le dit simplement
+    out.update(banque=BANQUE, compte=le_compte, releve=releve)
     try:
         out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
     except Exception:
@@ -1086,7 +1152,14 @@ def capturer_solde(timeout: int = 300) -> dict:
 
     from bank_retenue_sync.bank import movements as mv
 
-    mv.wait_job(mv.start_job("/jobs/biat/soldes", {}), timeout=timeout)
+    if releve_suspendu():
+        raise RuntimeError(MESSAGE_SUSPENDU)
+    try:
+        mv.wait_job(mv.start_job("/jobs/biat/soldes", {}), timeout=timeout)
+    except Exception as e:
+        if code_sms_demande(e):
+            _noter_releve(False, str(e))
+        raise
     r = requests.get(mv._base_url() + "/biat/soldes/latest", headers=mv._headers(), timeout=60)
     r.raise_for_status()
     comptes = [c for c in (r.json() or []) if c.get("solde_comptable") is not None]

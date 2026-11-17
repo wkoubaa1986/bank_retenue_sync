@@ -379,6 +379,53 @@ class TestJournalDuPassage(unittest.TestCase):
         self.assertEqual(sans_robot["etapes"][0]["detail"], "relevé automatique non activé ; 0 remise(s) et 0 virement(s) encaissés")
 
 
+class TestReleveSuspendu(unittest.TestCase):
+    """Constat du 17/11/2026 en production : le portail redemandait un code SMS et chaque passage planifie
+    retentait la connexion — un SMS toutes les deux heures. Un code redemande SUSPEND le releve : plus
+    aucune connexion ne part tant que la personne n'a pas refait la validation."""
+
+    CODE = ("job jb_1f45afc022944bbf failed : BiatCodeRequis: MyBIAT demande un code SMS : ce navigateur n'est pas "
+            "reconnu. Lancez l'enrolement (POST /jobs/biat/enrolement) puis deposez le code recu.")
+
+    def test_un_code_redemande_se_reconnait(self):
+        self.assertTrue(biat.code_sms_demande(self.CODE))
+        self.assertTrue(biat.code_sms_demande("Aucun code SMS depose a temps."))
+        for autre in ("Connexion BIAT refusee : Invalid username or password.", "HTTPConnectionPool: timeout", "", None):
+            self.assertFalse(biat.code_sms_demande(autre), autre)
+
+    def test_le_code_suspend_une_autre_panne_non(self):
+        e = biat.etat_releve({"dernier_succes": "2026-11-16 19:18:50"}, False, self.CODE, "2026-11-17 05:04:36")
+        self.assertTrue(e["validation_requise"])
+        self.assertTrue(biat.suspendu_d_apres(e))
+        self.assertEqual(e["dernier_succes"], "2026-11-16 19:18:50")
+        panne = biat.etat_releve(e, False, "HTTPConnectionPool: timeout", "2026-11-17 07:00:00")
+        self.assertFalse(biat.suspendu_d_apres(panne))          # le service en panne se retente au passage suivant
+
+    def test_un_releve_reussi_leve_la_suspension(self):
+        e = biat.etat_releve({"validation_requise": True, "ok": False}, True, None, "2026-11-17 11:00:00")
+        self.assertFalse(biat.suspendu_d_apres(e))
+        self.assertEqual(e["dernier_succes"], "2026-11-17 11:00:00")
+
+    def test_trace_ecrite_avant_la_mise_a_jour(self):
+        # La trace de production du 17/11/2026 n'a pas la cle : son erreur suffit a suspendre.
+        ancienne = {"quand": "2026-11-17 09:05:28", "ok": False, "erreur": self.CODE, "dernier_succes": "2026-11-16 19:18:50"}
+        self.assertTrue(biat.suspendu_d_apres(ancienne))
+        self.assertFalse(biat.suspendu_d_apres({**ancienne, "validation_requise": False}))   # validation refaite
+        self.assertFalse(biat.suspendu_d_apres({}))
+        self.assertFalse(biat.suspendu_d_apres({"ok": True}))
+
+    def test_le_journal_le_dit_sans_alerter_de_nouveau(self):
+        from bank_retenue_sync.tasks import passages
+
+        out = biat.resume_passage({"robot": True, "suspendu": True, "encaissements": {"encaisses": [{"soumis": True}]}})
+        self.assertNotIn("erreur", out)
+        r = passages.resume({"refresh": "ok", "biat": out})
+        self.assertEqual(r["statut"], "Success")
+        self.assertEqual([e["detail"] for e in r["etapes"] if e["cle"] == "biat"],
+                         ["relevé suspendu, code SMS à saisir (bouton « Refaire la validation SMS du robot ») ; "
+                          "1 remise(s) et 0 virement(s) encaissés"])
+
+
 class TestRepriseDuDev(unittest.TestCase):
     """Les cheques designes sur le dev se retrouvent en production par numero ET montant, jamais a peu pres."""
 

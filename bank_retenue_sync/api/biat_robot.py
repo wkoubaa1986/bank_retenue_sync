@@ -89,6 +89,9 @@ def etat(job) -> dict:
     if out["statut"] == "reussi":
         deja = frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif"))
         frappe.db.set_single_value("Bank Retenue Sync Settings", "biat_robot_actif", 1)
+        from bank_retenue_sync.bank import biat
+
+        biat.lever_suspension()                        # le navigateur vient d'etre reconnu : le releve reprend
         frappe.db.commit()
         out["active"] = True
         if not deja or frappe.cache.get_value("brs_biat_premier_releve:" + str(job)) is None:

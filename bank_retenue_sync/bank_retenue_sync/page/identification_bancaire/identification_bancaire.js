@@ -751,9 +751,15 @@ class IdentificationBancaire {
     // Le relevé automatique en panne (connexion refusée, code SMS redemandé…) se dit ICI, là où l'on regarde
     // le solde — en plus de la notification et du journal des vérifications.
     const rl = s.releve || {};
-    const panne = rl.quand && rl.ok === false
+    const reussi = rl.dernier_succes ? ` — dernier relevé réussi : ${frappe.datetime.str_to_user(rl.dernier_succes)}` : "";
+    // Code SMS redemandé par le portail : le robot ne se connecte plus tout seul (un SMS partirait à chaque
+    // passage). On le dit en une phrase, avec le geste à faire — pas le message technique du service.
+    const panne = rl.suspendu
+      ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique suspendu depuis le ${frappe.datetime.str_to_user(rl.quand)} :
+           la BIAT demande un code SMS. Bouton « Refaire la validation SMS du robot », téléphone en main${reussi}</div>`
+      : rl.quand && rl.ok === false
       ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique en échec le ${frappe.datetime.str_to_user(rl.quand)} :
-           ${esc(rl.erreur || "")}${rl.dernier_succes ? ` — dernier relevé réussi : ${frappe.datetime.str_to_user(rl.dernier_succes)}` : ""}</div>`
+           ${esc(rl.erreur || "")}${reussi}</div>`
       : (rl.quand && s.robot ? `<div class="sub">dernier relevé automatique : ${frappe.datetime.str_to_user(rl.quand)}</div>` : "");
     const hors = Math.abs(flt(s.hors_registre, 3)) >= 0.005
       ? `<div class="sub" style="color:var(--text-on-orange,#b9770e)">⚠ ${signe(s.hors_registre)} d’opérations
