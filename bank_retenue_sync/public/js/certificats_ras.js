@@ -770,9 +770,29 @@ window.CertificatsRAS = class CertificatsRAS {
           .map((a) => `${__("sa dette sur")} <a href="/app/${frappe.router.slug(a.doctype)}/${encodeURIComponent(a.name)}" target="_blank">${esc(a.name)}</a>
                        ${__("baisse de")} ${nb(a.montant)}${a.dette_reste !== undefined ? ` (${__("il restera")} ${nb(a.dette_reste)})` : ""}`)
           .join("<br>");
+        // LA RETENUE COUVRE PLUSIEURS FACTURES : le client les a réglées d'un seul paiement, net de la retenue, et la
+        // part retenue est restée en dette sur l'une d'elles. On le dit, avec la liste — sans quoi l'écran ne
+        // montre qu'une facture et l'on ne reconnaît pas la retenue du mois (COMOSACC, 17/11/2026).
+        const g = m.groupe && (m.groupe.factures || []).length > 1 ? m.groupe : null;
+        const jour_fr = (j) => (j ? frappe.datetime.str_to_user(String(j).substring(0, 10)) : "");
+        const groupe = g
+          ? `<div style="margin:10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;font-size:13px">
+               <div style="margin-bottom:6px">${__("Cette retenue couvre <b>{0} factures</b>, payées ensemble par un {1} de {2} le {3}.",
+                 [g.factures.length, esc((g.mode || __("paiement")).toLowerCase()), nb(g.montant), jour_fr(g.date)])}
+                 ${p.argent_compte ? "" : __("Les {0} qui manquaient ont été laissés en dette sur {1} : c’est cette dette que la retenue remplace.", [nb(p.retenue), `<b>${esc(p.facture)}</b>`])}</div>
+               ${g.factures.map((f) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0${f.name === p.facture ? ";font-weight:600" : ""}">
+                   <span><a href="/app/sales-invoice/${encodeURIComponent(f.name)}" target="_blank">${esc(f.name)}</a>${f.numero ? ` · ${__("n°")} ${esc(String(f.numero))}` : ""} · ${jour_fr(f.date)}</span>
+                   <span>${nb(f.ttc)}${f.name === p.facture ? ` — ${__("porte la retenue")}` : ""}</span></div>`).join("")}
+               <div style="display:flex;justify-content:space-between;gap:10px;padding-top:4px;margin-top:4px;border-top:1px solid var(--border-color)">
+                 <span>${__("Total des {0} factures", [g.factures.length])}</span><span><b>${nb(g.total_ttc)}</b></span></div>
+             </div>`
+          : "";
         const quoi = p.argent_compte
           ? __("{0} a déjà payé la facture {1} en entier ({2} de {3}), et il a en plus retenu {4} à la source. Il a donc payé {4} de trop.",
                [`<b>${client}</b>`, esc(p.facture), esc(p.reglement_mode || ""), nb(p.reglement_avant), `<b>${nb(p.retenue)}</b>`])
+          : g
+          ? __("{0} a retenu {1} à la source sur {2} factures, mais cette part a été enregistrée comme une dette.",
+               [`<b>${client}</b>`, `<b>${nb(p.retenue)}</b>`, g.factures.length])
           : __("{0} a retenu {1} à la source sur la facture {2}, mais sa dette a été enregistrée pour le montant entier.",
                [`<b>${client}</b>`, `<b>${nb(p.retenue)}</b>`, esc(p.facture)]);
         const changements = p.argent_compte
@@ -783,13 +803,14 @@ window.CertificatsRAS = class CertificatsRAS {
           : (p.dette_soldee
               ? `<tr><td>${__("Sa dette")}</td><td>${fleche(p.reglement_avant, 0)} — ${__("elle n’était que la retenue : elle est soldée")}</td></tr>`
               : `<tr><td>${__("Sa dette")}</td><td>${fleche(p.reglement_avant, p.reglement_apres)}</td></tr>`)
-            + `<tr><td>${__("Retenue à la source")}</td><td><b>${nb(p.retenue)}</b> ${__("enregistrés sur la facture")}</td></tr>`;
+            + `<tr><td>${__("Retenue à la source")}</td><td><b>${nb(p.retenue)}</b> ${__("enregistrés sur la facture")}${g ? " " + esc(p.facture) : ""}</td></tr>`;
         d.fields_dict.corps.$wrapper.html(`
           <p style="font-size:14px">${quoi}</p>
+          ${groupe}
           <p style="font-weight:600;margin:12px 0 6px">${__("Ce qui va changer")}</p>
           <table class="table table-bordered" style="font-size:13px;margin-bottom:8px">
             ${changements}
-            <tr><td>${__("La facture")}</td><td>${__("reste entièrement payée")}</td></tr>
+            <tr><td>${g ? __("Les {0} factures", [g.factures.length]) : __("La facture")}</td><td>${g ? __("restent entièrement payées") : __("reste entièrement payée")}</td></tr>
           </table>
           ${p.brouillon
             ? `<div style="padding:10px;border-radius:4px;background:var(--rsv-warn-bg);color:var(--rsv-warn)">

@@ -323,6 +323,40 @@ def creer_paiements(references=None, insert=0):
     return res
 
 
+def _factures_du_reglement_net(cert: dict, ctx) -> dict | None:
+    """Quand la retenue couvre PLUSIEURS factures : le reglement net qui les a payees ensemble, et ces factures.
+
+    Un client qui retient 1 % sur un mois de factures les regle d'un seul paiement, net de la retenue ; la
+    caisse laisse alors la part retenue en dette sur UNE des factures (la derniere), et c'est la que la
+    retenue se loge. L'ecran de regularisation ne montrait que cette facture-la — « la retenue, a priori il
+    l'a faite sur plusieurs factures, comment je l'identifie ? » (17/11/2026, COMOSACC : 4 factures d'aout).
+    Lecture seule ; None si le reglement net ne porte qu'une facture, ou s'il n'est pas retrouve."""
+    from bank_retenue_sync.tej import rapprochement
+
+    try:
+        nom = (rapprochement.facture_par_reglement_net(cert, ctx) or {}).get("reglement")
+        if not nom:
+            return None
+        numero = ", si.custom_numero_facture as numero" if frappe.db.has_column("Sales Invoice", "custom_numero_facture") else ""
+        factures = frappe.db.sql(
+            """select per.reference_name as name, sum(per.allocated_amount) as impute, si.posting_date as date,
+                      si.grand_total as ttc%s
+               from `tabPayment Entry Reference` per
+               join `tabSales Invoice` si on si.name = per.reference_name
+               where per.parent = %%s and per.reference_doctype = 'Sales Invoice' and per.allocated_amount > 0
+               group by per.reference_name order by si.posting_date, si.name""" % numero, (nom,), as_dict=True)
+        if len(factures) < 2:
+            return None
+        pe = frappe.db.get_value("Payment Entry", nom, ["mode_of_payment", "paid_amount", "posting_date"], as_dict=True)
+        return {"reglement": nom, "mode": pe.mode_of_payment, "montant": flt(pe.paid_amount, 3), "date": str(pe.posting_date),
+                "total_ttc": flt(sum(flt(f.ttc) for f in factures), 3),
+                "factures": [{"name": f.name, "numero": f.get("numero"), "date": str(f.date), "ttc": flt(f.ttc, 3),
+                              "impute": flt(f.impute, 3)} for f in factures]}
+    except Exception:
+        frappe.log_error(title="RAS : factures du reglement net", message=frappe.get_traceback())
+        return None
+
+
 @frappe.whitelist()
 def plan_regularisation(reference):
     """Comment loger cette retenue ? -> {voie: creation|ajustement|impossible, ...}.
@@ -352,7 +386,8 @@ def plan_regularisation(reference):
     if "deja soldee" in (verdict["raison"] or ""):
         plan = paiements.ajuster(reference, insert=0, ctx=ctx)
         if plan.get("ok"):
-            return {"voie": "ajustement", "plan": plan, "raison": verdict["raison"]}
+            return {"voie": "ajustement", "plan": plan, "raison": verdict["raison"],
+                    "groupe": _factures_du_reglement_net(cert[0], ctx)}
         # Plusieurs reglements peuvent porter la retenue et aucune regle ne les departage : ce
         # n'est pas un echec, c'est une question. La liste part a l'ecran, l'utilisateur tranche.
         if plan.get("candidats"):
