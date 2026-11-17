@@ -595,6 +595,18 @@ def reglement_a_reprendre(cert: dict, lignes=None, choisi: str = None, ttc: floa
             "candidats": [_decrire(c) for c in candidats]}
 
 
+def avoir_a_noter(argent_compte: bool, non_affecte: float, reglement_repris: bool) -> float:
+    """Le montant a noter comme avoir du client apres une regularisation. Pur.
+
+    Seulement de l'ARGENT COMPTE (especes, cheque, traite, virement : le client a reellement verse le TTC
+    entier ET retenu sa part) dont une part n'a trouve aucune dette a eteindre. Une dette reduite n'est pas
+    de l'argent : elle ne laisse aucun avoir."""
+    if not argent_compte or not reglement_repris:
+        return 0.0
+    montant = round(float(non_affecte or 0), 3)
+    return montant if montant > 0.0005 else 0.0
+
+
 def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = None,
             ctx: R.Contexte = None) -> dict:
     """Loge la retenue dans une facture deja soldee, sans changer son total encaisse.
@@ -787,10 +799,22 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
                             else (" ; %s" % suppression["raison"] if suppression["raison"] else ""))),
     }, update_modified=False)
 
+    # 3 bis. L'AVOIR NE DE LA RETENUE (17/11/2026). De l'argent compte dont une part est liberee, chez un
+    #        client qui ne doit rien d'autre : cette part reste « non affectee » sur le reglement repris. C'est
+    #        un vrai credit du client, mais aucun ecran ne le nommait (MH2C : 40,040 sur une traite de 4 005 —
+    #        « j'ai regularise mais je n'ai pas trouve l'avoir »). On le NOTE ici, au moment ou il nait ; les
+    #        avoirs disponibles du client le comptent (customization_app, `avoir_client.avoirs_disponibles`).
+    #        Aucune ecriture de plus : le credit existe deja en comptabilite, on ne fait que le nommer.
+    avoir = avoir_a_noter(reel, non_affecte, copie is not None)
+    if avoir and frappe.db.has_column(DOCTYPE, "avoir_retenue"):
+        frappe.db.set_value(DOCTYPE, reference, {"avoir_retenue": avoir, "avoir_reglement": copie.name},
+                            update_modified=False)
+
     # 4. Le justificatif : la retenue est logee, il lui manque sa preuve. Demande au portail en
     #    tache de fond — une session de scraping dure des minutes, l'ecran ne doit pas attendre.
     pdf = _demander_pdf(reference)
     return {**plan, "statut": "ajuste", "reglement_repris": copie.name if copie is not None else None,
+            "avoir_retenue": avoir,
             "commandes_ecartees": commandes_ecartees,
             "payment_entry": retenue.name, "valide": valider, "dettes_reprises": reprises,
             "echeancier": echeancier_suivi,

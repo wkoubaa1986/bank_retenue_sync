@@ -41,6 +41,8 @@
   "ecart_piece",
   "revue_requise",
   "match_raison",
+  "avoir_retenue",
+  "avoir_reglement",
   "match_candidates",
   "section_piece",
   "pdf_file",
@@ -291,6 +293,20 @@
    "fieldname": "match_raison",
    "fieldtype": "Small Text",
    "label": "Raison",
+   "read_only": 1
+  },
+  {
+   "fieldname": "avoir_retenue",
+   "fieldtype": "Currency",
+   "label": "Avoir né de la retenue",
+   "read_only": 1,
+   "description": "Quand la retenue est logée dans une facture déjà soldée par de l’argent compté, et que le client ne doit rien d’autre : la part libérée reste à son crédit sur le règlement. Elle compte dans ses avoirs disponibles."
+  },
+  {
+   "fieldname": "avoir_reglement",
+   "fieldtype": "Link",
+   "options": "Payment Entry",
+   "label": "Règlement qui porte cet avoir",
    "read_only": 1
   },
   {
