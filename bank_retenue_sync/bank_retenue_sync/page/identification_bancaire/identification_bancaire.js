@@ -1067,17 +1067,37 @@ class IdentificationBancaire {
     const pastille = (texte, couleur) => `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
       background:${couleur}22;color:${couleur};white-space:nowrap">${texte}</span>`;
     const VERT = "#1e8449", ORANGE = "#b9770e", ROUGE = "#c0392b", GRIS = "#6c757d";
+    const pct = (v) => format_number(v || 0, null, 2) + " %";
     const transaction = (t) => {
       const ok = t.etat === "Trouvé" || t.etat === "Trouvé par le montant";
       const quoi = t.paiement
         ? `<a href="/app/payment-entry/${encodeURIComponent(t.paiement)}" target="_blank">${esc(t.client || t.paiement)}</a>`
         : `<b style="color:${ROUGE}">${__("aucun paiement dans ERPNext")}</b>`;
       return `<div style="padding:6px 0;border-top:1px solid var(--border-color)">
-        <div><b>${nb(t.montant)}</b> · ${jour(t.date_achat)} · ${__("autorisation")} ${esc(t.autorisation || "")}</div>
+        <div><b>${nb(t.montant)}</b> · ${jour(t.date_achat)} · ${__("autorisation")} ${esc(t.autorisation || "")}
+          <span class="text-muted small">· ${__("commission")} ${nb(t.commission)} (${pct(t.taux)})</span></div>
         <div class="small">${ok ? "✔" : "⚠"} ${quoi}${t.etat && t.etat !== "Trouvé" ? ` — ${esc(t.etat)}` : ""}
           ${t.remarque ? `<span class="text-muted"> (${esc(t.remarque)})</span>` : ""}</div>
       </div>`;
     };
+    // Les frais : ce que la banque a RÉELLEMENT prélevé au relevé, et le taux que cela fait par rapport au
+    // montant des transactions de la remise — à côté de ce que son avis annonçait.
+    const frais = (r) => {
+      const annonce = flt(r.commission, 3) + flt(r.tva, 3);
+      if (!annonce && !flt(r.frais_preleves, 3)) return "";
+      const preleve = flt(r.frais_preleves, 3)
+        ? `<b>${nb(r.frais_preleves)}</b> ${__("prélevés par la banque")} = <b>${pct(r.taux_frais)}</b> ${__("des transactions")}`
+        : `<span style="color:${ORANGE}">${__("pas encore prélevés au relevé")}</span>`;
+      const reste = flt(annonce - flt(r.frais_preleves, 3), 3);
+      return `<div class="small" style="margin:4px 0">${__("Frais")} : ${preleve}
+        <span class="text-muted">— ${__("annoncés par l’avis")} : ${nb(annonce)} (${pct(r.taux_annonce)}${flt(r.tva, 3) ? ", " + __("dont TVA") + " " + nb(r.tva) : ""})${
+          flt(r.frais_preleves, 3) && reste > 0.0005 ? ` ; ${__("reste")} ${nb(reste)} ${__("pas encore prélevé")}` : ""}</span></div>`;
+    };
+    const compta = (r) => r.ecriture
+      ? `<div class="small" style="margin:4px 0">✔ ${__("Comptabilisée")} : <a href="/app/journal-entry/${encodeURIComponent(r.ecriture)}" target="_blank">${esc(r.ecriture)}</a></div>`
+      : r.comptabilisation
+      ? `<div class="small" style="margin:4px 0;color:${ROUGE}">⚠ ${__("Pas comptabilisée")} : ${esc(r.comptabilisation)}</div>`
+      : "";
     const remise = (r) => {
       const creditee = r.etat === "Créditée";
       const verdict = r.controle === "Tout est bon" ? pastille("✔ " + __("Tout est bon"), VERT)
@@ -1098,6 +1118,8 @@ class IdentificationBancaire {
         </div>
         <div class="small text-muted">${__("traitée par la banque le {0}", [jour(r.date_traitement)])}</div>
         <div style="margin:6px 0">${montants}</div>
+        ${frais(r)}
+        ${compta(r)}
         ${r.a_signaler ? `<div class="small" style="color:${ROUGE};white-space:pre-line">${esc(r.a_signaler)}</div>` : ""}
         ${(r.transactions || []).map(transaction).join("")}
         <div class="small" style="margin-top:6px">${pieces}</div>
@@ -1116,7 +1138,8 @@ class IdentificationBancaire {
     d.$body.html(`<div style="padding:12px 16px;font-size:13px">
       ${lu}
       <p>${esc((m.resume || {}).phrase || "")}.</p>
-      <p class="text-muted small">${__("La banque annonce chaque remise du terminal par courriel. Le crédit au compte est reconnu par son montant net, quel que soit le jour où il arrive : la date de traitement n’est pas la date de valeur.")}</p>
+      ${m.compte_attente ? `<p class="small">${__("Compte d’attente « {0} » : {1} — ce que la banque n’a pas encore versé.", [esc(m.compte_attente), "<b>" + nb(m.solde_attente) + "</b>"])}</p>` : ""}
+      <p class="text-muted small">${__("La banque annonce chaque remise du terminal par courriel. Le crédit au compte est reconnu par le numéro de la remise et son montant, quel que soit le jour où il arrive : la date de traitement n’est pas la date de valeur.")}</p>
       ${(m.remises || []).map(remise).join("") || `<p class="text-muted">${__("Aucune remise reçue pour l’instant.")}</p>`}
       ${sans ? `<h6 style="margin-top:14px">${__("Paiements par carte saisis, pas encore au relevé de la banque")}</h6>${sans}` : ""}
     </div>`);

@@ -60,9 +60,27 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   encore relevés sont listés. Sur le relevé BIAT, le crédit d'une remise se reconnaît par son MONTANT net
   (ou celui de la journée, ou le brut), dans une fenêtre de jours autour de la date de traitement —
   jamais par l'égalité des dates : la date de traitement n'est pas la date de valeur. La ligne passe
-  « Identifié non comptabilisé » et désigne la fiche. **Rien n'est comptabilisé** (compte d'attente,
-  commission et TVA : décision en attente). Lu à chaque vérification planifiée ; bouton « Cartes (TPE) »
-  du bandeau BIAT pour le détail et « Relire les courriels de la banque » ;
+  « Identifié non comptabilisé » et désigne la fiche. Lu à chaque vérification planifiée ; bouton
+  « Cartes (TPE) » du bandeau BIAT pour le détail et « Relire les courriels de la banque ».
+  Libellés réels (17/11/2026) : « Reglement Affilie BIAT TPE : … Remise : <date>-<affiliation>-<bordereau> »
+  crédite le BRUT (le bordereau du libellé désigne la remise), « COM TVA REF REMISE AFF … » prélève la
+  commission à part ;
+- **Cartes : comptabilité (« option A », 17/11/2026)** — un paiement REÇU par carte va au compte d'attente
+  « Cartes à encaisser - A&S » (réglage « Compte d'attente des cartes », créé par le patch
+  `cartes_compte_attente`) : `monetique.diriger_paiement_carte`, branché sur `Payment Entry.before_validate`,
+  une seule règle pour tous les écrans de saisie (ils visent tous un compte de banque) ; un paiement ÉMIS par
+  carte n'est pas touché. Quand la banque crédite la remise, `monetique.comptabiliser` passe l'écriture
+  (référence = nom de la fiche) : Dr BIAT ce qui est crédité, Dr Frais bancaire la différence si la banque
+  crédite le net, Cr compte d'attente le brut — seulement si chaque transaction a son paiement, validé, au
+  bon montant et sur le compte d'attente (sinon la fiche dit pourquoi). La commission prélevée à part est un
+  frais bancaire BIAT comme un autre (écriture mensuelle), et sa ligne porte son TAUX par rapport au montant
+  des transactions de la remise (« 23,040 = 3,00 % des 768,000 ») ; la fiche cumule les frais réellement
+  prélevés. Les paiements par carte saisis avant la règle sur un compte de banque sont ramenés une fois au
+  compte d'attente (`rapatrier_paiements`, réécriture des écritures du paiement). Le solde du compte
+  d'attente = ce que la banque n'a pas encore versé.
+  ⚠️ Déploiement : customization_app d'abord ou avec (sa facturation doit connaître le compte d'attente,
+  `facturation_numbering.COMPTES_BANCAIRES` et le script « Facturation Auto ») — tant que le script en base
+  ne nomme pas le compte, la règle reste éteinte (`monetique.facturation_prete`) ;
 - **Virements reçus à la BIAT** — même logique que Zitouna, même code (`bank/biat.encaisser_virements`) :
   le client est identifié sur le libellé (noms appris des virements des deux banques, alias,
   ressemblance, IA), le montant est réparti sur ses dettes (exacte, sous-ensemble, FIFO partiel), un

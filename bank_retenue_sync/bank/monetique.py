@@ -27,9 +27,27 @@ un jour que ni le releve ni l'avis ne donnent. Une ligne du releve bancaire se r
 MONTANT (au millime), dans une fenetre de jours autour de la date de traitement — jamais par l'egalite
 des dates.
 
-CE MODULE NE COMPTABILISE RIEN. Il range (une fiche `BRS Remise TPE` par remise), controle (chaque
-transaction a-t-elle son paiement ?) et reconnait (quelle ligne du releve paie quelle remise). Le
-passage en comptabilite — compte d'attente, commission, TVA — est une decision de l'utilisateur.
+CE QUE LA BANQUE FAIT AU COMPTE (releve reel du 17/11/2026)
+----------------------------------------------------------
+    Reglement Affilie BIAT TPE : 0010010006 / Remise : 20261116-0811990019-1990010006   credit du BRUT
+    COM TVA REF REMISE AFF 0010010006                                                 debit de la commission
+Le credit porte la date de traitement, l'affiliation et le n° de BORDEREAU : la remise se designe sans
+ambiguite. La commission est prelevee a part, sous la reference du terminal ; la TVA annoncee par l'avis
+n'etait pas encore prelevee ce jour-la. Le montant reste le filet (net, journee) si la banque change.
+
+LA COMPTABILITE (decision du 17/11/2026 : « option A »)
+------------------------------------------------------
+Un paiement RECU par carte va a un compte d'attente (« Cartes à encaisser », comme « Chèques - A&S ») :
+`diriger_paiement_carte`, branche sur Payment Entry — une seule regle pour tous les ecrans de saisie.
+Quand la banque credite la remise, `comptabiliser` passe l'ecriture :
+
+    Dr  BIAT - A&S               ce que la banque a credite
+    Dr  Frais bancaire - A&S     brut − credit (seulement si la banque credite le net)
+    Cr  Cartes à encaisser       brut (= les paiements de la remise)
+
+La commission prelevee a part est un frais bancaire comme un autre : elle rejoint l'ecriture mensuelle
+« BIAT frais bancaires MM-AAAA » (`bank/biat.sync_frais`). Le compte BIAT d'ERPNext retombe sur la banque,
+et le solde du compte d'attente dit ce que la banque n'a pas encore verse.
 
 Les fonctions du haut sont pures (aucun site) : `tests/test_monetique.py`.
 """
@@ -54,6 +72,14 @@ FENETRE_PAIEMENT = 5
 #: Au-dela, un paiement saisi « par carte » que la banque n'a toujours pas releve est a signaler.
 DELAI_SANS_RELEVE = 7
 TOLERANCE = 0.0015
+SETTINGS = "Bank Retenue Sync Settings"
+#: Reglage qui porte le compte d'attente des cartes. Vide : rien n'est dirige ni comptabilise.
+CHAMP_COMPTE_ATTENTE = "compte_cartes_attente"
+NOM_COMPTE_ATTENTE = "Cartes à encaisser"
+COMPTE_FRAIS = "Frais bancaire - A&S"
+#: Pose par le patch `cartes_compte_attente` : les paiements par carte saisis AVANT la regle (sur un compte de
+#: banque) sont ramenes une fois au compte d'attente, au premier passage.
+CLE_RAPATRIER = "brs_cartes_a_rapatrier"
 #: Jours pendant lesquels une remise est suivie (rapprochee du releve bancaire, comptee dans le bandeau).
 SUIVI = 120
 
@@ -327,9 +353,20 @@ def autorisation_de(reference) -> str:
     sautent parfois a la saisie."""
     for morceau in re.split(r"[\s\-/_.:]+", str(reference or "").strip().upper()):
         propre = re.sub(r"[^A-Z0-9]", "", morceau)
-        if propre:
+        if len(propre) >= 4 and re.search(r"\d", propre):
             return propre.lstrip("0")
     return ""
+
+
+def autorisations_de(reference) -> set:
+    """Tous les numeros qu'une reference saisie porte : « Ticket TPE 061800 - BIAT » -> {« 61800 »}. Les
+    ecrans de la caisse n'ecrivent pas tous la reference de la meme facon ; le numero y est toujours."""
+    out = set()
+    for morceau in re.split(r"[\s\-/_.:]+", str(reference or "").strip().upper()):
+        propre = re.sub(r"[^A-Z0-9]", "", morceau)
+        if len(propre) >= 4 and re.search(r"\d", propre):
+            out.add(propre.lstrip("0"))
+    return out
 
 
 def _jours(a, b) -> int | None:
@@ -365,8 +402,9 @@ def rapprocher_transactions(transactions: list, paiements: list, deja_pris=()) -
     reponses = [None] * len(transactions)
     par_autorisation = {}
     for p in paiements:
-        cle = autorisation_de(p.get("reference"))
-        if cle and p.get("name") not in pris:
+        if p.get("name") in pris:
+            continue
+        for cle in autorisations_de(p.get("reference")):
             par_autorisation.setdefault(cle, []).append(p)
 
     for i, t in enumerate(transactions):
@@ -447,10 +485,14 @@ def _dans_la_fenetre(jour_ligne, traitement) -> bool:
 def affecter(lignes: list, remises: list) -> dict:
     """Quelle ligne de CREDIT du releve bancaire paie quelle(s) remise(s). Pur.
 
-    `lignes`  : [{cle, date, montant}] — des credits que rien d'autre ne reconnait ;
-    `remises` : [{name, remise, date_traitement, brut, commission, tva, net, nombre, mouvement}] (`net` nul
-                tant que l'avis de credit n'est pas arrive : seul le brut se compare alors).
+    `lignes`  : [{cle, date, montant, bordereau?, jour_remise?}] — les credits du terminal, et ceux que rien
+                d'autre ne reconnait ; `bordereau` et `jour_remise` quand le libelle de la banque les donne ;
+    `remises` : [{name, remise, bordereau, date_traitement, brut, commission, tva, net, nombre, mouvement}]
+                (`net` nul tant que l'avis de credit n'est pas arrive : seul le brut se compare alors).
     -> {cle de ligne: {remises: [name], nature, brut, commission, tva, net, nombre, date_traitement}}
+
+    LE BORDEREAU D'ABORD : quand le libelle nomme la remise (« Remise : 20261116-…-1990010006 »), c'est elle,
+    pourvu que le montant le confirme (brut ou net).
 
     PAR LE MONTANT, JAMAIS PAR LA DATE : la date ne sert qu'a borner la recherche (`FENETRE_AVANT` jours avant
     la date de traitement, `FENETRE_APRES` apres). Dans l'ordre : le NET d'une remise (ce que dit l'avis), le
@@ -472,14 +514,23 @@ def affecter(lignes: list, remises: list) -> dict:
                 "commission": somme(groupe, "commission"), "tva": somme(groupe, "tva"), "net": somme(groupe, "net"),
                 "nombre": sum(int(r.get("nombre") or 0) for r in groupe),
                 "date_traitement": str(groupe[0].get("date_traitement") or "")[:10],
-                "numeros": [str(r.get("remise") or "") for r in groupe]}
+                "numeros": [str(r.get("remise") or "") for r in groupe],
+                "par_remise": {r["name"]: _m(r.get("net") if nature == "net" else r.get("brut")) for r in groupe}}
 
     resultat, prises = {}, set()
     par_cle = {l["cle"]: l for l in lignes}
-    # 1. Les rattachements deja faits, tant que le montant de la ligne les confirme.
+    # 1. La remise nommee par le libelle, puis les rattachements deja faits — tant que le montant les confirme.
     deja = {}
+    for l in lignes:
+        if not l.get("bordereau"):
+            continue
+        nommees = [r for r in remises if str(r.get("bordereau") or "") == str(l["bordereau"])
+                   and (not l.get("jour_remise") or str(r.get("date_traitement") or "")[:10] == l["jour_remise"])]
+        if nommees:
+            deja[l["cle"]] = nommees[:1]
     for r in remises:
-        if r.get("mouvement") in par_cle:
+        if r.get("mouvement") in par_cle and r["mouvement"] not in deja \
+                and not any(r in groupe for groupe in deja.values()):
             deja.setdefault(r["mouvement"], []).append(r)
     for cle, groupe in deja.items():
         for nature, total in essais(groupe):
@@ -508,6 +559,8 @@ def affecter(lignes: list, remises: list) -> dict:
         if trouve:
             resultat[l["cle"]] = fiche(*trouve)
             prises.update(r["name"] for r in trouve[0])
+    for cle, f in resultat.items():
+        f["terminal"] = par_cle[cle].get("terminal") or ""       # la reference que la commission reprendra
     return resultat
 
 
@@ -523,7 +576,136 @@ def raison_credit(tpe: dict) -> str:
                    f" = net {_nombre(tpe['net'])} (avis de crédit de la banque)")
     else:
         detail += f", crédit du brut {_nombre(tpe['brut'])} (commission {_nombre(tpe['commission'])} prélevée à part)"
+    ecritures = tpe.get("ecritures") or []
+    if ecritures and not tpe.get("refus"):
+        return detail + " — " + ("écriture " if len(ecritures) == 1 else "écritures ") + ", ".join(e["name"] for e in ecritures)
+    if tpe.get("refus"):
+        return detail + " — pas comptabilisée : " + tpe["refus"]
     return detail + " — reconnue, pas encore comptabilisée"
+
+
+# ---------------------------------------------------------------------------
+# Lecture du libelle bancaire, prelevement de la commission, ecriture de la remise — pur
+# ---------------------------------------------------------------------------
+
+_LIBELLE_CREDIT = re.compile(r"TPE\s*:?\s*(\d{6,}).*?REMISE\s*:?\s*(\d{8})\s*-\s*(\d+)\s*-\s*(\d+)")
+_LIBELLE_TERMINAL = re.compile(r"(?:TPE|REMISE AFF\w*)\s*:?\s*(\d{6,})")
+
+
+def lire_libelle(operation) -> dict:
+    """Ce que le libelle bancaire dit de la remise. Pur.
+    « Reglement Affilie BIAT TPE : 0010010006\\Remise : 20261116-0811990019-1990010006 »
+        -> {terminal: « 0010010006 », jour_remise: « 2026-11-16 », affiliation, bordereau: « 1990010006 »}
+    « COM TVA REF REMISE AFF 0010010006 » -> {terminal: « 0010010006 »}"""
+    texte = _norme(operation)
+    trouve = _LIBELLE_CREDIT.search(texte)
+    if trouve:
+        j = trouve.group(2)
+        return {"terminal": trouve.group(1), "jour_remise": f"{j[:4]}-{j[4:6]}-{j[6:]}",
+                "affiliation": trouve.group(3), "bordereau": trouve.group(4)}
+    trouve = _LIBELLE_TERMINAL.search(texte)
+    return {"terminal": trouve.group(1)} if trouve else {}
+
+
+def remise_du_prelevement(prelevement: dict, remises: list, par_terminal: dict = None) -> dict | None:
+    """La remise dont la banque preleve ici la commission, et CE qu'elle preleve. Pur.
+
+    `prelevement` : {date, montant, terminal} (la reference du terminal lue sur le libelle) ;
+    `par_terminal` : {reference du terminal: name de la remise} — tire des credits deja reconnus, qui portent
+    la meme reference ; a defaut, la remise dont le n° de bordereau finit comme elle (« …10006 »).
+    -> {name, remise, quoi (« commission », « commission et TVA », « TVA » ou None si le montant ne
+        correspond a rien d'annonce), commission, tva} ou None."""
+    terminal = str(prelevement.get("terminal") or "")
+    candidates = []
+    nom = (par_terminal or {}).get(terminal)
+    if nom:
+        candidates = [r for r in remises if r["name"] == nom]
+    if not candidates and len(terminal) >= 5:
+        candidates = [r for r in remises if str(r.get("bordereau") or "")[-5:] == terminal[-5:]
+                      and _dans_la_fenetre(prelevement.get("date"), r.get("date_traitement"))]
+    if not candidates:
+        return None
+    montant = _m(prelevement.get("montant"))
+
+    def quoi(r):
+        for nom_frais, valeur in (("commission", _m(r.get("commission"))),
+                                  ("commission et TVA", _m(_m(r.get("commission")) + _m(r.get("tva")))),
+                                  ("TVA", _m(r.get("tva")))):
+            if valeur > 0 and abs(valeur - montant) <= TOLERANCE:
+                return nom_frais
+        return None
+
+    candidates.sort(key=lambda r: (quoi(r) is None, _jours(prelevement.get("date"), r.get("date_traitement")) or 0))
+    r = candidates[0]
+    return {"name": r["name"], "remise": str(r.get("remise") or ""), "quoi": quoi(r),
+            "commission": _m(r.get("commission")), "tva": _m(r.get("tva"))}
+
+
+def taux(frais, base) -> float:
+    """Le taux d'un frais par rapport au montant des transactions, en % (2 decimales). 0 sans base. Pur.
+    Demande du 17/11/2026 : « a chaque fois que tu identifies un frais bancaire relatif au TPE, calcule son
+    taux par rapport a la transaction »."""
+    base = _m(base)
+    return round(100.0 * _m(frais) / base, 2) if base > 0 else 0.0
+
+
+def _pourcent(valeur) -> str:
+    return f"{valeur:.2f}".replace(".", ",") + " %"
+
+
+def raison_prelevement(montant, trouve: dict | None, brut=None) -> str:
+    """La phrase d'une ligne de frais du terminal : ce que la banque preleve, sur quelle remise, et A QUEL
+    TAUX par rapport au montant des transactions de cette remise. Pur."""
+    if not trouve:
+        return "commission du terminal de paiement (cartes) : remise non retrouvée dans les avis de la banque"
+    quoi = trouve.get("quoi") or "frais"
+    phrase = f"{quoi} du terminal de paiement, remise carte n° {trouve.get('remise')} : {_nombre(montant)}"
+    if brut:
+        phrase += f" = {_pourcent(taux(montant, brut))} des {_nombre(brut)} de transactions"
+    if not trouve.get("quoi"):
+        phrase += (f" — l’avis de la banque annonçait commission {_nombre(trouve.get('commission'))}"
+                   f" et TVA {_nombre(trouve.get('tva'))}")
+    return phrase
+
+
+def decider_ecriture(remise: dict, paiements: dict, attente: str, banque: str) -> dict:
+    """Faut-il passer l'ecriture d'une remise creditee, et laquelle ? Pur.
+
+    `remise` : {name, brut, montant_credite, controle, transactions: [{paiement, montant, etat}]} ;
+    `paiements` : {name: {docstatus, compte, montant}} — l'etat ACTUEL des paiements designes ;
+    `attente` : le compte d'attente des cartes ; `banque` : le compte de la banque.
+    -> {faire, raison, lignes: [{account, debit|credit}], frais}
+
+    On ne comptabilise que ce qui est certain : toutes les transactions ont leur paiement, au bon montant,
+    soumis, ET sur le compte d'attente — sinon l'ecriture crediterait un compte que le paiement n'a jamais
+    debite. Tout refus dit pourquoi ; la remise reste visible, « pas comptabilisée »."""
+    non = lambda raison: {"faire": False, "raison": raison, "lignes": [], "frais": 0.0}   # noqa: E731
+    if not attente:
+        return non("le compte d’attente des cartes n’est pas réglé (Bank Retenue Sync Settings)")
+    brut, credite = _m(remise.get("brut")), _m(remise.get("montant_credite"))
+    transactions = remise.get("transactions") or []
+    if remise.get("controle") != BON or not transactions:
+        manquantes = len([t for t in transactions if t.get("etat") not in (TROUVE, TROUVE_MONTANT)])
+        return non(f"{manquantes} transaction(s) sans paiement au bon montant dans ERPNext : voir la fiche" if manquantes
+                   else "le relevé des transactions n’est pas encore arrivé par courriel")
+    total = 0.0
+    for t in transactions:
+        p = paiements.get(t.get("paiement")) or {}
+        if int(p.get("docstatus") or 0) != 1:
+            return non(f"le paiement {t.get('paiement')} n’est plus validé")
+        if p.get("compte") != attente:
+            return non(f"le paiement {t.get('paiement')} n’est pas sur le compte d’attente des cartes (il est sur {p.get('compte')})")
+        total = _m(total + _m(p.get("montant")))
+    if abs(total - brut) > TOLERANCE:
+        return non(f"les paiements font {_nombre(total)}, la remise {_nombre(brut)}")
+    if credite <= 0 or credite > brut + TOLERANCE:
+        return non(f"montant crédité incohérent ({_nombre(credite)} pour un brut de {_nombre(brut)})")
+    frais = _m(brut - credite) if brut - credite > TOLERANCE else 0.0
+    lignes = [{"account": banque, "debit": credite}]
+    if frais:
+        lignes.append({"account": COMPTE_FRAIS, "debit": frais})
+    lignes.append({"account": attente, "credit": brut})
+    return {"faire": True, "raison": "", "lignes": lignes, "frais": frais}
 
 
 def resume_remises(remises: list, sans_releve: list = (), aujourd_hui=None) -> dict:
@@ -541,11 +723,14 @@ def resume_remises(remises: list, sans_releve: list = (), aujourd_hui=None) -> d
                         else "toutes les remises reçues sont créditées")
         if signaler:
             morceaux.append(f"⚠ {len(signaler)} à signaler")
+    bloquees = [r for r in remises if r.get("etat") == ETAT_CREDITEE and not r.get("ecriture") and r.get("comptabilisation")]
+    if bloquees:
+        morceaux.append(f"⚠ {len(bloquees)} créditée(s) pas comptabilisée(s)")
     if sans_releve:
         morceaux.append(f"{len(sans_releve)} paiement(s) par carte pas encore au relevé de la banque"
                         + (f", dont {len(retard)} de plus de {DELAI_SANS_RELEVE} jours" if retard else ""))
     return {"nb": len(remises), "en_attente": {"nb": len(attente), "net": net}, "creditees": len(remises) - len(attente),
-            "a_signaler": len(signaler),
+            "a_signaler": len(signaler), "non_comptabilisees": len(bloquees),
             "sans_releve": {"nb": len(sans_releve), "montant": _m(sum(_m(p.get("montant")) for p in sans_releve)),
                             "en_retard": len(retard)},
             "phrase": " · ".join(morceaux)}
@@ -764,19 +949,61 @@ def _debut_suivi():
 def _remises_pour_affectation() -> list:
     import frappe
 
-    return frappe.db.get_all(
-        DOCTYPE, filters={"banque": BANQUE, "date_traitement": [">=", _debut_suivi()]},
-        fields=["name", "remise", "date_traitement", "brut", "commission", "tva", "net", "nombre", "mouvement"],
-        limit_page_length=0)
+    champs = ["name", "remise", "bordereau", "date_traitement", "brut", "commission", "tva", "net", "nombre", "mouvement"]
+    if frappe.db.has_column(DOCTYPE, "ecriture"):
+        champs += ["ecriture", "comptabilisation"]
+    return frappe.db.get_all(DOCTYPE, filters={"banque": BANQUE, "date_traitement": [">=", _debut_suivi()]},
+                             fields=champs, limit_page_length=0)
 
 
 def affectations(lignes: list) -> dict:
     """`affecter`, sur les remises du site. `lignes` : les credits BIAT que rien d'autre ne reconnait
     ([{cle, date, montant}]). {} tant que l'app n'est pas migree ou qu'aucune remise n'est arrivee."""
+    import frappe
+
     if not lignes or not pret():
         return {}
     remises = _remises_pour_affectation()
-    return affecter(lignes, remises) if remises else {}
+    if not remises:
+        return {}
+    out = affecter(lignes, remises)
+    # L'ecriture de chaque remise (ou la raison pour laquelle elle n'est pas passee) suit la ligne.
+    par_nom = {r["name"]: r for r in remises}
+    noms = [r.get("ecriture") for r in remises if r.get("ecriture")]
+    etats = dict(frappe.db.get_all("Journal Entry", filters={"name": ["in", noms or [""]]}, fields=["name", "docstatus"],
+                                   as_list=True)) if noms else {}
+    for fiche in out.values():
+        ecritures, refus = [], []
+        for nom in fiche["remises"]:
+            r = par_nom.get(nom) or {}
+            if r.get("ecriture") and r["ecriture"] in etats and int(etats[r["ecriture"]]) < 2:
+                ecritures.append({"name": r["ecriture"], "docstatus": int(etats[r["ecriture"]])})
+            elif r.get("comptabilisation"):
+                refus.append(r["comptabilisation"])
+        fiche["ecritures"] = ecritures if len(ecritures) == len(fiche["remises"]) else []
+        fiche["refus"] = " ; ".join(refus)
+    return out
+
+
+def prelevements(lignes: list, tpe: dict = None) -> dict:
+    """Pour chaque DEBIT de commission du terminal ([{cle, date, montant, terminal}]), la remise concernee et le
+    taux. `tpe` : le resultat d'`affectations`, dont les credits portent la reference du terminal
+    ([{cle: {..., terminal}}]). -> {cle: {name, remise, quoi, commission, tva, brut, taux, raison}}"""
+    if not lignes or not pret():
+        return {}
+    remises = _remises_pour_affectation()
+    par_nom = {r["name"]: r for r in remises}
+    par_terminal = {}
+    for fiche in (tpe or {}).values():
+        if fiche.get("terminal") and len(fiche["remises"]) == 1:
+            par_terminal[fiche["terminal"]] = fiche["remises"][0]
+    out = {}
+    for l in lignes:
+        trouve = remise_du_prelevement(l, remises, par_terminal)
+        brut = _m((par_nom.get(trouve["name"]) or {}).get("brut")) if trouve else 0.0
+        out[l["cle"]] = dict(trouve or {}, brut=brut, taux=taux(l.get("montant"), brut),
+                             raison=raison_prelevement(l.get("montant"), trouve, brut))
+    return out
 
 
 def noter_credits(tpe: dict, lignes: list):
@@ -787,15 +1014,18 @@ def noter_credits(tpe: dict, lignes: list):
     if not pret():
         return
     par_cle = {l.get("cle") or l.get("name"): l for l in lignes}
-    creditees = {}
+    creditees, parts = {}, {}
     for cle, fiche in (tpe or {}).items():
         for nom in fiche["remises"]:
             creditees[nom] = cle
+            # Une ligne peut payer plusieurs remises (un credit pour la journee) : a chacune sa part.
+            parts[nom] = _m((fiche.get("par_remise") or {}).get(nom))
     for nom, cle in creditees.items():
         ligne = par_cle.get(cle) or {}
         valeurs = {"etat": ETAT_CREDITEE, "mouvement": cle, "date_credit": ligne.get("date"),
-                   "montant_credite": _m(ligne.get("credit") or ligne.get("montant"))}
-        if frappe.db.get_value(DOCTYPE, nom, ["etat", "mouvement"]) != (ETAT_CREDITEE, cle):
+                   "montant_credite": parts.get(nom) or _m(ligne.get("credit") or ligne.get("montant"))}
+        if frappe.db.get_value(DOCTYPE, nom, ["etat", "mouvement", "montant_credite"]) != \
+                (ETAT_CREDITEE, cle, valeurs["montant_credite"]):
             frappe.db.set_value(DOCTYPE, nom, valeurs)
     # Une remise notee creditee que le classement ne rattache plus (ligne ecartee, montant corrige) redevient
     # « en attente ». SEULEMENT parmi celles que le classement a regardees : une remise sortie de la fenetre de
@@ -804,6 +1034,207 @@ def noter_credits(tpe: dict, lignes: list):
                                                    "date_traitement": [">=", _debut_suivi()],
                                                    "name": ["not in", list(creditees) or [""]]}, pluck="name"):
         frappe.db.set_value(DOCTYPE, nom, {"etat": ETAT_ATTENTE, "mouvement": None, "date_credit": None, "montant_credite": 0})
+
+
+def noter_frais(prelevements_tpe: dict, lignes: list):
+    """Reporte sur chaque fiche ce que la banque a REELLEMENT preleve pour elle (somme des debits reconnus) et
+    le taux que cela fait par rapport au montant de ses transactions."""
+    import frappe
+
+    if not pret() or not frappe.db.has_column(DOCTYPE, "frais_preleves"):
+        return
+    par_cle = {l.get("cle") or l.get("name"): l for l in lignes}
+    totaux = {}
+    for cle, p in (prelevements_tpe or {}).items():
+        if p.get("name") and cle in par_cle:
+            totaux[p["name"]] = _m(totaux.get(p["name"], 0.0) + _m(par_cle[cle].get("debit") or par_cle[cle].get("montant")))
+    for r in frappe.db.get_all(DOCTYPE, filters={"banque": BANQUE, "date_traitement": [">=", _debut_suivi()]},
+                               fields=["name", "brut", "frais_preleves"]):
+        preleve = totaux.get(r.name, 0.0)
+        if abs(_m(r.frais_preleves) - preleve) > 0.0005:
+            frappe.db.set_value(DOCTYPE, r.name, {"frais_preleves": preleve, "taux_frais": taux(preleve, r.brut)})
+
+
+# ---------------------------------------------------------------------------
+# Comptabilite : compte d'attente des cartes, ecriture de la remise
+# ---------------------------------------------------------------------------
+
+def compte_attente() -> str | None:
+    """Le compte d'attente des cartes, ou None tant qu'il n'est pas regle (rien n'est alors dirige ni
+    comptabilise)."""
+    import frappe
+
+    try:
+        compte = frappe.db.get_single_value(SETTINGS, CHAMP_COMPTE_ATTENTE)
+    except Exception:
+        return None
+    return compte if compte and facturation_prete(compte) else None
+
+
+SCRIPT_FACTURATION = "Facturation Auto"
+
+
+def facturation_prete(compte: str) -> bool:
+    """La facturation de customization_app sait-elle que ce compte est de l'argent acquis ?
+
+    ⚠️ ORDRE DE DEPLOIEMENT. « Facturation Auto » facture les commandes dont le paiement est sur un compte de
+    sa liste (Zitouna, BIAT). Un paiement par carte porte au compte d'attente AVANT que cette liste ne le
+    connaisse sortirait de la facturation. Tant que le script en base ne nomme pas le compte, la regle reste
+    donc eteinte : rien n'est dirige, ramene ni comptabilise — pousser customization_app d'abord, ou avec.
+    Sans ce script sur le site, il n'y a rien a proteger."""
+    import frappe
+
+    cle = "brs_cartes_facturation_prete:" + compte
+    connu = frappe.cache().get_value(cle)
+    if connu is None:
+        script = frappe.db.get_value("Server Script", SCRIPT_FACTURATION, "script")
+        connu = 1 if (script is None or compte in script) else 0
+        frappe.cache().set_value(cle, connu, expires_in_sec=300)
+    return bool(connu)
+
+
+def comptes_de_banque() -> set:
+    """Les comptes comptables des banques de la societe (Zitouna, BIAT) et le compte par defaut du mode carte."""
+    import frappe
+
+    comptes = set(frappe.db.get_all("Bank Account", filters={"is_company_account": 1}, pluck="account"))
+    comptes.update(frappe.db.sql_list(
+        "select default_account from `tabMode of Payment Account` where parent like 'Carte%%'"))
+    return {c for c in comptes if c}
+
+
+def diriger_paiement_carte(doc, method=None):
+    """Payment Entry, `before_validate` : un paiement RECU par carte va au compte d'attente des cartes.
+
+    Les ecrans de la caisse posent tous un paiement par carte directement sur un compte de banque (le compte
+    par defaut du mode « Carte de crédit », ou le compte ecrit en dur dans le script d'encaissement). Or
+    l'argent n'y est pas : la banque le verse quelques jours plus tard, par remise. Une seule regle, ici, pour
+    tous ces ecrans. Elle ne touche ni un paiement EMIS par carte (depenses), ni un paiement deja place
+    ailleurs que sur une banque. Ne leve jamais : un encaissement ne doit pas echouer pour elle."""
+    import frappe
+
+    try:
+        if doc.docstatus != 0 or doc.payment_type != "Receive" or not _est_carte(doc.mode_of_payment):
+            return
+        attente = compte_attente()
+        if not attente or doc.paid_to == attente or doc.paid_to not in comptes_de_banque():
+            return
+        devise, nature = frappe.get_cached_value("Account", attente, ["account_currency", "account_type"])
+        doc.paid_to = attente
+        doc.paid_to_account_currency = devise or doc.paid_to_account_currency
+        if doc.meta.has_field("paid_to_account_type"):
+            doc.paid_to_account_type = nature
+    except Exception:
+        frappe.log_error(title="Cartes : paiement non dirigé vers le compte d’attente", message=frappe.get_traceback())
+
+
+def _deplacer_paiement(nom: str, vers: str) -> str:
+    """Porte un paiement VALIDE sur un autre compte de depot en reecrivant ses ecritures comptables (annulation
+    des anciennes, creation des nouvelles — la mecanique de « Repost Accounting Ledger » d'ERPNext). Le
+    paiement garde son nom, sa date, ses references et ses affectations. -> l'ancien compte."""
+    import frappe
+
+    pe = frappe.get_doc("Payment Entry", nom)
+    ancien = pe.paid_to
+    pe.make_gl_entries(cancel=1)
+    devise = frappe.get_cached_value("Account", vers, "account_currency")
+    frappe.db.set_value("Payment Entry", nom, {"paid_to": vers, "paid_to_account_currency": devise or pe.paid_to_account_currency},
+                        update_modified=False)
+    pe = frappe.get_doc("Payment Entry", nom)
+    pe.make_gl_entries()
+    pe.add_comment("Info", f"Compte de dépôt corrigé : {ancien} → {vers} (paiement par carte : l’argent arrive "
+                           "par les remises du terminal de paiement, pas directement en banque).")
+    return ancien
+
+
+def rapatrier_paiements(force: bool = False) -> dict:
+    """Ramene au compte d'attente les paiements par carte saisis AVANT la regle, restes sur un compte de banque.
+    Une seule fois (drapeau `CLE_RAPATRIER` pose par le patch), au premier passage : jamais pendant un migrate.
+    On ne remonte pas avant la premiere transaction connue du terminal (les cartes de 2025 passaient par un
+    autre terminal et sont restees ou elles etaient). -> {deplaces: [{name, de}], erreurs: []}"""
+    import frappe
+
+    out = {"deplaces": [], "erreurs": []}
+    attente = compte_attente()
+    if not attente or not pret() or frappe.flags.in_migrate:
+        return out
+    if not force and not frappe.db.get_global(CLE_RAPATRIER):
+        return out
+    debut = frappe.db.sql(f"select min(date_achat) from `tab{DOCTYPE_TRANSACTION}`")[0][0]
+    if not debut:
+        return out                                     # aucun releve encore : on reessaiera au passage suivant
+    banques = comptes_de_banque() - {attente}
+    for p in _paiements(debut, frappe.utils.getdate()):
+        if not (p.carte and p.docstatus == 1 and p.compte in banques):
+            continue
+        try:
+            out["deplaces"].append({"name": p.name, "de": _deplacer_paiement(p.name, attente), "montant": _m(p.montant)})
+        except Exception as e:
+            frappe.db.rollback()
+            frappe.log_error(title="Cartes : paiement %s non ramené au compte d’attente" % p.name, message=frappe.get_traceback())
+            out["erreurs"].append({"erreur": f"paiement {p.name} non ramené au compte d’attente : {str(e)[:120]}"})
+            return out
+    frappe.db.set_global(CLE_RAPATRIER, None)
+    return out
+
+
+def comptabiliser(insert: bool = True) -> dict:
+    """Passe l'ecriture de chaque remise CREDITEE par la banque et pas encore comptabilisee (`decider_ecriture`).
+    Idempotent : la reference de l'ecriture est le nom de la fiche. Soumise si le site soumet ses ecritures
+    automatiquement (meme interrupteur que les frais). -> {ecritures: [{remise, je, soumise, frais}],
+    refus: {remise: raison}, erreurs: []}"""
+    import frappe
+
+    from bank_retenue_sync.bank import biat
+    from bank_retenue_sync.encaissement.pending import COMPANY
+    from bank_retenue_sync.expenses import fees, journal
+
+    out = {"ecritures": [], "refus": {}, "erreurs": []}
+    attente = compte_attente()
+    if not attente or not pret() or not frappe.db.has_column(DOCTYPE, "ecriture"):
+        return out
+    banque = biat.compte()
+    centre = frappe.db.get_value("Company", COMPANY, "cost_center")
+    for nom in frappe.db.get_all(DOCTYPE, filters={"banque": BANQUE, "etat": ETAT_CREDITEE, "ecriture": ["is", "not set"]},
+                                 order_by="date_traitement asc, remise asc", pluck="name"):
+        try:
+            existante = frappe.db.get_value("Journal Entry", {"cheque_no": nom, "docstatus": ["<", 2]}, "name")
+            if existante:
+                frappe.db.set_value(DOCTYPE, nom, {"ecriture": existante, "comptabilisation": ""})
+                continue
+            doc = frappe.get_doc(DOCTYPE, nom)
+            transactions = [t.as_dict() for t in doc.get("transactions") or []]
+            noms = [t.get("paiement") for t in transactions if t.get("paiement")]
+            etats = {p.name: {"docstatus": p.docstatus, "compte": p.paid_to, "montant": p.paid_amount}
+                     for p in frappe.db.get_all("Payment Entry", filters={"name": ["in", noms or [""]]},
+                                                fields=["name", "docstatus", "paid_to", "paid_amount"])}
+            decision = decider_ecriture(dict(doc.as_dict(), transactions=transactions), etats, attente, banque)
+            if not decision["faire"]:
+                out["refus"][nom] = decision["raison"]
+                if (doc.comptabilisation or "") != decision["raison"]:
+                    frappe.db.set_value(DOCTYPE, nom, "comptabilisation", decision["raison"])
+                continue
+            jour = fees.date_ecriture(doc.date_credit or doc.date_traitement)
+            lignes = [dict(l, cost_center=centre) if l["account"] == COMPTE_FRAIS else l for l in decision["lignes"]]
+            detail = (f"Remise carte (terminal de paiement) n° {doc.remise}, traitée par la banque le {_jour_fr(doc.date_traitement)}"
+                      f" : {len(transactions)} paiement(s) par carte, brut {_nombre(doc.brut)}, crédité {_nombre(doc.montant_credite)}"
+                      f" le {_jour_fr(doc.date_credit)}.\nPaiements : " + ", ".join(noms)
+                      + (f"\nFrais retenus par la banque sur le crédit : {_nombre(decision['frais'])}" if decision["frais"] else
+                         "\nLa commission est prélevée à part par la banque : elle est dans l’écriture mensuelle des frais BIAT."))
+            je = journal.build_journal_entry(COMPANY, jour, lignes, remark=f"{nom}\n{detail}", cheque_no=nom, cheque_date=jour)
+            soumise = False
+            if insert:
+                je.insert(ignore_permissions=True)
+                if journal._auto_submit_enabled():
+                    je.submit()
+                    soumise = True
+                frappe.db.set_value(DOCTYPE, nom, {"ecriture": je.name, "comptabilisation": ""})
+            out["ecritures"].append({"remise": nom, "je": je.name if insert else "(essai)", "soumise": soumise,
+                                     "frais": decision["frais"], "montant": _m(doc.montant_credite)})
+        except Exception as e:
+            frappe.log_error(title="Cartes : écriture de la remise %s" % nom, message=frappe.get_traceback())
+            out["erreurs"].append({"erreur": f"remise {nom} : {str(e)[:160]}"})
+    return out
 
 
 def paiements_sans_releve() -> list:
@@ -840,7 +1271,8 @@ def tableau(limite: int = 40) -> dict:
         DOCTYPE, filters={"banque": BANQUE}, order_by="date_traitement desc, remise desc", limit_page_length=limite,
         fields=["name", "remise", "terminal", "bordereau", "date_traitement", "date_telecollecte", "brut", "commission",
                 "tva", "net", "nombre", "etat", "date_credit", "montant_credite", "mouvement", "controle", "a_signaler",
-                "releve", "avis"])
+                "releve", "avis"] + (["ecriture", "comptabilisation", "frais_preleves", "taux_frais"]
+                                     if frappe.db.has_column(DOCTYPE, "ecriture") else []))
     lignes = frappe.db.get_all(
         DOCTYPE_TRANSACTION, filters={"parent": ["in", [r.name for r in remises] or [""]]}, order_by="parent, idx",
         fields=["parent", "date_achat", "montant", "commission", "carte", "autorisation", "etat", "paiement", "client",
@@ -850,7 +1282,17 @@ def tableau(limite: int = 40) -> dict:
         par_remise.setdefault(l.parent, []).append(l)
     for r in remises:
         r["transactions"] = par_remise.get(r.name, [])
-    return {"pret": True, "remises": remises, "sans_releve": paiements_sans_releve(), "resume": resume()}
+        for t in r["transactions"]:
+            t["taux"] = taux(t.commission, t.montant)                 # commission annoncee / montant de la transaction
+        r["taux_annonce"] = taux(_m(r.commission) + _m(r.tva), r.brut)
+        r["taux_commission"] = taux(r.commission, r.brut)
+    attente = compte_attente()
+    solde = None
+    if attente:
+        solde = _m(frappe.db.sql("select ifnull(sum(debit - credit), 0) from `tabGL Entry` where account = %s and is_cancelled = 0",
+                                 (attente,))[0][0])
+    return {"pret": True, "remises": remises, "sans_releve": paiements_sans_releve(), "resume": resume(),
+            "compte_attente": attente, "solde_attente": solde}
 
 
 def resume() -> dict:
@@ -860,5 +1302,7 @@ def resume() -> dict:
     if not pret():
         return resume_remises([])
     remises = frappe.db.get_all(DOCTYPE, filters={"banque": BANQUE, "date_traitement": [">=", _debut_suivi()]},
-                                fields=["name", "etat", "controle", "net", "brut"], limit_page_length=0)
+                                fields=["name", "etat", "controle", "net", "brut"]
+                                + (["ecriture", "comptabilisation"] if frappe.db.has_column(DOCTYPE, "ecriture") else []),
+                                limit_page_length=0)
     return resume_remises(remises, paiements_sans_releve(), frappe.utils.getdate())

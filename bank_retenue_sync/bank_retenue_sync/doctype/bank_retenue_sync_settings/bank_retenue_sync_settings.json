@@ -80,7 +80,8 @@
   "section_bordereaux",
   "modele_lecture_bordereau",
   "column_break_bordereaux",
-  "biat_robot_actif"
+  "biat_robot_actif",
+  "compte_cartes_attente"
  ],
  "fields": [
   {
@@ -575,11 +576,18 @@
    "label": "Relevé BIAT automatique (robot)",
    "default": "0",
    "description": "À cocher une fois le robot BIAT déployé et reconnu par le portail (code SMS saisi une fois). Le relevé BIAT est alors rapporté à chaque vérification bancaire. Décoché : les remises BIAT déjà au registre sont quand même encaissées dès que leur bordereau est collecté."
+  },
+  {
+   "fieldname": "compte_cartes_attente",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Compte d’attente des cartes (terminal de paiement)",
+   "description": "Un paiement reçu par carte y est porté au lieu d’aller directement en banque ; quand la banque crédite la remise du terminal, l’écriture solde ce compte. Vide : les paiements par carte restent où l’écran les pose et aucune remise n’est comptabilisée."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-16 20:00:00.000000",
+ "modified": "2026-11-17 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",

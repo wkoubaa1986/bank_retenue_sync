@@ -67,6 +67,14 @@ REGLES = (
      "Commission de remise de chèques"),
     ("versement_especes", "Credit", re.compile(r"^VERSEMENT\b"), "caisse", "versement",
      "Versement d’espèces"),
+    # TERMINAL DE PAIEMENT (cartes) — libelles vus le 17/11/2026 :
+    #   « Reglement Affilie BIAT TPE : 0010010006 / Remise : 20261116-0811990019-1990010006 »   credit du brut
+    #   « COM TVA REF REMISE AFF 0010010006 »                                                   commission, a part
+    # La remise elle-meme se designe par les courriels de la banque (`bank/monetique.py`).
+    ("remise_tpe", "Credit", re.compile(r"\bREGLEMENT\s+AFFILIE\b.*?\bTPE\b"), "encaissement", "carte",
+     "Remise du terminal de paiement (cartes)"),
+    ("com_tpe", "Debit", re.compile(r"\bCOM\w*\s+(?:TVA\s+)?REF\s+REMISE\s+AFF"), "frais_bancaires", "commission",
+     "Commission du terminal de paiement (cartes)"),
     # Virement recu d'un client : meme mot entier que le flux Zitouna (`matching.is_virement_credit`), Aramex
     # exclu (son reversement a son propre circuit). Place APRES les regles precises : il ne prend que le reste.
     ("vir_recu", "Credit", re.compile(r"^(?!.*ARAMEX).*\bVIR(?:EMENT|T)?\b"), "encaissement", "virement",
@@ -129,6 +137,33 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
                    statut=STATUT_BROUILLON, document_type=monetique.DOCTYPE,
                    document_name=tpe["remises"][0] if len(tpe["remises"]) == 1 else None,
                    montant_document=montant, raison=monetique.raison_credit(tpe))
+        ecritures = tpe.get("ecritures") or []
+        if ecritures and not tpe.get("refus"):
+            # L'ecriture de la remise est passee (banque debitee, compte d'attente des cartes solde).
+            brouillon = any(int(e.get("docstatus") or 0) == 0 for e in ecritures)
+            out.update(statut=STATUT_BROUILLON if brouillon else STATUT_IDENTIFIE, document_type="Journal Entry",
+                       document_name=ecritures[0]["name"] if len(ecritures) == 1 else None)
+        return out
+    if vu["regle"] == "remise_tpe":
+        out.update(statut=STATUT_ORPHELIN, raison="remise du terminal de paiement (cartes) : l’avis de la banque n’est "
+                   "pas encore arrivé par courriel, ou son montant diffère — à rapprocher au prochain passage")
+        return out
+    if vu["regle"] == "com_tpe":
+        # COMMISSION DU TERMINAL : un frais bancaire comme un autre (ecriture mensuelle des frais BIAT), avec
+        # son TAUX par rapport aux transactions de la remise (demande du 17/11/2026).
+        from bank_retenue_sync.bank import monetique
+
+        p = (contexte.get("prelevements_tpe") or {}).get(out["cle"]) or {}
+        if p.get("name"):
+            out["groupe"] = "tpe:" + p["name"]
+        raison = p.get("raison") or monetique.raison_prelevement(montant, None)
+        du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
+        if du_mois:
+            out.update(statut=STATUT_BROUILLON if int(du_mois.get("docstatus") or 0) == 0 else STATUT_IDENTIFIE,
+                       document_type="Journal Entry", document_name=du_mois["name"], montant_document=montant,
+                       raison=f"{raison} — dans l’écriture mensuelle des frais BIAT ({cle_frais(periode_de(ligne.get('date')))})")
+        else:
+            out.update(statut=STATUT_ORPHELIN, raison=raison + " — frais bancaires à comptabiliser")
         return out
     if not vu["regle"]:
         out["raison"] = "libellé BIAT inconnu : à classer (aucune règle ne le reconnaît)"
@@ -540,6 +575,11 @@ def resume_passage(out: dict) -> dict:
             res["cartes_non_lues"] = str(cartes["erreur"])[:120]
         elif cartes.get("illisibles"):
             res["cartes_non_lues"] = "PDF non reconnu : " + ", ".join(cartes["illisibles"][:3])
+    compta = out.get("cartes_compta") or {}
+    if compta.get("ecritures"):
+        res["cartes_ecritures"] = len(compta["ecritures"])
+    for e in compta.get("erreurs") or []:
+        erreurs.append("cartes : " + str(e.get("erreur") or e))
     if out.get("suspendu"):
         # L'alerte est partie au passage ou le portail a demande le code ; les suivants le rappellent dans le
         # journal sans alerter de nouveau (sept notifications par jour n'apprendraient rien de plus).
@@ -593,7 +633,8 @@ def charger_contexte(lignes: list) -> dict:
     versements = frappe.db.sql(
         """select je.name, je.posting_date as date, je.docstatus, a.debit_in_account_currency as montant
            from `tabJournal Entry` je join `tabJournal Entry Account` a on a.parent = je.name
-           where je.docstatus < 2 and a.account = %s and a.debit_in_account_currency > 0""",
+           where je.docstatus < 2 and a.account = %s and a.debit_in_account_currency > 0
+             and ifnull(je.cheque_no, '') not like 'TPE-%%'""",
         (le_compte,), as_dict=True)
     mensuelles = {}
     for e in frappe.db.get_all("Journal Entry", filters={"cheque_no": ["like", PREFIXE_FRAIS + "%"], "docstatus": ["<", 2]},
@@ -651,7 +692,8 @@ def charger_contexte(lignes: list) -> dict:
         decision = decider_encaissement(ligne, numero, b, _etat_paiements([p.get("paiement") for p in (b or {}).get("pieces", [])]))
         if not decision["faire"]:
             refus[numero] = decision["raison"]
-    return {"tpe": _remises_tpe(lignes),
+    tpe = _remises_tpe(lignes)
+    return {"tpe": tpe, "prelevements_tpe": _prelevements_tpe(lignes, tpe),
             "paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
             "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements,
@@ -669,7 +711,10 @@ def credit_de_terminal(operation: str) -> bool:
 
 def candidats_tpe(lignes: list) -> list:
     """Les credits qui PEUVENT etre une remise du terminal : ceux qu'aucune regle ne reconnait, et ceux dont
-    le libelle le dit. Jamais une ligne rattachee a la main. Pur. -> [{cle, date, montant}]"""
+    le libelle le dit. Jamais une ligne rattachee a la main. Pur.
+    -> [{cle, date, montant, bordereau?, jour_remise?, terminal?}] (ce que le libelle dit de la remise)"""
+    from bank_retenue_sync.bank import monetique
+
     out = []
     for ligne in lignes:
         sens = ligne.get("sens") or ("Debit" if _m(ligne.get("debit")) else "Credit")
@@ -677,8 +722,27 @@ def candidats_tpe(lignes: list) -> list:
             continue
         if detecter(ligne.get("operation"), sens)["regle"] and not credit_de_terminal(ligne.get("operation")):
             continue
+        candidat = {"cle": ligne.get("cle") or ligne.get("name"), "date": ligne.get("date"),
+                    "montant": _m(ligne.get("credit") or ligne.get("montant"))}
+        candidat.update({k: v for k, v in monetique.lire_libelle(ligne.get("operation")).items()
+                         if k in ("bordereau", "jour_remise", "terminal")})
+        out.append(candidat)
+    return out
+
+
+def prelevements_tpe(lignes: list) -> list:
+    """Les debits de commission du terminal, avec la reference du terminal lue sur le libelle. Pur.
+    -> [{cle, date, montant, terminal}]"""
+    from bank_retenue_sync.bank import monetique
+
+    out = []
+    for ligne in lignes:
+        sens = ligne.get("sens") or ("Debit" if _m(ligne.get("debit")) else "Credit")
+        if sens != "Debit" or ligne.get("lien_manuel") or detecter(ligne.get("operation"), sens)["regle"] != "com_tpe":
+            continue
         out.append({"cle": ligne.get("cle") or ligne.get("name"), "date": ligne.get("date"),
-                    "montant": _m(ligne.get("credit") or ligne.get("montant"))})
+                    "montant": _m(ligne.get("debit") or ligne.get("montant")),
+                    "terminal": monetique.lire_libelle(ligne.get("operation")).get("terminal") or ""})
     return out
 
 
@@ -692,6 +756,33 @@ def _remises_tpe(lignes: list) -> dict:
     except Exception:
         frappe.log_error(title="BIAT : remises du terminal non rapprochées", message=frappe.get_traceback())
         return None                                    # None : « pas su lire », a ne pas confondre avec « aucune »
+
+
+def _prelevements_tpe(lignes: list, tpe) -> dict:
+    """{cle de ligne: la remise dont la banque preleve la commission, et son taux}. Ne leve jamais."""
+    try:
+        from bank_retenue_sync.bank import monetique
+
+        return monetique.prelevements(prelevements_tpe(lignes), tpe or {})
+    except Exception:
+        frappe.log_error(title="BIAT : commissions du terminal non rapprochées", message=frappe.get_traceback())
+        return {}
+
+
+def _comptabiliser_cartes() -> dict:
+    """Cartes : paiements ramenes au compte d'attente (une fois), puis ecriture des remises creditees.
+    Ne leve jamais : une erreur est rendue, et portee au journal des verifications."""
+    try:
+        from bank_retenue_sync.bank import monetique
+
+        ramenes = monetique.rapatrier_paiements()
+        out = monetique.comptabiliser()
+        out["rapatries"] = ramenes["deplaces"]
+        out["erreurs"] = ramenes["erreurs"] + out["erreurs"]
+        return out
+    except Exception as e:
+        frappe.log_error(title="BIAT : comptabilisation des remises carte", message=frappe.get_traceback())
+        return {"ecritures": [], "refus": {}, "rapatries": [], "erreurs": [{"erreur": str(e)[:200]}]}
 
 
 def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
@@ -720,11 +811,14 @@ def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
             from bank_retenue_sync.bank import monetique
 
             monetique.noter_credits(contexte["tpe"], lignes)   # chaque fiche de remise dit si elle est creditee
+            monetique.noter_frais(contexte.get("prelevements_tpe"), lignes)
         if _frais:
             # Les frais reconnus rejoignent l'ecriture de leur mois ; on reclasse ensuite, une fois, pour que
-            # chaque commission designe cette ecriture.
+            # chaque commission designe cette ecriture — et chaque remise carte creditee, la sienne.
             out["frais"] = sync_frais()
-            if any(f.get("statut") in ("cree", "remplacee", "soumise") for f in out["frais"]):
+            out["cartes_compta"] = _comptabiliser_cartes()
+            if any(f.get("statut") in ("cree", "remplacee", "soumise") for f in out["frais"]) \
+                    or out["cartes_compta"].get("ecritures") or out["cartes_compta"].get("refus"):
                 suite = classer_registre(persist=True, _frais=False)
                 out.update(kpi=suite["kpi"], maj=suite.get("maj"))
     return out

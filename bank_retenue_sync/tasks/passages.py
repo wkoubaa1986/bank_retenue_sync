@@ -82,6 +82,8 @@ def _detail_de(cle, valeur, out=None) -> str:
         detail = "%s ; %d remise(s) et %d virement(s) encaissés" % (releve, valeur.get("remises") or 0, valeur.get("virements") or 0)
         if valeur.get("cartes"):
             detail += " ; %d remise(s) carte reçue(s) de la banque" % valeur["cartes"]
+        if valeur.get("cartes_ecritures"):
+            detail += " ; %d remise(s) carte comptabilisée(s)" % valeur["cartes_ecritures"]
         if valeur.get("cartes_non_lues"):
             detail += " ; cartes : courriels non lus (%s)" % valeur["cartes_non_lues"]
         return detail

@@ -265,6 +265,11 @@ doctype_list_js = {
 }
 
 doc_events = {
+    # Un paiement RECU par carte va au compte d'attente des cartes, quel que soit l'ecran qui le saisit (la
+    # banque ne le verse que quelques jours plus tard, par remise du terminal) — cf. bank/monetique.py.
+    "Payment Entry": {
+        "before_validate": "bank_retenue_sync.bank.monetique.diriger_paiement_carte",
+    },
     "Purchase Invoice": {
         "before_validate": "bank_retenue_sync.achat.facture.a_l_enregistrement",
         "before_submit": "bank_retenue_sync.achat.facture.avant_validation",

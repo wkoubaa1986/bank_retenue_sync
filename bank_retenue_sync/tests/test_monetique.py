@@ -271,5 +271,186 @@ class TestClassementBiat(unittest.TestCase):
         self.assertNotIn("carte", passages._detail_de("biat", biat.resume_passage({"robot": True, "crees": 0})))
 
 
+CREDIT_TPE = "Reglement Affilie BIAT TPE : 0010010006\\Remise : 20261116-0800000001-1990010006"
+COMMISSION_TPE = "COM TVA REF REMISE AFF 0010010006"
+R6B = dict(R6, bordereau="1990010006")
+R7B = dict(R7, bordereau="1990010007")
+
+
+class TestLibellesBancaires(unittest.TestCase):
+    """Les libelles vus au releve BIAT du 17/11/2026 : credit du brut, commission prelevee a part."""
+
+    def test_le_credit_nomme_la_remise(self):
+        self.assertEqual(M.lire_libelle(CREDIT_TPE), {"terminal": "0010010006", "jour_remise": "2026-11-16",
+                                                      "affiliation": "0800000001", "bordereau": "1990010006"})
+        self.assertEqual(M.lire_libelle(COMMISSION_TPE), {"terminal": "0010010006"})
+        self.assertEqual(M.lire_libelle("Versement TND"), {})
+
+    def test_regles_biat(self):
+        self.assertEqual(biat.detecter(CREDIT_TPE, "Credit")["regle"], "remise_tpe")
+        self.assertEqual(biat.detecter(COMMISSION_TPE, "Debit")["regle"], "com_tpe")
+        self.assertEqual(biat.detecter(COMMISSION_TPE, "Debit")["categorie"], "frais_bancaires")
+        self.assertEqual(biat.detecter(CREDIT_TPE, "Debit")["regle"], "")
+        self.assertEqual(biat.detecter(COMMISSION_TPE, "Credit")["regle"], "")
+        # la commission d'une remise de cheques garde sa regle
+        self.assertEqual(biat.detecter("Debit Divers Commission CHQ A Enc/Bordereau : 1234567", "Debit")["regle"], "com_enc_cheque")
+
+    def test_le_bordereau_du_libelle_designe_la_remise(self):
+        # deux remises du meme brut : sans le libelle la plus ancienne serait prise ; le bordereau tranche
+        jumelle = dict(R7B, name="TPE-BIAT-20261116-01-0008", remise="0008", bordereau="1990010008")
+        ligne = {"cle": "L1", "date": "2026-11-17", "montant": 381.0, "bordereau": "1990010008", "jour_remise": "2026-11-16",
+                 "terminal": "0010010008"}
+        out = M.affecter([ligne], [R7B, jumelle])
+        self.assertEqual((out["L1"]["remises"], out["L1"]["nature"], out["L1"]["terminal"]), ([jumelle["name"]], "brut", "0010010008"))
+        self.assertEqual(out["L1"]["par_remise"], {jumelle["name"]: 381.0})
+        # le bordereau nomme une remise, mais le montant ne la confirme pas : on ne force rien
+        self.assertEqual(M.affecter([dict(ligne, montant=380.0)], [R7B, jumelle]), {})
+
+    def test_candidat_avec_ce_que_dit_le_libelle(self):
+        ligne = {"cle": "A", "date": "2026-11-17", "operation": CREDIT_TPE, "credit": 1500.0, "sens": "Credit"}
+        self.assertEqual(biat.candidats_tpe([ligne]), [{"cle": "A", "date": "2026-11-17", "montant": 1500.0, "bordereau": "1990010006",
+                                                        "jour_remise": "2026-11-16", "terminal": "0010010006"}])
+        debit = {"cle": "B", "date": "2026-11-17", "operation": COMMISSION_TPE, "debit": 45.0, "sens": "Debit"}
+        self.assertEqual(biat.prelevements_tpe([ligne, debit]), [{"cle": "B", "date": "2026-11-17", "montant": 45.0, "terminal": "0010010006"}])
+
+    def test_remise_reconnue_au_libelle_sans_avis(self):
+        ligne = {"cle": "A", "date": "2026-11-17", "operation": CREDIT_TPE, "credit": 1500.0, "sens": "Credit", "montant": 1500.0}
+        c = biat.classer_ligne(ligne, {"tpe": {}})
+        self.assertEqual((c["regle"], c["categorie"], c["statut"]), ("remise_tpe", "encaissement", biat.STATUT_ORPHELIN))
+        self.assertIn("avis de la banque", c["raison"])
+
+
+class TestFraisEtTaux(unittest.TestCase):
+    """« A chaque fois que tu identifies un frais bancaire relatif au TPE, calcule son taux par rapport a la
+    transaction » (17/11/2026)."""
+
+    def test_taux(self):
+        self.assertEqual(M.taux(45.0, 1500.0), 3.0)
+        self.assertEqual(M.taux(53.55, 1500.0), 3.57)
+        self.assertEqual(M.taux(11.43, 381.0), 3.0)
+        self.assertEqual(M.taux(10.0, 0), 0.0)
+
+    def test_ce_que_la_banque_preleve(self):
+        par_terminal = {"0010010006": R6B["name"]}
+        for montant, quoi in ((45.0, "commission"), (53.55, "commission et TVA"), (8.55, "TVA"), (12.0, None)):
+            t = M.remise_du_prelevement({"date": "2026-11-17", "montant": montant, "terminal": "0010010006"}, [R6B, R7B], par_terminal)
+            self.assertEqual((t["name"], t["remise"], t["quoi"]), (R6B["name"], "0006", quoi), montant)
+
+    def test_sans_le_credit_le_bordereau_finit_comme_la_reference(self):
+        t = M.remise_du_prelevement({"date": "2026-11-17", "montant": 11.43, "terminal": "0010010007"}, [R6B, R7B])
+        self.assertEqual((t["name"], t["quoi"]), (R7B["name"], "commission"))
+        self.assertIsNone(M.remise_du_prelevement({"date": "2026-11-17", "montant": 11.43, "terminal": "0010019999"}, [R6B, R7B]))
+        self.assertIsNone(M.remise_du_prelevement({"date": "2027-03-01", "montant": 11.43, "terminal": "0010010007"}, [R6B, R7B]))
+
+    def test_la_phrase_porte_le_taux(self):
+        t = M.remise_du_prelevement({"date": "2026-11-17", "montant": 45.0, "terminal": "0010010006"}, [R6B], {})
+        phrase = M.raison_prelevement(45.0, t, 1500.0)
+        for morceau in ("commission du terminal", "n° 0006", "45,000", "3,00 %", "1 500,000"):
+            self.assertIn(morceau, phrase)
+        inattendu = M.remise_du_prelevement({"date": "2026-11-17", "montant": 12.0, "terminal": "0010010006"}, [R6B], {})
+        self.assertIn("l’avis de la banque annonçait", M.raison_prelevement(12.0, inattendu, 1500.0))
+        self.assertIn("0,80 %", M.raison_prelevement(12.0, inattendu, 1500.0))
+        self.assertIn("non retrouvée", M.raison_prelevement(12.0, None))
+
+    def test_ligne_de_commission_dans_les_frais_du_mois(self):
+        ligne = {"cle": "B", "date": "2026-11-17", "operation": COMMISSION_TPE, "debit": 45.0, "montant": 45.0, "sens": "Debit",
+                 "reference": "CHG000000000001"}
+        t = M.remise_du_prelevement({"date": "2026-11-17", "montant": 45.0, "terminal": "0010010006"}, [R6B], {})
+        contexte = {"prelevements_tpe": {"B": dict(t, raison=M.raison_prelevement(45.0, t, 1500.0))}}
+        c = biat.classer_ligne(ligne, contexte)
+        self.assertEqual((c["regle"], c["categorie"], c["statut"], c["groupe"]),
+                         ("com_tpe", "frais_bancaires", biat.STATUT_ORPHELIN, "tpe:" + R6B["name"]))
+        self.assertIn("3,00 %", c["raison"])
+        contexte["frais_mensuels"] = {"2026-11": {"name": "JV-1", "docstatus": 1}}
+        c = biat.classer_ligne(ligne, contexte)
+        self.assertEqual((c["statut"], c["document_type"], c["document_name"], c["montant_document"]),
+                         (biat.STATUT_IDENTIFIE, "Journal Entry", "JV-1", 45.0))
+        # elle entre dans le cumul mensuel des frais BIAT, comme toute commission
+        cumul = biat.cumul_frais([dict(ligne, categorie=c["categorie"], statut=c["statut"])], "2026-11")
+        self.assertEqual((cumul["nb"], cumul["frais"], cumul["total"]), (1, 45.0, 45.0))
+
+    def test_reference_ecrite_par_un_autre_ecran(self):
+        self.assertEqual(M.autorisations_de("Ticket TPE 012345 - BIAT"), {"12345"})
+        transactions = [{"autorisation": "012345", "montant": 100.0, "date_achat": "2026-11-12"}]
+        reponses = M.rapprocher_transactions(transactions, [paiement("PE-1", "Ticket TPE 012345 - BIAT", 100.0)])
+        self.assertEqual((reponses[0]["etat"], reponses[0]["paiement"]), (M.TROUVE, "PE-1"))
+
+
+class TestEcritureDeLaRemise(unittest.TestCase):
+    """Option A (17/11/2026) : compte d'attente des cartes, solde quand la banque credite la remise."""
+
+    ATTENTE, BANQUE = "Cartes à encaisser - A&S", "BIAT - A&S"
+
+    def remise(self, credite=1500.0, **plus):
+        return dict({"name": R6["name"], "brut": 1500.0, "montant_credite": credite, "controle": M.BON,
+                     "transactions": [{"paiement": "PE-1", "montant": 100.0, "etat": M.TROUVE},
+                                      {"paiement": "PE-2", "montant": 1400.0, "etat": M.TROUVE}]}, **plus)
+
+    def paiements(self, **plus):
+        base = {"PE-1": {"docstatus": 1, "compte": self.ATTENTE, "montant": 100.0},
+                "PE-2": {"docstatus": 1, "compte": self.ATTENTE, "montant": 1400.0}}
+        for nom, valeurs in plus.items():
+            base[nom.replace("_", "-")].update(valeurs)
+        return base
+
+    def test_credit_du_brut(self):
+        d = M.decider_ecriture(self.remise(), self.paiements(), self.ATTENTE, self.BANQUE)
+        self.assertTrue(d["faire"])
+        self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1500.0}, {"account": self.ATTENTE, "credit": 1500.0}])
+        self.assertEqual(d["frais"], 0.0)
+
+    def test_credit_du_net_les_frais_sont_dans_l_ecriture(self):
+        d = M.decider_ecriture(self.remise(credite=1446.45), self.paiements(), self.ATTENTE, self.BANQUE)
+        self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1446.45}, {"account": M.COMPTE_FRAIS, "debit": 53.55},
+                                       {"account": self.ATTENTE, "credit": 1500.0}])
+        self.assertEqual(round(sum(l.get("debit", 0) for l in d["lignes"]), 3), 1500.0)
+
+    def test_refus_qui_disent_pourquoi(self):
+        cas = (
+            (self.remise(), self.paiements(), "", "n’est pas réglé"),
+            (self.remise(controle=M.A_SIGNALER, transactions=[{"paiement": None, "montant": 100.0, "etat": M.INTROUVABLE}]),
+             self.paiements(), self.ATTENTE, "1 transaction(s) sans paiement"),
+            (self.remise(transactions=[]), self.paiements(), self.ATTENTE, "n’est pas encore arrivé"),
+            (self.remise(), self.paiements(PE_2={"docstatus": 2}), self.ATTENTE, "PE-2 n’est plus validé"),
+            (self.remise(), self.paiements(PE_1={"compte": "STE - Zitouna"}), self.ATTENTE, "PE-1 n’est pas sur le compte d’attente"),
+            (self.remise(), self.paiements(PE_1={"montant": 90.0}), self.ATTENTE, "les paiements font"),
+            (self.remise(credite=1600.0), self.paiements(), self.ATTENTE, "incohérent"),
+        )
+        for remise, paiements, attente, attendu in cas:
+            d = M.decider_ecriture(remise, paiements, attente, self.BANQUE)
+            self.assertFalse(d["faire"], attendu)
+            self.assertIn(attendu, d["raison"])
+            self.assertEqual(d["lignes"], [])
+
+    def test_ligne_identifiee_par_son_ecriture(self):
+        ligne = {"cle": "A", "date": "2026-11-17", "operation": CREDIT_TPE, "credit": 1500.0, "sens": "Credit", "montant": 1500.0}
+        tpe = M.affecter(biat.candidats_tpe([ligne]), [R6B])
+        tpe["A"]["ecritures"], tpe["A"]["refus"] = [{"name": "JV-9", "docstatus": 1}], ""
+        c = biat.classer_ligne(ligne, {"tpe": tpe})
+        self.assertEqual((c["statut"], c["document_type"], c["document_name"]), (biat.STATUT_IDENTIFIE, "Journal Entry", "JV-9"))
+        self.assertIn("écriture JV-9", c["raison"])
+        tpe["A"]["ecritures"] = [{"name": "JV-9", "docstatus": 0}]
+        self.assertEqual(biat.classer_ligne(ligne, {"tpe": tpe})["statut"], biat.STATUT_BROUILLON)
+        tpe["A"]["ecritures"], tpe["A"]["refus"] = [], "le paiement PE-1 n’est plus validé"
+        c = biat.classer_ligne(ligne, {"tpe": tpe})
+        self.assertEqual((c["statut"], c["document_type"]), (biat.STATUT_BROUILLON, M.DOCTYPE))
+        self.assertIn("pas comptabilisée : le paiement PE-1", c["raison"])
+
+    def test_journal_des_verifications(self):
+        from bank_retenue_sync.tasks import passages
+
+        res = biat.resume_passage({"robot": True, "crees": 4, "cartes_compta": {"ecritures": [{"je": "JV-1"}, {"je": "JV-2"}], "erreurs": []}})
+        self.assertEqual(res["cartes_ecritures"], 2)
+        self.assertIn("2 remise(s) carte comptabilisée(s)", passages._detail_de("biat", res))
+        res = biat.resume_passage({"robot": True, "cartes_compta": {"ecritures": [], "erreurs": [{"erreur": "remise X : période close"}]}})
+        self.assertIn("cartes : remise X : période close", res["erreur"])     # une ecriture impossible se sait
+
+    def test_resume_dit_ce_qui_n_est_pas_comptabilise(self):
+        r = M.resume_remises([dict(R6, etat=M.ETAT_CREDITEE, controle=M.BON, ecriture=None, comptabilisation="paiement annulé"),
+                              dict(R7, etat=M.ETAT_CREDITEE, controle=M.BON, ecriture="JV-1", comptabilisation="")])
+        self.assertEqual(r["non_comptabilisees"], 1)
+        self.assertIn("1 créditée(s) pas comptabilisée(s)", r["phrase"])
+
+
 if __name__ == "__main__":
     unittest.main()

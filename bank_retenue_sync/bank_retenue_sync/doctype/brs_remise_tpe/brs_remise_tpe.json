@@ -27,6 +27,12 @@
   "controle",
   "a_signaler",
   "transactions",
+  "sb_compta",
+  "ecriture",
+  "comptabilisation",
+  "cb_compta",
+  "frais_preleves",
+  "taux_frais",
   "sb_pieces",
   "releve",
   "cb_3",
@@ -189,6 +195,44 @@
    "read_only": 1
   },
   {
+   "fieldname": "sb_compta",
+   "fieldtype": "Section Break",
+   "label": "Comptabilité"
+  },
+  {
+   "fieldname": "ecriture",
+   "fieldtype": "Link",
+   "label": "Écriture de la remise",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "description": "Passée quand la banque crédite la remise : la banque est débitée, le compte d’attente des cartes est soldé."
+  },
+  {
+   "fieldname": "comptabilisation",
+   "fieldtype": "Small Text",
+   "label": "Pourquoi elle n’est pas comptabilisée",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_compta",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "frais_preleves",
+   "fieldtype": "Currency",
+   "label": "Frais prélevés par la banque",
+   "read_only": 1,
+   "description": "La somme des prélèvements reconnus au relevé pour cette remise (commission, TVA). Ils rejoignent l’écriture mensuelle des frais BIAT."
+  },
+  {
+   "fieldname": "taux_frais",
+   "fieldtype": "Percent",
+   "label": "Taux des frais prélevés",
+   "read_only": 1,
+   "precision": "2",
+   "description": "Frais prélevés ÷ montant des transactions de la remise."
+  },
+  {
    "fieldname": "sb_pieces",
    "fieldtype": "Section Break",
    "label": "Les documents de la banque"
@@ -219,7 +263,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-17 14:00:00.000000",
+ "modified": "2026-11-17 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Remise TPE",
