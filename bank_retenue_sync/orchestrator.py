@@ -1282,6 +1282,16 @@ def run_certificats_ras(refresh=0, insert=1, pdf=1, limite_pdf=20, use_ai=0):
         except Exception as e:
             out["regularisation_auto"] = {"statut": "erreur", "detail": str(e)[:160]}
 
+    # La trace des factures qu'une meme retenue couvre (17/11/2026, tej/couverture.py) : sur les certificats que le
+    # rapprochement vient de designer, et dans l'historique des factures quand la retenue est enregistree — y
+    # compris par la regularisation automatique ci-dessus. Ne leve jamais.
+    if insert:
+        from bank_retenue_sync.tej import couverture
+
+        trace = couverture.tracer_manquants()
+        if trace.get("traces"):
+            out["factures_couvertes"] = len(trace["traces"])
+
     # ⚠️ ECRIRE AVANT LES PDF. Le telechargement attend le portail jusqu'a deux minutes par
     # certificat : laisser ouverte la transaction du rapprochement pendant tout ce temps verrouillait
     # les certificats, et toute ecriture qui les touche attendait puis echouait (22/10/2026 : fusion

@@ -167,7 +167,10 @@ window.CertificatsRAS = class CertificatsRAS {
       <td class="rsv-num" style="${flt(l.ecart_piece) ? "color:var(--rsv-warn);font-weight:600" : ""}">${flt(l.ecart_piece) ? dt(l.ecart_piece) : "—"}</td>
       <td>${badge}</td>
       <td>${lien("Payment Entry", l.payment_entry)}</td>
-      <td>${lien("Sales Invoice", l.sales_invoice) }</td>
+      <td>${lien("Sales Invoice", l.sales_invoice) }${l.couverture && (l.couverture.factures || []).length > 1
+          ? `<div><a href="#" data-act="couverture" data-ref="${frappe.utils.escape_html(l.name)}" class="rsv-rate" style="white-space:nowrap"
+                 title="${__("Cette retenue couvre plusieurs factures : voir la liste")}">＋ ${l.couverture.factures.length - 1} ${__("facture(s)")}</a></div>`
+          : ""}</td>
       <td>${l.pdf_file
         ? `<a href="${frappe.utils.escape_html(l.pdf_file)}" target="_blank" rel="noopener" title="${frappe.utils.escape_html(l.pdf_attache_a || "")}">📄 ${__("ouvrir")}</a>`
         : l.pdf_attached_to_pe ? `<span title="${frappe.utils.escape_html(l.pdf_attache_a || "")}">✔</span>` : "—"}</td>
@@ -214,6 +217,7 @@ window.CertificatsRAS = class CertificatsRAS {
     this.$root.on("click", "[data-act='bilan']", () => this._bilan_dialogue());
     this.$root.on("click", "[data-act='raven']", () => this._raven_dialogue());
     this.$root.on("click", "[data-act='regulariser']", (e) => this._regulariser($(e.currentTarget).data("ref")));
+    this.$root.on("click", "[data-act='couverture']", (e) => { e.preventDefault(); this._voir_couverture($(e.currentTarget).data("ref")); });
     this.$root.on("click", "[data-act='trancher']", (e) => this._trancher($(e.currentTarget).data("ref")));
   }
 
@@ -712,6 +716,49 @@ window.CertificatsRAS = class CertificatsRAS {
       });
   }
 
+  // LES FACTURES QU'UNE MÊME RETENUE COUVRE (17/11/2026). Le client règle plusieurs factures d'un seul paiement,
+  // net de la retenue ; la retenue est enregistrée sur l'une d'elles. Ce bloc les liste, avec le total, et marque
+  // celle qui porte la retenue. Il sert à la fenêtre de régularisation ET au repère « + N factures » du tableau.
+  _bloc_factures(g, facture_portee, suite) {
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => `<span dir="ltr" style="unicode-bidi:isolate;white-space:nowrap">${format_number(flt(v, 3), null, 3)}</span>`;
+    const jour_fr = (j) => (j ? frappe.datetime.str_to_user(String(j).substring(0, 10)) : "");
+    return `<div style="margin:10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;font-size:13px">
+      <div style="margin-bottom:6px">${__("Cette retenue couvre <b>{0} factures</b>, payées ensemble par un {1} de {2} le {3}.",
+        [g.factures.length, esc((g.mode || __("paiement")).toLowerCase()), nb(g.montant), jour_fr(g.date)])}
+        ${suite || ""}</div>
+      ${g.factures.map((f) => {
+        const porte = f.name === facture_portee;
+        // Une facture que ce paiement ne règle qu'en partie : on le dit, sinon le total ne se comprend pas.
+        const partiel = !porte && flt(f.impute, 3) < flt(f.ttc, 3) - 0.005;
+        return `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0${porte ? ";font-weight:600" : ""}">
+          <span><a href="/app/sales-invoice/${encodeURIComponent(f.name)}" target="_blank">${esc(f.name)}</a>${f.numero ? ` · ${__("n°")} ${esc(String(f.numero))}` : ""} · ${jour_fr(f.date)}</span>
+          <span>${nb(f.ttc)}${partiel ? ` <span class="text-muted">(${__("dont")} ${nb(f.impute)} ${__("réglés par ce paiement")})</span>` : ""}${porte ? ` — ${__("porte la retenue")}` : ""}</span></div>`;
+      }).join("")}
+      <div style="display:flex;justify-content:space-between;gap:10px;padding-top:4px;margin-top:4px;border-top:1px solid var(--border-color)">
+        <span>${__("Total des {0} factures", [g.factures.length])}</span><span><b>${nb(g.total_ttc)}</b></span></div>
+    </div>`;
+  }
+
+  // Le repère du tableau : la liste des factures couvertes, et où en est la retenue.
+  _voir_couverture(reference) {
+    const l = (this._data.certificats || []).find((x) => x.name === reference) || {};
+    const g = l.couverture;
+    if (!g) return;
+    const esc = frappe.utils.escape_html;
+    const d = new frappe.ui.Dialog({ title: __("Factures couvertes par cette retenue"), size: "large", fields: [{ fieldtype: "HTML", fieldname: "corps" }] });
+    const etat = l.payment_entry
+      ? __("La retenue est enregistrée sur {0} (écriture {1}). Chacune de ces factures le dit dans son historique.",
+           [`<b>${esc(l.sales_invoice || "")}</b>`, `<a href="/app/payment-entry/${encodeURIComponent(l.payment_entry)}" target="_blank">${esc(l.payment_entry)}</a>`])
+      : __("La retenue n’est pas encore enregistrée : bouton « Régulariser » sur la ligne.");
+    d.fields_dict.corps.$wrapper.html(`
+      <p style="font-size:14px"><b>${esc(l.customer || l.declarant || "")}</b> — ${__("certificat du {0}", [frappe.datetime.str_to_user(l.date_paiement)])}${l.numero_chez_declarant ? ` · « ${esc(l.numero_chez_declarant)} »` : ""}
+         · ${__("retenue")} <span dir="ltr" style="unicode-bidi:isolate">${format_number(flt(l.montant_retenue, 3), null, 3)}</span></p>
+      ${this._bloc_factures(g, l.sales_invoice, "")}
+      <p class="text-muted" style="font-size:12px">${etat}</p>`);
+    d.show();
+  }
+
   // Deux situations, deux gestes. Facture avec du reste à payer : une écriture de retenue suffit.
   // Facture déjà soldée : le règlement a été encaissé pour le TTC entier alors que le client
   // retenait 1 % — il faut le reprendre à la baisse ET créer la retenue, sinon la même part
@@ -774,18 +821,8 @@ window.CertificatsRAS = class CertificatsRAS {
         // part retenue est restée en dette sur l'une d'elles. On le dit, avec la liste — sans quoi l'écran ne
         // montre qu'une facture et l'on ne reconnaît pas la retenue du mois (COMOSACC, 17/11/2026).
         const g = m.groupe && (m.groupe.factures || []).length > 1 ? m.groupe : null;
-        const jour_fr = (j) => (j ? frappe.datetime.str_to_user(String(j).substring(0, 10)) : "");
         const groupe = g
-          ? `<div style="margin:10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;font-size:13px">
-               <div style="margin-bottom:6px">${__("Cette retenue couvre <b>{0} factures</b>, payées ensemble par un {1} de {2} le {3}.",
-                 [g.factures.length, esc((g.mode || __("paiement")).toLowerCase()), nb(g.montant), jour_fr(g.date)])}
-                 ${p.argent_compte ? "" : __("Les {0} qui manquaient ont été laissés en dette sur {1} : c’est cette dette que la retenue remplace.", [nb(p.retenue), `<b>${esc(p.facture)}</b>`])}</div>
-               ${g.factures.map((f) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0${f.name === p.facture ? ";font-weight:600" : ""}">
-                   <span><a href="/app/sales-invoice/${encodeURIComponent(f.name)}" target="_blank">${esc(f.name)}</a>${f.numero ? ` · ${__("n°")} ${esc(String(f.numero))}` : ""} · ${jour_fr(f.date)}</span>
-                   <span>${nb(f.ttc)}${f.name === p.facture ? ` — ${__("porte la retenue")}` : ""}</span></div>`).join("")}
-               <div style="display:flex;justify-content:space-between;gap:10px;padding-top:4px;margin-top:4px;border-top:1px solid var(--border-color)">
-                 <span>${__("Total des {0} factures", [g.factures.length])}</span><span><b>${nb(g.total_ttc)}</b></span></div>
-             </div>`
+          ? this._bloc_factures(g, p.facture, p.argent_compte ? "" : __("Les {0} qui manquaient ont été laissés en dette sur {1} : c’est cette dette que la retenue remplace.", [nb(p.retenue), `<b>${esc(p.facture)}</b>`]))
           : "";
         const quoi = p.argent_compte
           ? __("{0} a déjà payé la facture {1} en entier ({2} de {3}), et il a en plus retenu {4} à la source. Il a donc payé {4} de trop.",
@@ -849,6 +886,7 @@ window.CertificatsRAS = class CertificatsRAS {
               } else {
                 fait.push(res.dette_soldee ? __("Sa dette est soldée.") : __("Sa dette passe à {0}.", [nb(res.reglement_apres)]));
               }
+              if (res.factures_couvertes > 1) fait.push(__("Les {0} factures couvertes portent une note dans leur historique.", [res.factures_couvertes]));
               if (!res.valide) fait.push(`<b>${__("Les écritures sont en brouillon : à valider.")}</b>`);
               else if (res.pdf === "demande") fait.push(__("Le certificat PDF arrive sur la facture d’ici quelques minutes."));
               if (res.valide && !res.reglement_supprime && res.suppression_raison) {

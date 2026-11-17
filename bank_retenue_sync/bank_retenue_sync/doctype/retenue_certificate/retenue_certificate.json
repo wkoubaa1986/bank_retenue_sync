@@ -43,6 +43,8 @@
   "match_raison",
   "avoir_retenue",
   "avoir_reglement",
+  "factures_couvertes_resume",
+  "factures_couvertes",
   "match_candidates",
   "section_piece",
   "pdf_file",
@@ -308,6 +310,20 @@
    "options": "Payment Entry",
    "label": "Règlement qui porte cet avoir",
    "read_only": 1
+  },
+  {
+   "fieldname": "factures_couvertes_resume",
+   "fieldtype": "Small Text",
+   "label": "Factures couvertes par cette retenue",
+   "read_only": 1,
+   "description": "Quand le client a réglé plusieurs factures d’un seul paiement, net de la retenue : la retenue est enregistrée sur l’une d’elles, et les couvre toutes."
+  },
+  {
+   "fieldname": "factures_couvertes",
+   "fieldtype": "Long Text",
+   "label": "Factures couvertes (données)",
+   "read_only": 1,
+   "hidden": 1
   },
   {
    "fieldname": "match_candidates",
