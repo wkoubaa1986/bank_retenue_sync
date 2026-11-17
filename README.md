@@ -50,6 +50,19 @@ Automatisation bancaire et fiscale pour ERPNext (société Aquaworld & Servicing
   (`bank/biat.proposer_cheques` : chèque seul à ce montant, ou combinaison unique), et crée
   l'Encaissement Paiement (banque de dépôt BIAT, soumis) avec les mêmes contrôles que le flux
   automatique (`encaisser_remise_manuelle`) ;
+- **Cartes (terminal de paiement BIAT)** (depuis le 17/11/2026) — la banque annonce chaque remise du
+  terminal par deux courriels (`dsi.monetique@biat.com.tn`, source `biat_monetique`) : le « Relevé
+  Monétique » (chaque transaction, avec son n° d'autorisation) et l'« Avis Crédit » (brut − commission −
+  TVA = net versé). `bank/monetique.py` lit les deux PDF sans IA (texte reconstitué par la position des
+  mots, totaux recalculés), range une fiche `BRS Remise TPE` par remise, et cherche le paiement de chaque
+  transaction : le n° d'autorisation est la référence que la caisse saisit sur le paiement « Carte de
+  crédit ». Verdict « Tout est bon » / « À signaler » ; les paiements par carte que la banque n'a pas
+  encore relevés sont listés. Sur le relevé BIAT, le crédit d'une remise se reconnaît par son MONTANT net
+  (ou celui de la journée, ou le brut), dans une fenêtre de jours autour de la date de traitement —
+  jamais par l'égalité des dates : la date de traitement n'est pas la date de valeur. La ligne passe
+  « Identifié non comptabilisé » et désigne la fiche. **Rien n'est comptabilisé** (compte d'attente,
+  commission et TVA : décision en attente). Lu à chaque vérification planifiée ; bouton « Cartes (TPE) »
+  du bandeau BIAT pour le détail et « Relire les courriels de la banque » ;
 - **Virements reçus à la BIAT** — même logique que Zitouna, même code (`bank/biat.encaisser_virements`) :
   le client est identifié sur le libellé (noms appris des virements des deux banques, alias,
   ressemblance, IA), le montant est réparti sur ses dettes (exacte, sous-ensemble, FIFO partiel), un
@@ -102,7 +115,7 @@ bench --site <site> execute bank_retenue_sync.patches.politique_achat_local.exec
 # Fonctions pures, sans site :
 python -m unittest bank_retenue_sync.tests.test_achat bank_retenue_sync.tests.test_emis \
   bank_retenue_sync.tests.test_facturation bank_retenue_sync.tests.test_especes \
-  bank_retenue_sync.tests.test_biat \
+  bank_retenue_sync.tests.test_biat bank_retenue_sync.tests.test_monetique \
   bank_retenue_sync.tests.test_rapport
 ```
 

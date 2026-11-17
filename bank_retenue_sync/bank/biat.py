@@ -118,6 +118,18 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
     out = {"cle": ligne.get("cle") or ligne.get("name"), "categorie": vu["categorie"], "regle": vu["regle"],
            "groupe": None, "statut": STATUT_A_VERIFIER, "raison": "", "document_type": None,
            "document_name": None, "montant_document": 0.0, "ecart": 0.0}
+    tpe = (contexte.get("tpe") or {}).get(out["cle"])
+    if tpe:
+        # REMISE DU TERMINAL DE PAIEMENT (cartes) : reconnue par le MONTANT de l'avis de credit que la banque
+        # envoie par courriel, jamais par la date (« le releve ne veut pas dire date de valeur », 17/11/2026).
+        # Reconnue, pas comptabilisee : le passage en comptabilite n'est pas encore decide.
+        from bank_retenue_sync.bank import monetique
+
+        out.update(categorie="encaissement", regle="remise_tpe", groupe="tpe:" + tpe["remises"][0],
+                   statut=STATUT_BROUILLON, document_type=monetique.DOCTYPE,
+                   document_name=tpe["remises"][0] if len(tpe["remises"]) == 1 else None,
+                   montant_document=montant, raison=monetique.raison_credit(tpe))
+        return out
     if not vu["regle"]:
         out["raison"] = "libellé BIAT inconnu : à classer (aucune règle ne le reconnaît)"
         return out
@@ -518,6 +530,16 @@ def resume_passage(out: dict) -> dict:
     remises = len([e for e in (out.get("encaissements") or {}).get("encaisses") or [] if e.get("soumis")])
     virements = len([e for e in (out.get("virements") or {}).get("encaisses") or [] if e.get("soumis")])
     res = {"robot": bool(out.get("robot")), "nouveaux": out.get("crees"), "remises": remises, "virements": virements}
+    cartes = out.get("cartes")
+    if isinstance(cartes, dict):
+        # Les courriels du terminal de paiement : combien de remises sont arrivees, et si la boite n'a pas pu
+        # etre lue. Une boite injoignable est DITE, sans faire passer la verification en erreur (elle se relit
+        # au passage suivant ; rien n'est perdu).
+        res["cartes"] = len(cartes.get("nouvelles") or [])
+        if cartes.get("erreur"):
+            res["cartes_non_lues"] = str(cartes["erreur"])[:120]
+        elif cartes.get("illisibles"):
+            res["cartes_non_lues"] = "PDF non reconnu : " + ", ".join(cartes["illisibles"][:3])
     if out.get("suspendu"):
         # L'alerte est partie au passage ou le portail a demande le code ; les suivants le rappellent dans le
         # journal sans alerter de nouveau (sept notifications par jour n'apprendraient rien de plus).
@@ -629,11 +651,47 @@ def charger_contexte(lignes: list) -> dict:
         decision = decider_encaissement(ligne, numero, b, _etat_paiements([p.get("paiement") for p in (b or {}).get("pieces", [])]))
         if not decision["faire"]:
             refus[numero] = decision["raison"]
-    return {"paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
+    return {"tpe": _remises_tpe(lignes),
+            "paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
             "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements,
             "paiements_par_reference": paiements_ref, "encaissements_par_reference": encaissements_ref,
             "brouillons_par_reference": brouillons_ref, "refus_virements": refus_virements}
+
+
+def credit_de_terminal(operation: str) -> bool:
+    """Le libelle dit-il « remise du terminal de paiement » ? Pur. Sert a ne pas prendre un tel credit pour
+    le virement d'un client (`encaisser_virements` solderait ses dettes avec l'argent des cartes)."""
+    from bank_retenue_sync.bank import monetique
+
+    return bool(monetique.MOTIF_TPE.search(_norme(operation)))
+
+
+def candidats_tpe(lignes: list) -> list:
+    """Les credits qui PEUVENT etre une remise du terminal : ceux qu'aucune regle ne reconnait, et ceux dont
+    le libelle le dit. Jamais une ligne rattachee a la main. Pur. -> [{cle, date, montant}]"""
+    out = []
+    for ligne in lignes:
+        sens = ligne.get("sens") or ("Debit" if _m(ligne.get("debit")) else "Credit")
+        if sens != "Credit" or ligne.get("lien_manuel"):
+            continue
+        if detecter(ligne.get("operation"), sens)["regle"] and not credit_de_terminal(ligne.get("operation")):
+            continue
+        out.append({"cle": ligne.get("cle") or ligne.get("name"), "date": ligne.get("date"),
+                    "montant": _m(ligne.get("credit") or ligne.get("montant"))})
+    return out
+
+
+def _remises_tpe(lignes: list) -> dict:
+    """{cle de ligne: remise(s) du terminal qu'elle paie} — vide si rien n'est arrive par courriel, None si
+    la lecture a echoue (les fiches gardent alors leur etat)."""
+    try:
+        from bank_retenue_sync.bank import monetique
+
+        return monetique.affectations(candidats_tpe(lignes))
+    except Exception:
+        frappe.log_error(title="BIAT : remises du terminal non rapprochées", message=frappe.get_traceback())
+        return None                                    # None : « pas su lire », a ne pas confondre avec « aucune »
 
 
 def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
@@ -658,6 +716,10 @@ def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
     out = {"mouvements": len(lignes), "kpi": kpi}
     if persist:
         out.update(registry.apply_classifications(classements))
+        if contexte.get("tpe") is not None:
+            from bank_retenue_sync.bank import monetique
+
+            monetique.noter_credits(contexte["tpe"], lignes)   # chaque fiche de remise dit si elle est creditee
         if _frais:
             # Les frais reconnus rejoignent l'ecriture de leur mois ; on reclasse ensuite, une fois, pour que
             # chaque commission designe cette ecriture.
@@ -1073,7 +1135,7 @@ def actif() -> bool:
         return False
 
 
-def passage(refresh: bool = None) -> dict:
+def passage(refresh: bool = None, courriels: bool = None) -> dict:
     """Un passage BIAT complet : releve (si le robot est actif), encaissement des remises, classement.
     Appele par le planificateur apres chaque verification Zitouna, et par le depot d'un bordereau."""
     if not actif():
@@ -1083,6 +1145,14 @@ def passage(refresh: bool = None) -> dict:
     from bank_retenue_sync.bank import biat_reprise
 
     reprise = biat_reprise.rejouer()
+    # Cartes (terminal de paiement) : les courriels de la banque sont lus AVANT le classement, pour qu'un credit
+    # arrive le meme jour que son avis soit reconnu au meme passage. Seulement au passage planifie : un depot de
+    # bordereau ou un « Reclassifier » ne relit pas la boite.
+    cartes = None
+    if courriels if courriels is not None else refresh is None:
+        from bank_retenue_sync.bank import monetique
+
+        cartes = monetique.collecter_sans_echec()
     if refresh is None:
         try:
             refresh = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
@@ -1094,6 +1164,8 @@ def passage(refresh: bool = None) -> dict:
         out["robot"] = True
         if reprise:
             out["reprise"] = reprise
+        if cartes is not None:
+            out["cartes"] = cartes
         return out
     # Sans releve (robot non active, ou suspendu en attendant un code SMS) : ce qui est deja au registre
     # s'encaisse et se classe quand meme.
@@ -1103,6 +1175,8 @@ def passage(refresh: bool = None) -> dict:
     out.update(classer_registre(persist=True))
     if reprise:
         out["reprise"] = reprise
+    if cartes is not None:
+        out["cartes"] = cartes
     return out
 
 
@@ -1157,6 +1231,13 @@ def tableau_solde() -> dict:
     releve["suspendu"] = releve["motif"] is not None
     releve["verrouille"] = bool(releve["suspendu"] and compte_verrouille(releve.get("erreur")))
     out.update(banque=BANQUE, compte=le_compte, releve=releve)
+    try:
+        from bank_retenue_sync.bank import monetique
+
+        out["cartes"] = monetique.resume()
+    except Exception:
+        frappe.log_error(title="BIAT : résumé des cartes", message=frappe.get_traceback())
+        out["cartes"] = None
     try:
         out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
     except Exception:
@@ -1249,7 +1330,7 @@ def encaisser_virements(insert: bool = True, use_ai: bool = True) -> dict:
         order_by="date asc, creation asc", fields=["date", "operation", "reference", "credit", "lien_manuel"])
     virements = [{"date": l.date, "operation": l.operation, "reference": l.reference, "credit": flt(l.credit, 3)}
                  for l in lignes if not l.lien_manuel and l.reference
-                 and detecter(l.operation, "Credit")["regle"] == "vir_recu"]
+                 and detecter(l.operation, "Credit")["regle"] == "vir_recu" and not credit_de_terminal(l.operation)]
     if not virements:
         if insert and _refus_virements():
             _garder_refus_virements({})

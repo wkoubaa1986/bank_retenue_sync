@@ -79,7 +79,12 @@ def _detail_de(cle, valeur, out=None) -> str:
             releve = "relevé : %s nouveau(x)" % (valeur.get("nouveaux") or 0)
         else:
             releve = "relevé automatique non activé"
-        return "%s ; %d remise(s) et %d virement(s) encaissés" % (releve, valeur.get("remises") or 0, valeur.get("virements") or 0)
+        detail = "%s ; %d remise(s) et %d virement(s) encaissés" % (releve, valeur.get("remises") or 0, valeur.get("virements") or 0)
+        if valeur.get("cartes"):
+            detail += " ; %d remise(s) carte reçue(s) de la banque" % valeur["cartes"]
+        if valeur.get("cartes_non_lues"):
+            detail += " ; cartes : courriels non lus (%s)" % valeur["cartes_non_lues"]
+        return detail
     if cle == "reglements" and isinstance(valeur, list):
         regles = [v for v in valeur if isinstance(v, dict) and v.get("status") == "regle"]
         attente = [v for v in valeur if isinstance(v, dict) and v.get("status") in ("en attente", "ambigu")]

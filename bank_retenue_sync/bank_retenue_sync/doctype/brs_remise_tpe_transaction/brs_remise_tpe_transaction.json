@@ -1,0 +1,129 @@
+{
+ "actions": [],
+ "creation": "2026-11-17 14:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "date_achat",
+  "montant",
+  "commission",
+  "autorisation",
+  "carte",
+  "type_carte",
+  "transaction",
+  "cb_1",
+  "etat",
+  "paiement",
+  "client",
+  "montant_erp",
+  "remarque"
+ ],
+ "fields": [
+  {
+   "fieldname": "date_achat",
+   "fieldtype": "Date",
+   "label": "Date d’achat",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "montant",
+   "fieldtype": "Currency",
+   "label": "Montant",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "commission",
+   "fieldtype": "Currency",
+   "label": "Commission",
+   "read_only": 1
+  },
+  {
+   "fieldname": "autorisation",
+   "fieldtype": "Data",
+   "label": "N° d’autorisation",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1,
+   "description": "La référence que la caisse saisit sur le paiement par carte."
+  },
+  {
+   "fieldname": "carte",
+   "fieldtype": "Data",
+   "label": "Carte",
+   "read_only": 1
+  },
+  {
+   "fieldname": "type_carte",
+   "fieldtype": "Data",
+   "label": "Type de carte",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transaction",
+   "fieldtype": "Data",
+   "label": "N° de transaction",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "etat",
+   "fieldtype": "Select",
+   "label": "État",
+   "options": "\nTrouvé\nTrouvé par le montant\nMontant différent\nIntrouvable",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "paiement",
+   "fieldtype": "Link",
+   "label": "Paiement",
+   "options": "Payment Entry",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Data",
+   "label": "Client",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "montant_erp",
+   "fieldtype": "Currency",
+   "label": "Montant dans ERPNext",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarque",
+   "fieldtype": "Small Text",
+   "label": "Remarque",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-17 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Remise TPE Transaction",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

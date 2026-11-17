@@ -47,6 +47,7 @@ jobs:
           MODULES: >-
             bank_retenue_sync.tests.test_achat
             bank_retenue_sync.tests.test_biat
+            bank_retenue_sync.tests.test_monetique
             bank_retenue_sync.tests.test_bordereaux
             bank_retenue_sync.tests.test_emis
             bank_retenue_sync.tests.test_facturation

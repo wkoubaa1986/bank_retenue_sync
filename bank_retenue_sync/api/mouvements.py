@@ -226,6 +226,29 @@ def reactiver(cles) -> dict:
 
 
 @frappe.whitelist()
+def biat_cartes() -> dict:
+    """Cartes (terminal de paiement BIAT) : les remises annoncees par la banque, leurs transactions et le
+    paiement d'ERPNext de chacune, les paiements par carte pas encore au releve. Lecture seule."""
+    _guard()
+    from bank_retenue_sync.bank import monetique
+    return monetique.tableau()
+
+
+@frappe.whitelist()
+def biat_cartes_relire() -> dict:
+    """Relit les courriels de la banque (lecture seule de la boite), range les remises nouvelles, recherche
+    les paiements, puis reclasse le releve BIAT. Ne comptabilise rien."""
+    _guard(write=True)
+    frappe.only_for(("System Manager", "Accounts Manager", "Accounts User"))
+    from bank_retenue_sync.bank import biat, monetique
+    bilan = monetique.collecter_sans_echec()
+    biat.classer_registre(persist=True)
+    out = monetique.tableau()
+    out["collecte"] = bilan
+    return out
+
+
+@frappe.whitelist()
 def biat_cheques_pour_remise(cle) -> dict:
     """Remise de cheques BIAT sans bordereau : les cheques du portefeuille, et ceux que le montant designe."""
     _guard()

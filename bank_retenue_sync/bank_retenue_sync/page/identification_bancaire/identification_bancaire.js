@@ -247,6 +247,7 @@ class IdentificationBancaire {
     this.$root.on("click", '[data-action="historique-solde"]', () => this._historique_solde());
     this.$root.on("click", '[data-action="decomposer-biat"]', () => this._decomposer_biat());
     this.$root.on("click", '[data-action="activer-biat"]', () => this._activer_biat());
+    this.$root.on("click", '[data-action="cartes-biat"]', () => this._cartes_biat());
     // Le bandeau de la somme s'ouvre et se referme d'un clic, où que l'on clique dessus.
     this.$root.on("click", '[data-role="solde-total"]', () => {
       try { localStorage.setItem("ib_banques_ouvertes", this._banques_ouvertes() ? "0" : "1"); } catch (e) { /* stockage refusé */ }
@@ -766,6 +767,12 @@ class IdentificationBancaire {
       ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique en échec le ${frappe.datetime.str_to_user(rl.quand)} :
            ${esc(rl.erreur || "")}${reussi}</div>`
       : (rl.quand && s.robot ? `<div class="sub">dernier relevé automatique : ${frappe.datetime.str_to_user(rl.quand)}</div>` : "");
+    // Cartes (terminal de paiement) : ce que la banque a annoncé par courriel, en une phrase. Le détail est
+    // derrière le bouton « Cartes (TPE) ».
+    const ct = s.cartes;
+    const cartes = ct
+      ? `<div class="sub" style="${ct.a_signaler || (ct.sans_releve || {}).en_retard ? "color:var(--text-on-orange,#b9770e)" : ""}">💳 cartes : ${esc(ct.phrase || "")}</div>`
+      : "";
     const hors = Math.abs(flt(s.hors_registre, 3)) >= 0.005
       ? `<div class="sub" style="color:var(--text-on-orange,#b9770e)">⚠ ${signe(s.hors_registre)} d’opérations
            pas encore au relevé importé</div>` : "";
@@ -775,6 +782,7 @@ class IdentificationBancaire {
         <div class="val">${nb(s.solde_banque)}</div>
         ${banque}
         ${panne}
+        ${cartes}
       </div>
       <div>
         <div class="lbl">Solde ERPNext</div>
@@ -798,6 +806,7 @@ class IdentificationBancaire {
         <button class="principal" data-action="decomposer-biat">D'où vient l'écart ?</button>
         ${s.robot ? `<button data-action="capturer-biat">Lire le solde</button>` : ""}
         <button data-action="voir-biat">Voir les mouvements BIAT</button>
+        ${ct ? `<button data-action="cartes-biat">Cartes (TPE)</button>` : ""}
         ${frappe.user.has_role("System Manager") && (!s.robot || rl.ok === false)
           ? `<button data-action="activer-biat">${s.robot ? "Refaire la validation SMS du robot" : "Activer le relevé automatique"}</button>` : ""}
         ${s.robot ? "" : `<span class="note">relevé automatique pas encore activé : solde calculé d’après les mouvements importés</span>`}
@@ -1032,6 +1041,92 @@ class IdentificationBancaire {
         <table class="table table-bordered" style="font-size:12px"><tbody>${detail_pe}</tbody></table>` : ""}
     </div>`);
     d.show();
+  }
+
+  /* Cartes (terminal de paiement BIAT). La banque envoie deux courriels par journée traitée : le relevé (chaque
+     transaction, avec son n° d'autorisation) et l'avis de crédit (brut − commission − TVA = net versé). Une
+     carte par remise, pensée pour la largeur d'un téléphone : ce que la banque verse, si c'est crédité, et pour
+     chaque transaction le paiement saisi à la caisse. Rien ne se saisit ici, et rien n'est comptabilisé. */
+  async _cartes_biat(relire = false) {
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => format_number(v || 0, null, 3);
+    const jour = (d) => (d ? frappe.datetime.str_to_user(String(d).substring(0, 10)) : "—");
+    let m;
+    try {
+      const r = await frappe.call({
+        method: this._m(relire ? "biat_cartes_relire" : "biat_cartes"),
+        freeze: true,
+        freeze_message: relire ? __("Lecture des courriels de la banque…") : __("Chargement…"),
+      });
+      m = r.message || {};
+    } catch (e) {
+      return;
+    }
+    if (this._dlg_cartes) this._dlg_cartes.hide();
+    const d = (this._dlg_cartes = new frappe.ui.Dialog({ title: __("BIAT — cartes (terminal de paiement)"), size: "large" }));
+    const pastille = (texte, couleur) => `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
+      background:${couleur}22;color:${couleur};white-space:nowrap">${texte}</span>`;
+    const VERT = "#1e8449", ORANGE = "#b9770e", ROUGE = "#c0392b", GRIS = "#6c757d";
+    const transaction = (t) => {
+      const ok = t.etat === "Trouvé" || t.etat === "Trouvé par le montant";
+      const quoi = t.paiement
+        ? `<a href="/app/payment-entry/${encodeURIComponent(t.paiement)}" target="_blank">${esc(t.client || t.paiement)}</a>`
+        : `<b style="color:${ROUGE}">${__("aucun paiement dans ERPNext")}</b>`;
+      return `<div style="padding:6px 0;border-top:1px solid var(--border-color)">
+        <div><b>${nb(t.montant)}</b> · ${jour(t.date_achat)} · ${__("autorisation")} ${esc(t.autorisation || "")}</div>
+        <div class="small">${ok ? "✔" : "⚠"} ${quoi}${t.etat && t.etat !== "Trouvé" ? ` — ${esc(t.etat)}` : ""}
+          ${t.remarque ? `<span class="text-muted"> (${esc(t.remarque)})</span>` : ""}</div>
+      </div>`;
+    };
+    const remise = (r) => {
+      const creditee = r.etat === "Créditée";
+      const verdict = r.controle === "Tout est bon" ? pastille("✔ " + __("Tout est bon"), VERT)
+        : r.controle === "À signaler" ? pastille("⚠ " + __("À signaler"), ROUGE)
+        : pastille(__("En attente du relevé"), GRIS);
+      const pieces = [
+        r.releve ? `<a href="${esc(r.releve)}" target="_blank">${__("Voir le relevé")}</a>` : "",
+        r.avis ? `<a href="${esc(r.avis)}" target="_blank">${__("Voir l’avis de crédit")}</a>` : "",
+        `<a href="/app/brs-remise-tpe/${encodeURIComponent(r.name)}" target="_blank">${__("Ouvrir la fiche")}</a>`,
+      ].filter(Boolean).join(" · ");
+      const montants = flt(r.net, 3)
+        ? `${__("Brut")} ${nb(r.brut)} − ${__("commission")} ${nb(r.commission)} − ${__("TVA")} ${nb(r.tva)} = <b>${__("net")} ${nb(r.net)}</b>`
+        : `${__("Brut")} ${nb(r.brut)} <span class="text-muted">(${__("avis de crédit pas encore reçu : net inconnu")})</span>`;
+      return `<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between">
+          <b>${__("Remise n° {0}", [esc(r.remise || "")])}</b>
+          <span>${creditee ? pastille("✔ " + __("Créditée le {0}", [jour(r.date_credit)]), VERT) : pastille("⏳ " + __("En attente du crédit"), ORANGE)} ${verdict}</span>
+        </div>
+        <div class="small text-muted">${__("traitée par la banque le {0}", [jour(r.date_traitement)])}</div>
+        <div style="margin:6px 0">${montants}</div>
+        ${r.a_signaler ? `<div class="small" style="color:${ROUGE};white-space:pre-line">${esc(r.a_signaler)}</div>` : ""}
+        ${(r.transactions || []).map(transaction).join("")}
+        <div class="small" style="margin-top:6px">${pieces}</div>
+      </div>`;
+    };
+    const sans = (m.sans_releve || []).map((p) => `<div style="padding:6px 0;border-top:1px solid var(--border-color)">
+        <b>${nb(p.montant)}</b> · ${jour(p.date)} · <a href="/app/payment-entry/${encodeURIComponent(p.name)}" target="_blank">${esc(p.client || p.name)}</a>
+        <span class="text-muted small">(${__("réf.")} ${esc(p.reference || "—")})</span>
+        ${p.jours > 7 ? `<div class="small" style="color:${ROUGE}">⚠ ${__("saisi il y a {0} jours et toujours absent des relevés de la banque : à vérifier", [p.jours])}</div>` : ""}
+      </div>`).join("");
+    const lu = m.collecte
+      ? `<div class="small" style="margin-bottom:8px;color:${m.collecte.erreur ? ROUGE : VERT}">${m.collecte.erreur
+          ? "✖ " + __("Courriels non lus : {0}", [esc(m.collecte.erreur)])
+          : "✔ " + __("{0} courriel(s) lus, {1} remise(s) nouvelle(s)", [m.collecte.messages || 0, (m.collecte.nouvelles || []).length])}</div>`
+      : "";
+    d.$body.html(`<div style="padding:12px 16px;font-size:13px">
+      ${lu}
+      <p>${esc((m.resume || {}).phrase || "")}.</p>
+      <p class="text-muted small">${__("La banque annonce chaque remise du terminal par courriel. Le crédit au compte est reconnu par son montant net, quel que soit le jour où il arrive : la date de traitement n’est pas la date de valeur.")}</p>
+      ${(m.remises || []).map(remise).join("") || `<p class="text-muted">${__("Aucune remise reçue pour l’instant.")}</p>`}
+      ${sans ? `<h6 style="margin-top:14px">${__("Paiements par carte saisis, pas encore au relevé de la banque")}</h6>${sans}` : ""}
+    </div>`);
+    d.set_primary_action(__("Relire les courriels de la banque"), () => this._cartes_biat(true));
+    d.show();
+    if (relire) {
+      // Le relevé BIAT vient d'être reclassé avec les remises nouvelles : le tableau et le bandeau suivent.
+      this.load();
+      this._load_solde_biat();
+    }
   }
 
   _render_solde() {

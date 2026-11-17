@@ -1,0 +1,269 @@
+{
+ "actions": [],
+ "creation": "2026-11-17 14:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "banque",
+  "remise",
+  "terminal",
+  "bordereau",
+  "affiliation",
+  "cb_1",
+  "date_traitement",
+  "date_telecollecte",
+  "etat",
+  "date_credit",
+  "montant_credite",
+  "mouvement",
+  "sb_montants",
+  "brut",
+  "commission",
+  "cb_2",
+  "tva",
+  "net",
+  "nombre",
+  "sb_controle",
+  "controle",
+  "a_signaler",
+  "transactions",
+  "sb_pieces",
+  "releve",
+  "cb_3",
+  "avis",
+  "lecture_anomalies"
+ ],
+ "fields": [
+  {
+   "fieldname": "banque",
+   "fieldtype": "Select",
+   "label": "Banque",
+   "options": "BIAT\nZitouna",
+   "default": "BIAT",
+   "reqd": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "remise",
+   "fieldtype": "Data",
+   "label": "N° de remise",
+   "reqd": 1,
+   "in_list_view": 1,
+   "read_only": 1,
+   "description": "Le numéro de la remise du terminal, tel que la banque l’écrit sur son relevé et son avis de crédit."
+  },
+  {
+   "fieldname": "terminal",
+   "fieldtype": "Data",
+   "label": "N° de terminal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bordereau",
+   "fieldtype": "Data",
+   "label": "N° de bordereau",
+   "read_only": 1
+  },
+  {
+   "fieldname": "affiliation",
+   "fieldtype": "Data",
+   "label": "N° d’affiliation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "date_traitement",
+   "fieldtype": "Date",
+   "label": "Date de traitement",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "description": "Le jour où la banque a traité la remise. Ce n’est pas la date de valeur : le crédit au compte peut tomber un autre jour."
+  },
+  {
+   "fieldname": "date_telecollecte",
+   "fieldtype": "Date",
+   "label": "Date de télécollecte",
+   "read_only": 1
+  },
+  {
+   "fieldname": "etat",
+   "fieldtype": "Select",
+   "label": "État",
+   "options": "En attente du crédit\nCréditée",
+   "default": "En attente du crédit",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_credit",
+   "fieldtype": "Date",
+   "label": "Créditée le",
+   "read_only": 1
+  },
+  {
+   "fieldname": "montant_credite",
+   "fieldtype": "Currency",
+   "label": "Montant crédité au compte",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mouvement",
+   "fieldtype": "Data",
+   "label": "Ligne du relevé bancaire",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_montants",
+   "fieldtype": "Section Break",
+   "label": "Ce que la banque verse"
+  },
+  {
+   "fieldname": "brut",
+   "fieldtype": "Currency",
+   "label": "Brut (paiements par carte)",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "commission",
+   "fieldtype": "Currency",
+   "label": "Commission",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "tva",
+   "fieldtype": "Currency",
+   "label": "TVA sur la commission",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net",
+   "fieldtype": "Currency",
+   "label": "Net versé au compte",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "nombre",
+   "fieldtype": "Int",
+   "label": "Nombre de transactions",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_controle",
+   "fieldtype": "Section Break",
+   "label": "Contrôle avec les paiements d’ERPNext"
+  },
+  {
+   "fieldname": "controle",
+   "fieldtype": "Select",
+   "label": "Verdict",
+   "options": "En attente du relevé\nTout est bon\nÀ signaler",
+   "default": "En attente du relevé",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "a_signaler",
+   "fieldtype": "Small Text",
+   "label": "À signaler",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transactions",
+   "fieldtype": "Table",
+   "label": "Transactions",
+   "options": "BRS Remise TPE Transaction",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_pieces",
+   "fieldtype": "Section Break",
+   "label": "Les documents de la banque"
+  },
+  {
+   "fieldname": "releve",
+   "fieldtype": "Attach",
+   "label": "Relevé des opérations monétiques",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "avis",
+   "fieldtype": "Attach",
+   "label": "Avis de crédit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "lecture_anomalies",
+   "fieldtype": "Small Text",
+   "label": "Anomalies de lecture du PDF",
+   "hidden": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-17 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bank Retenue Sync",
+ "name": "BRS Remise TPE",
+ "naming_rule": "By script",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "Accounts Manager",
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "Accounts User",
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  }
+ ],
+ "search_fields": "remise,date_traitement,net",
+ "sort_field": "date_traitement",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "remise",
+ "track_changes": 1
+}

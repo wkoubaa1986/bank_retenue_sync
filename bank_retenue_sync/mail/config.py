@@ -55,6 +55,15 @@ DEFAULTS = (
     {"cle": "comptable_cnss", "libelle": "Comptable - CNSS trimestriel (verification)",
      "role": ROLE_VERIF, "expediteurs": "belghithayman@gmail.com", "sujet": "CNSS",
      "limite": 15, "extension": ".pdf", "motif_nom_piece_jointe": ""},
+
+    # Ajoutee le 17/11/2026 (terminal de paiement BIAT). Deux courriels par journee traitee : « Relevé
+    # Monétique » (detail des transactions) et « Avis Crédit » (net verse par remise). Lus par
+    # `bank/monetique.py`, qui reconnait chaque PDF a son titre : pas de filtre sur le sujet.
+    {"cle": "biat_monetique", "libelle": "BIAT - cartes (TPE) : relevé monétique et avis de crédit",
+     "role": ROLE_BANQUE, "expediteurs": "dsi.monetique@biat.com.tn", "sujet": "",
+     "limite": 40, "extension": ".pdf", "motif_nom_piece_jointe": "",
+     "notes": "SUJET VIDE : le relevé et l'avis ont deux sujets différents et les deux sont lus. Ne "
+              "comptabilise rien : sert à reconnaître le crédit des remises du terminal sur le relevé BIAT."},
 )
 
 _DEFAUTS_PAR_CLE = {d["cle"]: d for d in DEFAULTS}

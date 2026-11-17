@@ -568,9 +568,13 @@ class TestSourcesEmail(unittest.TestCase):
         self.src = {d["cle"]: mc._normalise(dict(d)) for d in mc.DEFAULTS}
 
     def test_les_six_sources_sont_declarees(self):
+        # (sept depuis le 17/11/2026 : les courriels du terminal de paiement BIAT, lus par `bank/monetique`)
         self.assertEqual(set(self.src), {
             "total_invoice", "aramex_invoice", "aramex_payment_advice",
-            "comptable_honoraire", "comptable_declaration", "comptable_cnss"})
+            "comptable_honoraire", "comptable_declaration", "comptable_cnss", "biat_monetique"})
+        monetique = self.src["biat_monetique"]
+        self.assertEqual((monetique["expediteurs"], monetique["sujet"], monetique["extension"], monetique["role"]),
+                         ("dsi.monetique@biat.com.tn", "", ".pdf", self.mc.ROLE_BANQUE))
 
     def test_valeurs_identiques_a_l_ancien_code_en_dur(self):
         attendu = {
