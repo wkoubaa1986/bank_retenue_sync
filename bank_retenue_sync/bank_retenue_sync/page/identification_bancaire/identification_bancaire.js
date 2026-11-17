@@ -754,9 +754,14 @@ class IdentificationBancaire {
     const reussi = rl.dernier_succes ? ` — dernier relevé réussi : ${frappe.datetime.str_to_user(rl.dernier_succes)}` : "";
     // Code SMS redemandé par le portail : le robot ne se connecte plus tout seul (un SMS partirait à chaque
     // passage). On le dit en une phrase, avec le geste à faire — pas le message technique du service.
+    const pourquoi = rl.verrouille
+      ? "la BIAT a verrouillé le compte MyBIAT. Appelez la banque (31 31 20 72 ou votre agence) pour le débloquer, puis bouton « Refaire la validation SMS du robot »"
+      : rl.motif === "refus"
+      ? "la BIAT a refusé la connexion. Vérifiez l’accès MyBIAT avant de relancer le robot"
+      : "la BIAT demande un code SMS. Bouton « Refaire la validation SMS du robot », téléphone en main";
     const panne = rl.suspendu
       ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique suspendu depuis le ${frappe.datetime.str_to_user(rl.quand)} :
-           la BIAT demande un code SMS. Bouton « Refaire la validation SMS du robot », téléphone en main${reussi}</div>`
+           ${pourquoi}${reussi}</div>`
       : rl.quand && rl.ok === false
       ? `<div class="sub" style="color:var(--text-on-red,#c0392b)">⚠ relevé automatique en échec le ${frappe.datetime.str_to_user(rl.quand)} :
            ${esc(rl.erreur || "")}${reussi}</div>`
@@ -937,7 +942,8 @@ class IdentificationBancaire {
     const dire = (html, couleur) => d.fields_dict.texte.$wrapper.html(
       `<div style="font-size:13px;${couleur ? `color:${couleur}` : ""}">${html}</div>`);
     dire(`${__("Le robot va se connecter au portail MyBIAT avec les identifiants enregistrés dans le service bancaire.")}<br>
-      ${__("Si le portail ne reconnaît pas encore son navigateur, <b>vous recevrez un SMS</b> : gardez votre téléphone à portée, vous aurez environ une minute et demie pour saisir le code ici.")}`);
+      ${__("Si le portail ne reconnaît pas encore son navigateur, <b>vous recevrez un SMS</b> : gardez votre téléphone à portée, vous aurez environ une minute et demie pour saisir le code ici.")}<br>
+      <span class="text-muted">${__("La banque compte les codes envoyés et non saisis : au bout de trois, elle verrouille le compte. Ne démarrez que téléphone en main.")}</span>`);
     const terminer = (html, couleur) => {
       fini = true; clearTimeout(veille);
       dire(html, couleur);
@@ -952,9 +958,17 @@ class IdentificationBancaire {
         if (e.statut === "reussi") {
           terminer(`✔ <b>${__("Robot BIAT activé.")}</b> ${e.code_saisi ? __("Le code a été accepté.") : __("Son navigateur était déjà reconnu, aucun code n’était nécessaire.")}
             <br>${__("Un premier relevé est lancé en arrière-plan ; les mouvements arriveront dans quelques minutes.")}`, "#1a7f37");
+        } else if (e.statut === "echec" && e.verrouille) {
+          terminer(`✖ <b>${__("Le compte MyBIAT est verrouillé par la banque.")}</b><br>
+            ${__("Appelez la BIAT (31 31 20 72) ou votre agence pour le faire débloquer.")}
+            <b>${__("Ne recommencez pas avant le déblocage")}</b> ${__(": chaque essai de plus retarde le retour à la normale.")}<br>
+            <span class="text-muted">${__("Le relevé automatique est suspendu : le robot n’essaiera plus tout seul. Une fois le compte débloqué, revenez ici refaire la validation.")}</span>`, "#c0392b");
+        } else if (e.statut === "echec" && e.refus) {
+          terminer(`✖ <b>${__("La BIAT a refusé la connexion")}</b> : ${esc(e.erreur || "")}<br>
+            <span class="text-muted">${__("Ne recommencez pas tout de suite : vérifiez d’abord l’accès MyBIAT (un mot de passe refusé plusieurs fois verrouille le compte). Le relevé automatique est suspendu.")}</span>`, "#c0392b");
         } else if (e.statut === "echec") {
           terminer(`✖ <b>${__("Activation impossible")}</b> : ${esc(e.erreur || "")}<br>
-            <span class="text-muted">${__("Rien n’a été modifié. Vous pouvez recommencer : un nouveau SMS sera envoyé si le portail en demande un.")}</span>`, "#c0392b");
+            <span class="text-muted">${__("Rien n’a été modifié. Vous pouvez recommencer, téléphone en main : un nouveau SMS sera envoyé si le portail en demande un.")}</span>`, "#c0392b");
         } else {
           d.fields_dict.texte.$wrapper.find("[data-etape]").text(e.etape || "");
           veille = setTimeout(suivre, 3000);

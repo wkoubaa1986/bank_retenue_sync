@@ -414,6 +414,50 @@ class TestReleveSuspendu(unittest.TestCase):
         self.assertFalse(biat.suspendu_d_apres({}))
         self.assertFalse(biat.suspendu_d_apres({"ok": True}))
 
+    VERROU = ("RuntimeError: Connexion BIAT refusee : Authentication failed | Your account is locked. Please contact "
+              "our support team on 31 31 20 72, or your branch to unlock it. | Back to login")
+
+    def test_compte_verrouille_ou_connexion_refusee_on_ne_retente_pas(self):
+        # Message recu en production le 17/11/2026, apres trois codes SMS envoyes sans suite par les passages planifies.
+        self.assertTrue(biat.compte_verrouille(self.VERROU))
+        self.assertEqual(biat.motif_suspension(self.VERROU), "refus")
+        refus = "Connexion BIAT refusee : Invalid username or password."
+        self.assertFalse(biat.compte_verrouille(refus))
+        self.assertEqual(biat.motif_suspension(refus), "refus")          # un mot de passe refuse ne se retente pas non plus
+        self.assertEqual(biat.motif_suspension(self.CODE), "code")
+        for panne in ("HTTPConnectionPool: timeout", "job jb_1 failed : TimeoutError: page.goto", "", None):
+            self.assertIsNone(biat.motif_suspension(panne), panne)       # panne ordinaire : passage suivant
+
+    def test_la_trace_d_un_compte_verrouille_suspend_et_le_dit(self):
+        e = biat.etat_releve({"dernier_succes": "2026-11-16 19:18:50"}, False, self.VERROU, "2026-11-17 11:20:00")
+        self.assertEqual((e["validation_requise"], e["motif"]), (True, "refus"))
+        self.assertEqual(biat.motif_d_apres(e), "refus")
+        self.assertIn("refusé la connexion", biat.message_suspension(e))
+        self.assertIn("code SMS", biat.message_suspension(biat.etat_releve({}, False, self.CODE, "x")))
+        # trace sans les nouvelles cles (version precedente) : l'erreur suffit
+        self.assertEqual(biat.motif_d_apres({"ok": False, "erreur": self.VERROU}), "refus")
+        self.assertEqual(biat.motif_d_apres({"ok": False, "erreur": self.CODE, "validation_requise": True}), "code")
+        self.assertIsNone(biat.motif_d_apres({"ok": False, "erreur": self.VERROU, "validation_requise": False}))
+
+    def test_le_journal_distingue_le_refus_du_code(self):
+        from bank_retenue_sync.tasks import passages
+
+        out = biat.resume_passage({"robot": True, "suspendu": True, "motif": "refus"})
+        self.assertNotIn("erreur", out)
+        r = passages.resume({"refresh": "ok", "biat": out})
+        self.assertEqual(r["statut"], "Success")
+        self.assertIn("connexion refusée par la banque", [e["detail"] for e in r["etapes"] if e["cle"] == "biat"][0])
+
+    def test_l_ecran_d_activation_sait_que_le_compte_est_verrouille(self):
+        from bank_retenue_sync.api import biat_robot
+
+        vu = biat_robot.lire_job({"status": "failed", "error": self.VERROU})
+        self.assertEqual((vu["statut"], vu["verrouille"], vu["refus"]), ("echec", True, True))
+        vu = biat_robot.lire_job({"status": "failed", "error": "BiatCodeRequis: Aucun code SMS depose a temps."})
+        self.assertEqual((vu["verrouille"], vu["refus"]), (False, False))
+        vu = biat_robot.lire_job({"status": "succeeded", "result": {"details": {"code_saisi": True, "comptes": ["N1"]}}})
+        self.assertEqual((vu["statut"], vu["verrouille"], vu["refus"], vu["code_saisi"]), ("reussi", False, False, True))
+
     def test_le_journal_le_dit_sans_alerter_de_nouveau(self):
         from bank_retenue_sync.tasks import passages
 

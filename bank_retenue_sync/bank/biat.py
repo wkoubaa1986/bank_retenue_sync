@@ -522,6 +522,7 @@ def resume_passage(out: dict) -> dict:
         # L'alerte est partie au passage ou le portail a demande le code ; les suivants le rappellent dans le
         # journal sans alerter de nouveau (sept notifications par jour n'apprendraient rien de plus).
         res["suspendu"] = True
+        res["motif"] = out.get("motif") or "code"
     if erreurs:
         res["erreur"] = " ; ".join(erreurs)[:300]
     return res
@@ -778,9 +779,12 @@ def dernier_releve() -> dict:
         return {}
 
 
-#: Ce que disent le passage et la page tant que le portail attend un code : le robot ne se connecte plus.
+#: Ce que disent le passage et la page tant que le robot ne doit plus se connecter tout seul.
 MESSAGE_SUSPENDU = ("relevé automatique suspendu : le portail MyBIAT attend une validation par code SMS "
                     "(Identification bancaire › BIAT › « Refaire la validation SMS du robot »)")
+MESSAGE_REFUS = ("relevé automatique suspendu : MyBIAT a refusé la connexion (compte verrouillé ou identifiants "
+                 "refusés). Faire rétablir l’accès par la banque, puis Identification bancaire › BIAT › « Refaire la "
+                 "validation SMS du robot »")
 
 
 def code_sms_demande(erreur) -> bool:
@@ -788,17 +792,47 @@ def code_sms_demande(erreur) -> bool:
     return bool(re.search(r"code\s+sms|BiatCodeRequis", str(erreur or ""), re.IGNORECASE))
 
 
+def compte_verrouille(erreur) -> bool:
+    """Le portail dit-il que le COMPTE est verrouille (« Your account is locked. Please contact our support
+    team… », vu en production le 17/11/2026) ? Pur. Seule la banque le debloque."""
+    return bool(re.search(r"account (?:is|has been) (?:locked|blocked)|compte .{0,25}(?:verrouill|bloqu)",
+                          str(erreur or ""), re.IGNORECASE))
+
+
+def connexion_refusee(erreur) -> bool:
+    """Le portail a-t-il REFUSE la connexion : compte verrouille, identifiants refuses ? Pur.
+    (« Connexion BIAT refusee : … » est ce que le robot leve quand il reste sur la page de connexion.)"""
+    return compte_verrouille(erreur) or bool(re.search(
+        r"connexion biat refus|authentication failed|invalid (?:username|user name|password|credentials)",
+        str(erreur or ""), re.IGNORECASE))
+
+
+def motif_suspension(erreur) -> str | None:
+    """Pourquoi le robot ne doit plus se connecter tout seul apres cet echec. Pur.
+    -> « code » (le portail attend un code SMS), « refus » (connexion refusee, compte verrouille) ou None
+    (panne ordinaire — service injoignable, delai depasse — qui se retente au passage suivant).
+
+    POURQUOI (17/11/2026, production) : la banque COMPTE les codes SMS envoyes et non saisis (« 2 remaining
+    attempts », puis 1). Le robot, plus reconnu, a retente a 05:00, 07:00 et 09:00 : trois codes sans suite, et
+    le compte a ete VERROUILLE (« Your account is locked »). Une connexion qui demande un humain ne se retente
+    donc JAMAIS toute seule, et un refus du portail non plus : retenter un mot de passe refuse verrouille aussi."""
+    if code_sms_demande(erreur):
+        return "code"
+    if connexion_refusee(erreur):
+        return "refus"
+    return None
+
+
 def etat_releve(avant: dict, ok: bool, erreur: str, maintenant: str) -> dict:
     """La trace du releve apres une tentative. Pur.
-    `validation_requise` : le portail a redemande un code SMS. Tant qu'elle est vraie, PLUS AUCUNE connexion
-    n'est tentee toute seule — constat du 17/11/2026 en production : chaque passage planifie retentait, donc
-    le portail renvoyait un SMS toutes les deux heures, sans personne pour saisir le code (et un compte dont
-    les connexions restent sans suite finit par se verrouiller). Seule la validation faite par la personne
-    (`api/biat_robot`) ou un releve reussi la leve."""
+    `validation_requise` : une personne doit agir (`motif` dit pourquoi). Tant qu'elle est vraie, PLUS AUCUNE
+    connexion n'est tentee toute seule. Seule la validation faite par la personne (`api/biat_robot`) ou un
+    releve reussi la leve."""
     avant = avant or {}
+    motif = None if ok else motif_suspension(erreur)
     return {"quand": maintenant, "ok": bool(ok), "erreur": None if ok else (erreur or "")[:300],
             "dernier_succes": maintenant if ok else avant.get("dernier_succes"),
-            "validation_requise": (not ok) and code_sms_demande(erreur)}
+            "validation_requise": motif is not None, "motif": motif}
 
 
 def _noter_releve(ok: bool, erreur: str = None):
@@ -811,20 +845,28 @@ def _noter_releve(ok: bool, erreur: str = None):
         pass                                           # une trace d'affichage ne fait jamais echouer le releve
 
 
-def suspendu_d_apres(etat: dict) -> bool:
-    """La trace du dernier releve dit-elle que le portail attend un code SMS ? Pur.
-    Une trace ecrite avant le 17/11/2026 n'a pas la cle `validation_requise` : on lit alors son erreur, pour
-    que le tout premier passage apres la mise a jour ne fasse pas partir un SMS de plus."""
+def motif_d_apres(etat: dict) -> str | None:
+    """Le motif de suspension que porte la trace du dernier releve, ou None si le robot peut se connecter. Pur.
+    Une trace ecrite avant le 17/11/2026 n'a ni `validation_requise` ni `motif` : on lit alors son erreur, pour
+    que le tout premier passage apres la mise a jour ne fasse pas partir une connexion de plus."""
     etat = etat or {}
     if etat.get("ok") is not False:
-        return False
-    if "validation_requise" in etat:
-        return bool(etat["validation_requise"])
-    return code_sms_demande(etat.get("erreur"))
+        return None
+    if "validation_requise" in etat and not etat["validation_requise"]:
+        return None                                     # levee par la personne
+    return etat.get("motif") or motif_suspension(etat.get("erreur")) or ("code" if etat.get("validation_requise") else None)
+
+
+def suspendu_d_apres(etat: dict) -> bool:
+    return motif_d_apres(etat) is not None
+
+
+def message_suspension(etat: dict) -> str:
+    return MESSAGE_REFUS if motif_d_apres(etat) == "refus" else MESSAGE_SUSPENDU
 
 
 def releve_suspendu() -> bool:
-    """Le portail attend-il un code SMS ? Alors aucune connexion du robot ne part sans la personne."""
+    """Une personne doit-elle agir avant la prochaine connexion ? Alors le robot ne se connecte pas tout seul."""
     return suspendu_d_apres(dernier_releve())
 
 
@@ -851,9 +893,11 @@ def rafraichir(lookback_days: int = None, timeout: int = 300) -> dict:
 
     jours = int(lookback_days or 45)
     out = {"export": jours, "erreur": None}
-    if releve_suspendu():
-        # Pas d'appel au service : une connexion de plus = un SMS de plus, et toujours pas de releve.
-        out.update(erreur=MESSAGE_SUSPENDU, suspendu=True)
+    etat = dernier_releve()
+    if suspendu_d_apres(etat):
+        # Pas d'appel au service : une connexion de plus = un SMS de plus (ou un refus de plus sur un compte
+        # verrouille), et toujours pas de releve.
+        out.update(erreur=message_suspension(etat), suspendu=True, motif=motif_d_apres(etat))
         out.update(classer_registre(persist=True))
         return out
     try:
@@ -1055,7 +1099,7 @@ def passage(refresh: bool = None) -> dict:
     # s'encaisse et se classe quand meme.
     out = {"robot": suspendu, "encaissements": encaisser_remises(), "virements": encaisser_virements()}
     if suspendu:
-        out["suspendu"] = True
+        out.update(suspendu=True, motif=motif_d_apres(dernier_releve()))
     out.update(classer_registre(persist=True))
     if reprise:
         out["reprise"] = reprise
@@ -1109,7 +1153,9 @@ def tableau_solde() -> dict:
         comptabilises.add(f"{annee}-{mois}")
     out = resume_solde(lignes, S.solde_erpnext(compte=le_compte), dernier_solde_lu(), comptabilises)
     releve = dernier_releve()
-    releve["suspendu"] = suspendu_d_apres(releve)       # le portail attend un code SMS : la page le dit simplement
+    releve["motif"] = motif_d_apres(releve)             # « code » ou « refus » : la page le dit simplement
+    releve["suspendu"] = releve["motif"] is not None
+    releve["verrouille"] = bool(releve["suspendu"] and compte_verrouille(releve.get("erreur")))
     out.update(banque=BANQUE, compte=le_compte, releve=releve)
     try:
         out["robot"] = bool(frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif")))
@@ -1152,12 +1198,13 @@ def capturer_solde(timeout: int = 300) -> dict:
 
     from bank_retenue_sync.bank import movements as mv
 
-    if releve_suspendu():
-        raise RuntimeError(MESSAGE_SUSPENDU)
+    etat = dernier_releve()
+    if suspendu_d_apres(etat):
+        raise RuntimeError(message_suspension(etat))
     try:
         mv.wait_job(mv.start_job("/jobs/biat/soldes", {}), timeout=timeout)
     except Exception as e:
-        if code_sms_demande(e):
+        if motif_suspension(e):
             _noter_releve(False, str(e))
         raise
     r = requests.get(mv._base_url() + "/biat/soldes/latest", headers=mv._headers(), timeout=60)

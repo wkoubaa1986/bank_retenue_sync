@@ -71,9 +71,14 @@ def _detail_de(cle, valeur, out=None) -> str:
     if valeur is None:
         return "non lancée"
     if cle == "biat" and isinstance(valeur, dict):
-        releve = "relevé suspendu, code SMS à saisir (bouton « Refaire la validation SMS du robot »)" \
-            if valeur.get("suspendu") else ("relevé : %s nouveau(x)" % (valeur.get("nouveaux") or 0)) \
-            if valeur.get("robot") else "relevé automatique non activé"
+        if valeur.get("suspendu") and valeur.get("motif") == "refus":
+            releve = "relevé suspendu, connexion refusée par la banque (compte verrouillé ?) : à faire rétablir"
+        elif valeur.get("suspendu"):
+            releve = "relevé suspendu, code SMS à saisir (bouton « Refaire la validation SMS du robot »)"
+        elif valeur.get("robot"):
+            releve = "relevé : %s nouveau(x)" % (valeur.get("nouveaux") or 0)
+        else:
+            releve = "relevé automatique non activé"
         return "%s ; %d remise(s) et %d virement(s) encaissés" % (releve, valeur.get("remises") or 0, valeur.get("virements") or 0)
     if cle == "reglements" and isinstance(valeur, list):
         regles = [v for v in valeur if isinstance(v, dict) and v.get("status") == "regle"]

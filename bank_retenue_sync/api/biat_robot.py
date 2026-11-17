@@ -35,8 +35,12 @@ def lire_job(job: dict) -> dict:
     job = job or {}
     statut = {"succeeded": "reussi", "failed": "echec", "cancelled": "echec"}.get(job.get("status"), "en_cours")
     details = ((job.get("result") or {}).get("details")) or {}
-    return {"statut": statut, "etape": ((job.get("progress") or {}).get("step")) or "",
-            "erreur": (job.get("error") or "")[:400] if statut == "echec" else "",
+    from bank_retenue_sync.bank import biat
+
+    erreur = (job.get("error") or "")[:400] if statut == "echec" else ""
+    return {"statut": statut, "etape": ((job.get("progress") or {}).get("step")) or "", "erreur": erreur,
+            # Compte verrouille par la banque, ou connexion refusee : ce n'est PAS a recommencer (cf. `motif_suspension`).
+            "verrouille": biat.compte_verrouille(erreur), "refus": biat.connexion_refusee(erreur),
             "code_saisi": bool(details.get("code_saisi")), "comptes": len(details.get("comptes") or [])}
 
 
@@ -86,6 +90,15 @@ def etat(job) -> dict:
     r = requests.get(mv._base_url() + f"/jobs/{job}", headers=mv._headers(), timeout=30)
     r.raise_for_status()
     out = lire_job(r.json())
+    if out["statut"] == "echec":
+        from bank_retenue_sync.bank import biat
+
+        # Un code envoye et non saisi, un compte verrouille : le releve automatique doit s'arreter la aussi, et
+        # le bandeau le dire — pas seulement quand l'echec vient d'un passage planifie.
+        if biat.motif_suspension(out["erreur"]) and frappe.cache.get_value("brs_biat_echec_note:" + str(job)) is None:
+            frappe.cache.set_value("brs_biat_echec_note:" + str(job), 1, expires_in_sec=3600)
+            biat._noter_releve(False, out["erreur"])
+            frappe.db.commit()
     if out["statut"] == "reussi":
         deja = frappe.utils.cint(frappe.db.get_single_value("Bank Retenue Sync Settings", "biat_robot_actif"))
         frappe.db.set_single_value("Bank Retenue Sync Settings", "biat_robot_actif", 1)
