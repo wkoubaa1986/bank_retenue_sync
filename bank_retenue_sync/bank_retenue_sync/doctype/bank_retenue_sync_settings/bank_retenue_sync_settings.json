@@ -81,7 +81,8 @@
   "modele_lecture_bordereau",
   "column_break_bordereaux",
   "biat_robot_actif",
-  "compte_cartes_attente"
+  "compte_cartes_attente",
+  "majoration_carte_taux"
  ],
  "fields": [
   {
@@ -583,11 +584,18 @@
    "options": "Account",
    "label": "Compte d’attente des cartes (terminal de paiement)",
    "description": "Un paiement reçu par carte y est porté au lieu d’aller directement en banque ; quand la banque crédite la remise du terminal, l’écriture solde ce compte. Vide : les paiements par carte restent où l’écran les pose et aucune remise n’est comptabilisée."
+  },
+  {
+   "fieldname": "majoration_carte_taux",
+   "fieldtype": "Percent",
+   "label": "Majoration du prix pour un paiement par carte (%)",
+   "default": "2",
+   "description": "La part de la commission du terminal répercutée sur le client. Sur une commande, la part réglée par « Carte de crédit » est majorée de ce taux, et la majoration est répartie sur les prix de tous les articles (elle est rappelée en bas de la commande et du bon de livraison). Exemple à 2 % : 285,000 payés par carte deviennent 290,700. 0 : aucune majoration."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-17 16:00:00.000000",
+ "modified": "2026-11-18 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",
