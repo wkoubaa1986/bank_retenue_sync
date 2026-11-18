@@ -590,12 +590,12 @@
    "fieldtype": "Percent",
    "label": "Majoration du prix pour un paiement par carte (%)",
    "default": "2",
-   "description": "La part de la commission du terminal répercutée sur le client. Sur une commande, la part réglée par « Carte de crédit » est majorée de ce taux, et la majoration est répartie sur les prix de tous les articles (elle est rappelée en bas de la commande et du bon de livraison). Exemple à 2 % : 285,000 payés par carte deviennent 290,700. 0 : aucune majoration."
+   "description": "La part de la commission du terminal répercutée sur le client. Sur une commande, la part réglée par « Carte de crédit » est majorée de ce taux, et la majoration est répartie sur les prix de tous les articles (elle est rappelée en bas de la commande et du bon de livraison). La majoration est arrondie au demi-dinar le plus proche et ne s’ajoute que sur le paiement par carte. Exemple à 2 % : 200,000 par carte deviennent 204,000 ; 285,000 deviennent 290,500. 0 : aucune majoration."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-18 16:00:00.000000",
+ "modified": "2026-11-18 19:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",
