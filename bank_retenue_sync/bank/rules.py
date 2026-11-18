@@ -33,6 +33,11 @@ ACTION_IGNORE = "ignore"           # bruit assume
 #: Categorie des frais de lettre de credit : affectes a la main a un fournisseur (30/10/2026).
 CATEGORIE_LC = "frais_lc"
 
+#: Categorie des cheques EMIS (reglements fournisseurs) et cle de la regle de leur ANNULATION par
+#: la banque — un credit qui reprend un debit errone (cf. classify.apparier_annulations).
+CATEGORIE_CHEQUE_EMIS = "cheque_emis"
+REGLE_ANNULATION_CHEQUE = "annulation_reglement_cheque"
+
 
 @dataclass(frozen=True)
 class BankRule:
@@ -102,6 +107,18 @@ RULES = (
         categorie="encaissement", sous_categorie="virement",
         matcher="matching.is_virement_credit", exclude=("ARAMEX",),
         action=ACTION_FLUX, flux="virement", priorite=50),
+    # LA BANQUE ANNULE UN REGLEMENT DE CHEQUE EMIS (18/11/2026). Cas reel : cheque 4001056 de
+    # 4 841,100 debite 841,100 le 28/10 (erreur de saisie de la banque). Elle corrige en DEUX
+    # lignes le meme jour : « CREDIT DIVERS REGLEMENT CHEQUE 4001056 » 841,100 (le debit errone
+    # est repris) puis « DEBIT DIVERS REGLEMENT CHEQUE 4001056 » 4 841,100 (le vrai montant).
+    # Ce credit n'est PAS une recette : il n'existe que face au debit qu'il annule — c'est
+    # `classify.apparier_annulations` qui forme la paire, par le n° de cheque et le montant.
+    # Le libelle ne contient ni 'ENC' ni 'VIR' : aucune regle de credit ne le reprend.
+    BankRule(
+        key=REGLE_ANNULATION_CHEQUE, label="Annulation par la banque d'un reglement de cheque",
+        sens="credit", categorie=CATEGORIE_CHEQUE_EMIS, sous_categorie="annulation",
+        patterns=("REGLEMENT", "CHEQUE"),
+        action=ACTION_INFORMATIF, extractor="cheque", priorite=18),
 
     # =============================== DEBITS ===============================
     # -- frais bancaires : JAMAIS comptabilises a l'unite, regroupes par jour --
@@ -241,7 +258,7 @@ RULES = (
     # -- cheques emis : le n° de cheque est dans le libelle (7 chiffres) --
     BankRule(
         key="cheque_emis_preavise", label="Cheque emis preavise", sens="debit",
-        categorie="cheque_emis", sous_categorie="preavise",
+        categorie=CATEGORIE_CHEQUE_EMIS, sous_categorie="preavise",
         patterns=("CHEQUE", "EMIS", "PREAVISE"),
         action=ACTION_INFORMATIF, extractor="cheque", priorite=40),
     BankRule(
@@ -249,7 +266,7 @@ RULES = (
         # commission — le nom du beneficiaire peut contenir n'importe quoi (COMPANY, ENC...),
         # cette regle doit donc passer AVANT toutes les com_*.
         key="reglement_cheque", label="Reglement de cheque emis", sens="debit",
-        categorie="cheque_emis",
+        categorie=CATEGORIE_CHEQUE_EMIS,
         patterns=("REGLEMENT", "CHEQUE"),
         action=ACTION_INFORMATIF, extractor="cheque", priorite=18),
 

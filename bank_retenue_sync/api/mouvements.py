@@ -443,7 +443,12 @@ def basculer_ecart_credit_fournisseur(cle: str, motif: str = "") -> dict:
     Cas reel : cheque 4001056 (MAYAR DE COMMERCE), 4 841,000 comptabilises, 841,100 debites. Le
     paiement et l'identification sont justes, c'est le releve qui est faux : la banque corrigera
     (ou un nouveau paiement reglera le reste), et ce debit futur trouvera le credit fournisseur.
-    Ensemble, l'ecriture d'origine et le correctif font exactement le debit du releve : ecart nul."""
+    Ensemble, l'ecriture d'origine et le correctif font exactement le debit du releve : ecart nul.
+
+    SUITE DU CAS (18/11/2026) : la banque n'a pas debite le manque, elle a ANNULE son debit de
+    841,100 (un credit) puis redebite le cheque en entier (4 841,100). Le report n'a alors plus
+    lieu d'etre : `classify.apparier_annulations` reconnait la paire, la ligne passe « a
+    verifier » et renvoie vers « ↩ Défaire » (`defaire_rattachement`), qui annule le correctif."""
     _guard(write=True)
     frappe.only_for("Accounts Manager")
     import re as _re

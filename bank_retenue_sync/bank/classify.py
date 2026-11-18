@@ -150,6 +150,9 @@ class LinkContext:
     # les RATTACHEMENTS MANUELS (bouton « Rattacher » de la page, 06/10/2026). Ils priment sur
     # toute resolution automatique et leurs pieces sont retirees de l'appariement par montant.
     liens_manuels: dict = field(default_factory=dict)
+    # {cle du mouvement -> {role, date, montant, numero, redebit}} : les debits de cheque emis
+    # que la banque a ANNULES par un credit, et ces credits. Calcule par `apparier_annulations`.
+    annulations: dict = field(default_factory=dict)
 
 
 def build_context(movements: list, date_from=None, date_to=None) -> LinkContext:
@@ -877,6 +880,136 @@ def _texte_pieces(je: dict) -> str:
         len(pieces), " + ".join(pieces))
 
 
+# ------------------------------------------- cheque emis : un debit ANNULE par la banque
+
+def _montant_fr(v) -> str:
+    """4841.1 -> « 4 841,100 » : dans une raison, le montant se lit comme sur le releve."""
+    return "{:,.3f}".format(flt(v, 3)).replace(",", " ").replace(".", ",")
+
+
+def _jour_fr(d) -> str:
+    return getdate(d).strftime("%d/%m/%Y") if d else "?"
+
+
+def apparier_annulations(movements: list, rules=None) -> dict:
+    """{cle du mouvement -> {role, date, montant, numero, redebit}} : les paires « debit de
+    cheque emis / credit de la banque qui l'annule ». Fonction pure.
+
+    CAS REEL (18/11/2026) — cheque 4001056, MAYAR DE COMMERCE, emis pour 4 841,100 :
+        28/10  REGLEMENT CHEQUE 4001056                 debit   841,100   <- erreur de la banque
+        18/11  CREDIT DIVERS REGLEMENT CHEQUE 4001056   credit  841,100   <- elle reprend son debit
+        18/11  DEBIT DIVERS REGLEMENT CHEQUE 4001056    debit 4 841,100   <- le vrai montant
+    Sans cette passe, le credit ressortait « libelle inconnu », le debit du 28/10 restait
+    accroche a son ancien arbitrage, et rien ne disait que le report en credit fournisseur pose
+    le 30/10 (ACC-JV-2026-00975) n'avait plus lieu d'etre.
+
+    La paire se forme sur TROIS preuves a la fois : le credit porte le libelle d'un reglement de
+    cheque (regle `annulation_reglement_cheque`), le MEME n° de cheque que le debit, et le MEME
+    montant au millime. Le debit doit preceder le credit (ou etre du meme jour) ; a montants
+    egaux c'est le plus ANCIEN qui est annule, le plus recent etant le nouveau debit. Un debit
+    n'est annule qu'une fois.
+
+    `role` : « annule » sur le debit, « annulation » sur le credit ; `date` : le jour de l'AUTRE
+    ligne ; `redebit` : {date, montant} du debit qui remplace l'annule, s'il existe.
+    """
+    debits: dict = {}
+    credits: list = []
+    for m in (movements or []):
+        if not m.get("date"):
+            continue
+        rule = R.find_rule(m, rules)
+        if not rule or rule.categorie != R.CATEGORIE_CHEQUE_EMIS:
+            continue
+        numero = R.extract_numero(rule, m)
+        if not numero:
+            continue
+        if rule.key == R.REGLE_ANNULATION_CHEQUE:
+            credits.append((m, numero))
+        elif flt(m.get("debit"), 3):
+            debits.setdefault(numero, []).append(m)
+
+    out: dict = {}
+    pris: set = set()
+    # Ordre deterministe : le resultat ne depend pas de l'ordre d'arrivee des lignes.
+    for credit, numero in sorted(credits, key=lambda x: (str(getdate(x[0]["date"])),
+                                                         registry.movement_key(x[0]))):
+        montant = flt(credit.get("credit"), 3)
+        jour = getdate(credit["date"])
+        candidats = [d for d in debits.get(numero, []) if id(d) not in pris
+                     and abs(flt(d.get("debit"), 3) - montant) < 0.005
+                     and getdate(d["date"]) <= jour]
+        if not candidats:
+            continue
+        annule = min(candidats, key=lambda d: (str(getdate(d["date"])), registry.movement_key(d)))
+        pris.add(id(annule))
+        autres = [d for d in debits.get(numero, []) if id(d) not in pris]
+        redebit = min(autres, key=lambda d: (abs((getdate(d["date"]) - jour).days),
+                                             registry.movement_key(d))) if autres else None
+        commun = {"numero": numero, "montant": montant,
+                  "redebit": ({"date": redebit["date"], "montant": flt(redebit.get("debit"), 3)}
+                              if redebit else None)}
+        out[registry.movement_key(annule)] = dict(commun, role="annule", date=credit["date"])
+        out[registry.movement_key(credit)] = dict(commun, role="annulation", date=annule["date"])
+    return out
+
+
+def _texte_redebit(ann: dict) -> str:
+    r = (ann or {}).get("redebit")
+    if not r:
+        return ""
+    return " — le chèque a été redébité %s le %s" % (_montant_fr(r["montant"]), _jour_fr(r["date"]))
+
+
+def _resoudre_annulation(c: Classification, ann: dict) -> Classification:
+    """Une ligne d'une paire annulee : RIEN n'est a comptabiliser. Les deux lignes se compensent
+    au releve ; la piece du cheque, elle, appartient au debit qui reste. Fonction pure."""
+    c.statut = STATUT_IDENTIFIE
+    c.document_type = None
+    c.document_name = None
+    c.montant_document = 0.0
+    c.ecart = 0.0
+    if ann.get("role") == "annulation":
+        c.raison = ("la banque annule son débit du %s (chèque %s, %s) : les deux lignes se "
+                    "compensent, rien à comptabiliser%s"
+                    % (_jour_fr(ann.get("date")), ann.get("numero"), _montant_fr(ann.get("montant")),
+                       _texte_redebit(ann)))
+    else:
+        c.raison = ("débit annulé par la banque le %s (crédit de %s sur le chèque %s) : erreur de "
+                    "la banque, rien à comptabiliser%s"
+                    % (_jour_fr(ann.get("date")), _montant_fr(ann.get("montant")), ann.get("numero"),
+                       _texte_redebit(ann)))
+    return c
+
+
+def _annulation_sur_lien(c: Classification, lien: dict, ann: dict) -> Classification:
+    """Un debit rattache A LA MAIN que la banque a annule DEPUIS : l'arbitrage ne tient plus.
+
+    La decision humaine prime sur la machine, mais elle a ete prise AVANT la correction de la
+    banque. On ne defait rien ici (le classifieur constate, il n'ecrit pas) : la ligne passe « a
+    verifier » et dit quoi faire. Pour un ecart reporte en credit fournisseur, c'est « ↩ Défaire »,
+    qui annule l'ecriture de report — sans cela le fournisseur resterait crediteur a tort et le
+    compte bancaire faux du meme montant. Fonction pure."""
+    if not ann or ann.get("role") != "annule":
+        return c
+    vivantes = [p for p in (lien.get("pieces") or []) if p.get("docstatus") in (0, 1)]
+    r = ann.get("redebit")
+    tete = "la banque a corrigé : ce débit de %s a été annulé le %s%s" % (
+        _montant_fr(ann.get("montant")), _jour_fr(ann.get("date")),
+        (" et le chèque %s redébité %s" % (ann.get("numero"), _montant_fr(r["montant"]))) if r else "")
+    # Vu d'un debit, le correctif (banque debitee) compte NEGATIF : c'est lui qu'on nomme.
+    correctifs = [p["name"] for p in vivantes if flt(p.get("montant")) < 0]
+    if "crédit fournisseur" in (lien.get("motif") or "") and correctifs:
+        suite = ("le report en crédit fournisseur (%s) n'a plus lieu d'être — « ↩ Défaire » "
+                 "l'annule" % ", ".join(correctifs))
+    else:
+        suite = "le rattachement à la main ne tient plus — « Détacher » le retire"
+    c.statut = STATUT_A_VERIFIER
+    c.montant_document = 0.0
+    c.ecart = 0.0
+    c.raison = "%s ; %s" % (tete, suite)
+    return c
+
+
 def _paiement_citant(reference: str, context: LinkContext):
     """Le Payment Entry (unique) qui cite cette reference bancaire dans son libelle, ou None."""
     if not reference:
@@ -901,6 +1034,7 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
             c.categorie, c.sous_categorie, c.regle, c.action = (
                 rule.categorie, rule.sous_categorie, rule.key, rule.action)
         resoudre_lien_manuel(c, m, lien)
+        _annulation_sur_lien(c, lien, (getattr(context, "annulations", None) or {}).get(c.cle))
         return c
     if rule is None:
         # ⚠️ UN LIBELLE INCONNU N'EST PAS UNE OPERATION INEXPLIQUEE. Avant le 16/09/2026 on
@@ -942,6 +1076,19 @@ def classify_one(m: dict, context: LinkContext, rules=None) -> Classification:
     c.regle = rule.key
     c.action = rule.action
     c.numero = R.extract_numero(rule, m)
+
+    # Un debit de cheque que la banque a ANNULE, ou le credit qui l'annule : la paire se compense,
+    # aucune piece ne lui revient — surtout pas celle du cheque, qui appartient au debit restant.
+    ann = (getattr(context, "annulations", None) or {}).get(c.cle)
+    if ann:
+        return _resoudre_annulation(c, ann)
+    if rule.key == R.REGLE_ANNULATION_CHEQUE:
+        # Le credit dit annuler un reglement, mais le debit n'est pas au releve : on ne lui
+        # cherche AUCUNE piece (un encaissement client du meme montant s'y accrocherait a tort).
+        c.statut = STATUT_A_VERIFIER
+        c.raison = ("la banque annule un règlement du chèque %s, mais aucun débit de %s ne figure "
+                    "au relevé pour ce chèque" % (c.numero or "?", _montant_fr(credit)))
+        return c
 
     # Le regroupement prime sur l'action : une echeance ne se rapproche jamais ligne a ligne,
     # quelle que soit l'automatisation prevue pour la ligne prise isolement.
@@ -1171,6 +1318,9 @@ def classify(movements: list, context: LinkContext = None, rules=None) -> list:
     # verdict de son groupe. Un contexte deja renseigne (tests, rejeu) n'est pas recalcule.
     if not context.echeances:
         context.echeances = apparier_echeances(movements, context, rules)
+    # Meme principe pour les debits de cheque annules par la banque : la paire d'abord.
+    if not context.annulations:
+        context.annulations = apparier_annulations(movements, rules)
     classifications = [classify_one(m, context, rules) for m in (movements or [])]
     # APRES la passe ligne a ligne, et seulement sur ce qu'elle n'a pas su rapprocher : l'ordre
     # importe, l'appariement par montant ne doit jamais primer sur une cle bancaire.
@@ -1200,6 +1350,10 @@ def run(date_from=None, date_to=None, movements=None, persist: bool = True,
     movements = movements if movements is not None else registry.registry_as_movements(
         date_from=date_from, date_to=date_to)
     context = build_context(movements, date_from, date_to)
+    if date_from or date_to:
+        # Une annulation peut tomber des semaines apres le debit qu'elle reprend (28/10 -> 18/11) :
+        # sur une fenetre de dates, la paire se cherche quand meme dans TOUT le registre.
+        context.annulations = apparier_annulations(registry.registry_as_movements())
     classifications = classify(movements, context)
     out = {"mouvements": len(movements), "kpi": summarize(classifications)}
     if persist:

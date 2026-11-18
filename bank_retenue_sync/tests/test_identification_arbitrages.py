@@ -199,3 +199,152 @@ class TestDoublonsEtFactures(unittest.TestCase):
         pieces = [{"voucher_no": "JE-A", "posting_date": "2026-04-30", "sens": "Debit", "montant": 603.0, "texte": "Recharge Carte Total"},
                   {"voucher_no": "JE-B", "posting_date": "2026-04-30", "sens": "Debit", "montant": 603.0, "texte": "Recharge Carte Total (rattrapage)"}]
         self.assertEqual(E.doublons_de_pieces(pieces), {"JE-A": ["JE-B"], "JE-B": ["JE-A"]})
+
+
+class TestChequeAnnuleParLaBanque(unittest.TestCase):
+    """La banque corrige un cheque mal debite en ANNULANT son debit puis en redebitant (18/11/2026).
+
+    Cas reel, cheque 4001056 (MAYAR DE COMMERCE) emis pour 4 841,100 :
+        28/10  REGLEMENT CHEQUE 4001056                 debit   841,100   (erreur de la banque)
+        18/11  CREDIT DIVERS REGLEMENT CHEQUE 4001056   credit  841,100   (elle reprend son debit)
+        18/11  DEBIT DIVERS REGLEMENT CHEQUE 4001056    debit 4 841,100   (le vrai montant)
+    Avant : le credit ressortait « libelle inconnu », et rien ne disait que le report en credit
+    fournisseur pose le 30/10 n'avait plus lieu d'etre."""
+
+    from datetime import date as _date
+
+    ERRONE = {"date": _date(2026, 10, 28), "operation": "REGLEMENT CHEQUE 4001056",
+              "reference": "FT26301G4X18", "debit": 841.1, "credit": 0.0}
+    REPRISE = {"date": _date(2026, 11, 18), "operation": "CREDIT DIVERS REGLEMENT CHEQUE 4001056",
+               "reference": "DC263226034402001", "debit": 0.0, "credit": 841.1}
+    REDEBIT = {"date": _date(2026, 11, 18), "operation": "DEBIT DIVERS REGLEMENT CHEQUE 4001056",
+               "reference": "DC263226034402003", "debit": 4841.1, "credit": 0.0}
+    PAIEMENT = {"name": "ACC-PAY-2026-08192", "posting_date": _date(2026, 10, 30), "paid_amount": 4841.0,
+                "party": "MAYAR DE COMMERCE", "reference_no": "4001056", "sens": "debit"}
+
+    def lignes(self):
+        return [dict(self.ERRONE), dict(self.REPRISE), dict(self.REDEBIT)]
+
+    def classer(self, movements=None, **ctx):
+        movements = movements if movements is not None else self.lignes()
+        cs = C.classify(movements, C.LinkContext(pe_bancaires=[dict(self.PAIEMENT)], **ctx))
+        return {c.operation: c for c in cs}
+
+    # ---- la regle
+    def test_le_credit_est_reconnu_et_le_debit_reste_un_reglement_de_cheque(self):
+        self.assertEqual(R.find_rule(self.REPRISE).key, R.REGLE_ANNULATION_CHEQUE)
+        self.assertEqual(R.find_rule(self.REDEBIT).key, "reglement_cheque")
+        self.assertEqual(R.extract_numero(R.find_rule(self.REPRISE), self.REPRISE), "4001056")
+
+    def test_une_remise_de_cheques_n_est_pas_une_annulation(self):
+        m = {"operation": "CREDIT DIVERS ENC CHEQ TN NUM 00358832", "debit": 0.0, "credit": 3800.982}
+        self.assertEqual(R.find_rule(m).key, "enc_cheque")
+
+    # ---- la paire
+    def test_la_paire_se_forme_sur_le_numero_et_le_montant(self):
+        ann = C.apparier_annulations(self.lignes())
+        self.assertEqual(len(ann), 2)
+        errone, reprise = ann[registry_key(self.ERRONE)], ann[registry_key(self.REPRISE)]
+        self.assertEqual((errone["role"], errone["date"]), ("annule", self.REPRISE["date"]))
+        self.assertEqual((reprise["role"], reprise["date"]), ("annulation", self.ERRONE["date"]))
+        self.assertEqual(errone["redebit"], {"date": self.REDEBIT["date"], "montant": 4841.1})
+        self.assertNotIn(registry_key(self.REDEBIT), ann)
+
+    def test_pas_de_paire_si_le_montant_differe(self):
+        m = self.lignes()
+        m[1]["credit"] = 841.0
+        self.assertEqual(C.apparier_annulations(m), {})
+
+    def test_pas_de_paire_si_le_numero_differe(self):
+        m = self.lignes()
+        m[1]["operation"] = "CREDIT DIVERS REGLEMENT CHEQUE 4001057"
+        self.assertEqual(C.apparier_annulations(m), {})
+
+    def test_un_credit_ne_peut_pas_annuler_un_debit_posterieur(self):
+        m = [dict(self.REPRISE), dict(self.ERRONE, date=self._date(2026, 11, 20))]
+        self.assertEqual(C.apparier_annulations(m), {})
+
+    def test_un_debit_n_est_annule_qu_une_fois(self):
+        m = self.lignes() + [dict(self.REPRISE, reference="DC-BIS", date=self._date(2026, 11, 19))]
+        ann = C.apparier_annulations(m)
+        self.assertEqual(len(ann), 2)
+        self.assertNotIn(registry_key(m[3]), ann)
+
+    def test_a_montants_egaux_le_plus_ancien_est_annule(self):
+        """Annulation puis nouveau debit du MEME montant : c'est l'ancien qui est repris."""
+        redebit = dict(self.REDEBIT, debit=841.1)
+        ann = C.apparier_annulations([dict(self.ERRONE), dict(self.REPRISE), redebit])
+        self.assertEqual(ann[registry_key(self.ERRONE)]["role"], "annule")
+        self.assertNotIn(registry_key(redebit), ann)
+
+    # ---- la classification
+    def test_les_deux_lignes_se_compensent_et_le_paiement_va_au_nouveau_debit(self):
+        cs = self.classer()
+        errone, reprise, redebit = (cs[m["operation"]] for m in self.lignes())
+        for c in (errone, reprise):
+            self.assertEqual((c.statut, c.document_name, c.ecart), (C.STATUT_IDENTIFIE, None, 0.0))
+            self.assertIn("rien à comptabiliser", c.raison)
+        self.assertIn("débit annulé par la banque le 18/11/2026 (crédit de 841,100 sur le chèque 4001056)",
+                      errone.raison)
+        self.assertIn("la banque annule son débit du 28/10/2026", reprise.raison)
+        self.assertIn("redébité 4 841,100 le 18/11/2026", reprise.raison)
+        self.assertEqual((redebit.statut, redebit.document_type, redebit.document_name),
+                         (C.STATUT_IDENTIFIE, "Payment Entry", "ACC-PAY-2026-08192"))
+        self.assertEqual((redebit.montant_document, redebit.ecart), (4841.0, 0.1))
+
+    def test_le_debit_annule_ne_prend_plus_le_paiement_du_cheque(self):
+        """Sans la paire, le debit errone s'accrochait au paiement par le n° de cheque."""
+        seul = self.classer([dict(self.ERRONE)])[self.ERRONE["operation"]]
+        self.assertEqual(seul.document_name, "ACC-PAY-2026-08192")
+        self.assertIsNone(self.classer()[self.ERRONE["operation"]].document_name)
+
+    def test_le_report_en_credit_fournisseur_est_a_defaire(self):
+        lien = {"par": "wassim", "motif": "écart bancaire de 3999.9 reporté en crédit fournisseur MAYAR (JE-CORR)",
+                "pieces": [{"doctype": "Journal Entry", "name": "JE-ORIG", "docstatus": None, "montant": None},
+                           {"doctype": "Journal Entry", "name": "JE-CORR", "docstatus": 1, "montant": -3999.9}]}
+        c = self.classer(liens_manuels={registry_key(self.ERRONE): lien})[self.ERRONE["operation"]]
+        self.assertEqual((c.statut, c.ecart, c.montant_document), (C.STATUT_A_VERIFIER, 0.0, 0.0))
+        self.assertTrue(c.raison.startswith(
+            "la banque a corrigé : ce débit de 841,100 a été annulé le 18/11/2026 et le chèque 4001056 "
+            "redébité 4 841,100"))
+        self.assertIn("le report en crédit fournisseur (JE-CORR) n'a plus lieu d'être — « ↩ Défaire »", c.raison)
+        self.assertNotIn("JE-ORIG", c.raison)
+
+    def test_un_autre_rattachement_manuel_est_a_detacher(self):
+        lien = {"par": "wassim", "motif": "même fournisseur",
+                "pieces": [{"doctype": "Payment Entry", "name": "PE-X", "docstatus": 1, "montant": 841.1}]}
+        c = self.classer(liens_manuels={registry_key(self.ERRONE): lien})[self.ERRONE["operation"]]
+        self.assertEqual(c.statut, C.STATUT_A_VERIFIER)
+        self.assertIn("« Détacher » le retire", c.raison)
+
+    def test_un_rattachement_manuel_sans_annulation_n_est_pas_touche(self):
+        lien = {"par": "wassim", "motif": "écart bancaire reporté en crédit fournisseur",
+                "pieces": [{"doctype": "Journal Entry", "name": "JE-ORIG", "docstatus": 1, "montant": 4841.0},
+                           {"doctype": "Journal Entry", "name": "JE-CORR", "docstatus": 1, "montant": -3999.9}]}
+        c = self.classer([dict(self.ERRONE)],
+                         liens_manuels={registry_key(self.ERRONE): lien})[self.ERRONE["operation"]]
+        self.assertEqual((c.statut, c.ecart), (C.STATUT_IDENTIFIE, 0.0))
+
+    def test_une_annulation_sans_debit_reste_a_verifier_et_ne_prend_aucune_piece(self):
+        """Un encaissement client du meme montant ne doit pas s'y accrocher."""
+        recu = {"name": "PE-CLIENT", "posting_date": self._date(2026, 11, 18), "paid_amount": 841.1,
+                "party": "CLIENT", "reference_no": "X", "sens": "credit"}
+        cs = C.classify([dict(self.REPRISE)], C.LinkContext(pe_bancaires=[recu]))
+        self.assertEqual((cs[0].statut, cs[0].document_name), (C.STATUT_A_VERIFIER, None))
+        self.assertIn("aucun débit de 841,100 ne figure au relevé", cs[0].raison)
+
+    # ---- les branchements
+    def test_la_page_propose_de_defaire_avec_le_motif_tout_pret(self):
+        with open(PAGE, encoding="utf-8") as f:
+            js = f.read()
+        self.assertIn('(r.raison || "").startsWith("la banque a corrigé")', js)
+        self.assertIn("default: banque_a_corrige ?", js)
+
+    def test_une_fenetre_de_dates_cherche_la_paire_dans_tout_le_registre(self):
+        src = inspect.getsource(C.run)
+        self.assertIn("context.annulations = apparier_annulations(registry.registry_as_movements())", src)
+
+
+def registry_key(m):
+    from bank_retenue_sync.bank import registry
+    return registry.movement_key(m)

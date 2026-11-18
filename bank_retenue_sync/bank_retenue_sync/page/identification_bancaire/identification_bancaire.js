@@ -2329,12 +2329,17 @@ class IdentificationBancaire {
     const esc = frappe.utils.escape_html;
     const r = ((this._data && this._data.rows) || []).find((x) => x.cle === cle) || {};
     const virement = r.document_type === "Encaissement Paiement";
+    // La banque a annulé le débit que ce report en crédit fournisseur compensait (18/11/2026) :
+    // le serveur le dit dans la raison (classify._annulation_sur_lien). Le motif est alors connu.
+    const banque_a_corrige = !virement && (r.raison || "").startsWith("la banque a corrigé");
     const d = new frappe.ui.Dialog({
       title: __("Défaire l'arbitrage"),
       fields: [
         { fieldtype: "HTML", fieldname: "entete" },
         { fieldtype: "Small Text", fieldname: "motif", label: __("Motif"), reqd: 1,
-          description: __("Pourquoi ce rattachement était faux (ex. : mauvais client, mauvaise dette).") },
+          default: banque_a_corrige ? __("La banque a corrigé son erreur : le report en crédit fournisseur n’a plus lieu d’être.") : "",
+          description: banque_a_corrige ? ""
+            : __("Pourquoi ce rattachement était faux (ex. : mauvais client, mauvaise dette).") },
       ],
       primary_action_label: __("Défaire"),
       primary_action: async (v) => {
@@ -2360,7 +2365,9 @@ class IdentificationBancaire {
         ? __("Les paiements bancaires nés de l'encaissement {0} pour ce virement seront annulés, le paiement de dette d'origine reviendra de la corbeille, l'échéancier de la commande retrouvera sa ligne « Dette non payée », et l'encaissement sera annulé (ou allégé de ce virement s'il en porte d'autres). Le mouvement redeviendra orphelin.", [esc(r.document_name || "")])
         : r.categorie === "frais_lc"
           ? __("L'écriture Frais de LC {0} sera annulée : l'opération (toutes ses lignes) redeviendra à affecter.", [esc(r.document_name || "")])
-          : __("L'écriture correctif (crédit fournisseur) sera annulée et le rattachement manuel retiré. Le mouvement retrouvera son écart.")}</div>`);
+          : banque_a_corrige
+            ? __("La banque a annulé ce débit et redébité le chèque : l’écriture de report en crédit fournisseur sera annulée et le rattachement manuel retiré. Ce débit et le crédit qui l’annule se compenseront (rien à comptabiliser), et le paiement du chèque restera sur le nouveau débit.")
+            : __("L'écriture correctif (crédit fournisseur) sera annulée et le rattachement manuel retiré. Le mouvement retrouvera son écart.")}</div>`);
     d.show();
   }
 
