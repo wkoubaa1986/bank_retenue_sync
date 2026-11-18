@@ -82,7 +82,9 @@
   "column_break_bordereaux",
   "biat_robot_actif",
   "compte_cartes_attente",
-  "majoration_carte_taux"
+  "majoration_carte_taux",
+  "majoration_carte_arrondi",
+  "majoration_carte_arrondi_sens"
  ],
  "fields": [
   {
@@ -590,12 +592,28 @@
    "fieldtype": "Percent",
    "label": "Majoration du prix pour un paiement par carte (%)",
    "default": "2",
-   "description": "La part de la commission du terminal répercutée sur le client. Sur une commande, la part réglée par « Carte de crédit » est majorée de ce taux, et la majoration est répartie sur les prix de tous les articles (elle est rappelée en bas de la commande et du bon de livraison). La majoration est arrondie au demi-dinar le plus proche et ne s’ajoute que sur le paiement par carte. Exemple à 2 % : 200,000 par carte deviennent 204,000 ; 285,000 deviennent 290,500. 0 : aucune majoration."
+   "description": "La part de la commission du terminal répercutée sur le client. Sur une commande, la part réglée par « Carte de crédit » est majorée de ce taux ; la majoration ne s’ajoute que sur le paiement par carte, et elle est répartie sur les prix de tous les articles (rappelée en bas de la commande et du bon de livraison). Elle est arrondie selon les deux réglages ci-dessous. Exemple à 2 %, arrondi au dixième supérieur : 200,000 par carte deviennent 204,000 ; 368,597 deviennent 375,997 (7,372 arrondis à 7,400). 0 : aucune majoration."
+  },
+  {
+   "fieldname": "majoration_carte_arrondi",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Arrondi de la majoration carte (pas, en dinars)",
+   "default": "0.1",
+   "description": "La majoration est arrondie à un multiple de ce pas. 0,1 : au dixième de dinar (7,372 → 7,400) ; 0,5 : au demi-dinar ; 1 : au dinar. 0 : pas d’arrondi (au millime)."
+  },
+  {
+   "fieldname": "majoration_carte_arrondi_sens",
+   "fieldtype": "Select",
+   "options": "Supérieur\nAu plus proche",
+   "label": "Sens de l’arrondi de la majoration",
+   "default": "Supérieur",
+   "description": "Supérieur : toujours vers le haut (7,301 → 7,400). Au plus proche : 7,301 → 7,300 ; 7,350 → 7,400."
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-18 19:00:00.000000",
+ "modified": "2026-11-18 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",

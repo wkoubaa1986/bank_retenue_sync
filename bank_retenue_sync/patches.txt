@@ -35,3 +35,4 @@ bank_retenue_sync.patches.biat_reprise_dev_2026_11
 bank_retenue_sync.patches.source_email_biat_monetique
 bank_retenue_sync.patches.cartes_compte_attente
 bank_retenue_sync.patches.majoration_carte_taux
+bank_retenue_sync.patches.majoration_carte_arrondi
