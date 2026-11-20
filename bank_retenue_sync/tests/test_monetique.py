@@ -422,6 +422,65 @@ class TestEcritureDeLaRemise(unittest.TestCase):
             self.assertIn(attendu, d["raison"])
             self.assertEqual(d["lignes"], [])
 
+    # ── Écart accepté (20/11/2026 : « comment accepter l'écart et le comptabiliser ») ──
+    PERTE, PRODUIT = "Perte de non paiement - A&S", "Produits divers - A&S"
+
+    def remise_ecart(self, banque=100.0, erp=100.4, accepte=1, ecart=None, brut=None):
+        """PE-1 : `erp` dans ERPNext, `banque` encaissés ; PE-2 : 1 400 des deux côtés."""
+        t = {"paiement": "PE-1", "montant": banque, "montant_erp": erp, "etat": M.MONTANT_DIFFERENT,
+             "ecart_accepte": accepte, "ecart_montant": round(banque - erp, 3) if ecart is None else ecart}
+        brut = round(banque + 1400.0, 3) if brut is None else brut
+        return {"name": R6["name"], "brut": brut, "montant_credite": brut,
+                "controle": M.verdict([t, {"paiement": "PE-2", "montant": 1400.0, "etat": M.TROUVE}])["controle"],
+                "transactions": [t, {"paiement": "PE-2", "montant": 1400.0, "etat": M.TROUVE}]}
+
+    def test_la_banque_a_encaisse_moins_la_difference_va_en_perte(self):
+        comptes = {"perte": self.PERTE, "produit": None}
+        d = M.decider_ecriture(self.remise_ecart(), self.paiements(PE_1={"montant": 100.4}), self.ATTENTE, self.BANQUE, comptes)
+        self.assertTrue(d["faire"], d["raison"])
+        # la banque verse 1 500 ; le compte d'attente rend ce que les paiements y ont porte (1 500,400) ; 0,400 en perte
+        self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1500.0}, {"account": self.PERTE, "debit": 0.4},
+                                       {"account": self.ATTENTE, "credit": 1500.4}])
+        self.assertEqual((d["perte"], d["produit"]), (0.4, 0.0))
+        debit = round(sum(l.get("debit", 0) for l in d["lignes"]), 3)
+        self.assertEqual(debit, round(sum(l.get("credit", 0) for l in d["lignes"]), 3))
+
+    def test_sans_acceptation_la_remise_reste_a_signaler(self):
+        r = self.remise_ecart(accepte=0)
+        self.assertEqual(r["controle"], M.A_SIGNALER)
+        d = M.decider_ecriture(r, self.paiements(PE_1={"montant": 100.4}), self.ATTENTE, self.BANQUE, {"perte": self.PERTE})
+        self.assertFalse(d["faire"])
+        self.assertIn("1 transaction(s) sans paiement au bon montant", d["raison"])
+
+    def test_la_banque_a_encaisse_plus_il_faut_un_compte_de_produit(self):
+        r = self.remise_ecart(banque=100.0, erp=99.6)                     # la caisse a saisi 99,600, la carte a pris 100
+        paiements = self.paiements(PE_1={"montant": 99.6})
+        d = M.decider_ecriture(r, paiements, self.ATTENTE, self.BANQUE, {"perte": self.PERTE, "produit": None})
+        self.assertFalse(d["faire"])
+        self.assertIn("compte de produit", d["raison"])
+        d = M.decider_ecriture(r, paiements, self.ATTENTE, self.BANQUE, {"perte": self.PERTE, "produit": self.PRODUIT})
+        self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1500.0}, {"account": self.ATTENTE, "credit": 1499.6},
+                                       {"account": self.PRODUIT, "credit": 0.4}])
+        self.assertEqual((d["perte"], d["produit"]), (0.0, 0.4))
+
+    def test_l_acceptation_vaut_pour_l_ecart_vu_pas_pour_un_autre(self):
+        # accepté à −0,400 ; le paiement est ensuite passé à 101 : ce n'est plus l'écart accepté
+        t = {"paiement": "PE-1", "montant": 100.0, "montant_erp": 101.0, "etat": M.MONTANT_DIFFERENT, "ecart_accepte": 1, "ecart_montant": -0.4}
+        self.assertFalse(M.ecart_est_accepte(t))
+        self.assertTrue(M.ecart_est_accepte(dict(t, montant_erp=100.4)))
+        # même si la fiche n'a pas encore été relue, le paiement RÉEL fait foi au moment d'écrire
+        d = M.decider_ecriture(self.remise_ecart(brut=1500.0), self.paiements(PE_1={"montant": 101.0}), self.ATTENTE, self.BANQUE, {"perte": self.PERTE})
+        self.assertFalse(d["faire"])
+        self.assertIn("a changé de montant depuis que son écart a été accepté", d["raison"])
+        # un « Introuvable » ne s'accepte pas : aucun paiement n'a débité le compte d'attente
+        self.assertFalse(M.ecart_est_accepte({"paiement": None, "montant": 20.0, "etat": M.INTROUVABLE, "ecart_accepte": 1, "ecart_montant": 20.0}))
+
+    def test_ecart_accepte_avec_credit_du_net(self):
+        r = dict(self.remise_ecart(), montant_credite=1446.45)
+        d = M.decider_ecriture(r, self.paiements(PE_1={"montant": 100.4}), self.ATTENTE, self.BANQUE, {"perte": self.PERTE})
+        self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1446.45}, {"account": M.COMPTE_FRAIS, "debit": 53.55},
+                                       {"account": self.PERTE, "debit": 0.4}, {"account": self.ATTENTE, "credit": 1500.4}])
+
     def test_ligne_identifiee_par_son_ecriture(self):
         ligne = {"cle": "A", "date": "2026-11-17", "operation": CREDIT_TPE, "credit": 1500.0, "sens": "Credit", "montant": 1500.0}
         tpe = M.affecter(biat.candidats_tpe([ligne]), [R6B])

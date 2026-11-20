@@ -1068,8 +1068,26 @@ class IdentificationBancaire {
       background:${couleur}22;color:${couleur};white-space:nowrap">${texte}</span>`;
     const VERT = "#1e8449", ORANGE = "#b9770e", ROUGE = "#c0392b", GRIS = "#6c757d";
     const pct = (v) => format_number(v || 0, null, 2) + " %";
-    const transaction = (t) => {
-      const ok = t.etat === "Trouvé" || t.etat === "Trouvé par le montant";
+    // Écart de montant (20/11/2026) : la banque n'a pas encaissé le montant du paiement saisi. Il s'ACCEPTE ici —
+    // la différence part en perte (banque < ERPNext) ou en produit (banque > ERPNext) dans l'écriture de la
+    // remise — au lieu d'obliger à corriger le paiement. Un « Introuvable » ne s'accepte pas : rien en face.
+    const comptes = m.comptes_ecart || null;
+    const bloc_ecart = (t, r) => {
+      const ecart = flt(t.ecart, 3);
+      if (!comptes || !ecart || t.etat !== "Montant différent") return "";
+      const sens = ecart < 0 ? __("la banque a encaissé {0} de MOINS que le paiement", ["<b>" + nb(-ecart) + "</b>"])
+                             : __("la banque a encaissé {0} de PLUS que le paiement", ["<b>" + nb(ecart) + "</b>"]);
+      if (t.ecart_accepte) {
+        return `<div class="small" style="margin-top:3px;color:${VERT}">✔ ${__("Écart accepté")} — ${sens}
+          <span class="text-muted">(${esc(t.ecart_par || "")}${t.ecart_le ? ", " + jour(t.ecart_le) : ""} : ${esc(t.ecart_motif || "")})</span>
+          ${r.ecriture ? "" : `<a href="#" data-annuler-ecart="${esc(t.name)}" data-remise="${esc(r.name)}" style="margin-left:6px">${__("annuler")}</a>`}</div>`;
+      }
+      if (r.ecriture) return "";                       // déjà comptabilisée autrement : plus rien à accepter
+      return `<div class="small" style="margin-top:3px;color:${ROUGE}">${sens}
+        <button class="btn btn-xs btn-default" style="margin-left:6px" data-accepter-ecart="${esc(t.name)}" data-remise="${esc(r.name)}">${__("Accepter l’écart")}</button></div>`;
+    };
+    const transaction = (t, r) => {
+      const ok = t.etat === "Trouvé" || t.etat === "Trouvé par le montant" || !!t.ecart_accepte;
       const quoi = t.paiement
         ? `<a href="/app/payment-entry/${encodeURIComponent(t.paiement)}" target="_blank">${esc(t.client || t.paiement)}</a>`
         : `<b style="color:${ROUGE}">${__("aucun paiement dans ERPNext")}</b>`;
@@ -1078,6 +1096,7 @@ class IdentificationBancaire {
           <span class="text-muted small">· ${__("commission")} ${nb(t.commission)} (${pct(t.taux)})</span></div>
         <div class="small">${ok ? "✔" : "⚠"} ${quoi}${t.etat && t.etat !== "Trouvé" ? ` — ${esc(t.etat)}` : ""}
           ${t.remarque ? `<span class="text-muted"> (${esc(t.remarque)})</span>` : ""}</div>
+        ${bloc_ecart(t, r)}
       </div>`;
     };
     // Les frais : ce que la banque a RÉELLEMENT prélevé au relevé, et le taux que cela fait par rapport au
@@ -1121,7 +1140,7 @@ class IdentificationBancaire {
         ${frais(r)}
         ${compta(r)}
         ${r.a_signaler ? `<div class="small" style="color:${ROUGE};white-space:pre-line">${esc(r.a_signaler)}</div>` : ""}
-        ${(r.transactions || []).map(transaction).join("")}
+        ${(r.transactions || []).map((t) => transaction(t, r)).join("")}
         <div class="small" style="margin-top:6px">${pieces}</div>
       </div>`;
     };
@@ -1144,12 +1163,75 @@ class IdentificationBancaire {
       ${sans ? `<h6 style="margin-top:14px">${__("Paiements par carte saisis, pas encore au relevé de la banque")}</h6>${sans}` : ""}
     </div>`);
     d.set_primary_action(__("Relire les courriels de la banque"), () => this._cartes_biat(true));
+    d.$body.find("[data-accepter-ecart]").on("click", (e) => {
+      const b = $(e.currentTarget);
+      const r = (m.remises || []).find((x) => x.name === b.attr("data-remise"));
+      const t = r && (r.transactions || []).find((x) => x.name === b.attr("data-accepter-ecart"));
+      if (t) this._accepter_ecart_carte(r, t, comptes);
+    });
+    d.$body.find("[data-annuler-ecart]").on("click", (e) => {
+      e.preventDefault();
+      const b = $(e.currentTarget);
+      frappe.confirm(__("Revenir sur cet écart accepté ? La remise redevient « à signaler »."), async () => {
+        await frappe.call({ method: this._m("biat_carte_annuler_ecart"), type: "POST", freeze: true,
+                            args: { remise: b.attr("data-remise"), ligne: b.attr("data-annuler-ecart") } });
+        this._cartes_biat();
+      });
+    });
     d.show();
     if (relire) {
       // Le relevé BIAT vient d'être reclassé avec les remises nouvelles : le tableau et le bandeau suivent.
       this.load();
       this._load_solde_biat();
     }
+  }
+
+  /* Accepter l'écart d'une transaction carte : ce qui va se passer est dit AVANT, avec les montants et le compte. */
+  _accepter_ecart_carte(r, t, comptes) {
+    const esc = frappe.utils.escape_html;
+    const nb = (v) => format_number(v || 0, null, 3);
+    const ecart = flt(t.ecart, 3), moins = ecart < 0;
+    const compte = (comptes || {})[moins ? "perte" : "produit"];
+    const d = new frappe.ui.Dialog({
+      title: __("Accepter l’écart — remise n° {0}", [esc(r.remise || "")]),
+      fields: [
+        { fieldtype: "HTML", fieldname: "resume" },
+        { fieldtype: "Small Text", fieldname: "motif", label: __("Pourquoi cet écart est accepté"), reqd: 1 },
+      ],
+      primary_action_label: r.etat === "Créditée" ? __("Accepter et comptabiliser") : __("Accepter l’écart"),
+      primary_action: async (v) => {
+        let x;
+        try {
+          x = (await frappe.call({ method: this._m("biat_carte_accepter_ecart"), type: "POST", freeze: true,
+                                   args: { remise: r.name, ligne: t.name, motif: v.motif } })).message || {};
+        } catch (e) { return; }
+        d.hide();
+        const a = x.acceptation || {};
+        frappe.msgprint({
+          title: __("Écart accepté"),
+          indicator: a.ecriture ? "green" : "orange",
+          message: a.ecriture
+            ? __("Remise comptabilisée : écriture {0} ({1} en {2} sur {3}).", [esc(a.ecriture), nb(Math.abs(a.ecart)), esc(a.sens), esc(a.compte || "")])
+            : __("Écart accepté, mais la remise n’est pas encore comptabilisée : {0}.", [esc(a.raison || "—")]),
+        });
+        this._cartes_biat();
+        this.load();
+        this._load_solde_biat();
+      },
+    });
+    d.fields_dict.resume.$wrapper.html(`<div style="font-size:13px;margin-bottom:8px">
+      <div>${__("Paiement")} <a href="/app/payment-entry/${encodeURIComponent(t.paiement)}" target="_blank">${esc(t.paiement)}</a>${t.client ? " — " + esc(t.client) : ""}</div>
+      <div style="margin:6px 0">${__("Dans ERPNext")} : <b>${nb(t.montant_erp)}</b> · ${__("encaissé par la banque")} : <b>${nb(t.montant)}</b></div>
+      ${compte
+        ? `<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px 10px;color:#9a3412">
+             <b>${nb(Math.abs(ecart))}</b> ${moins ? __("iront en PERTE") : __("iront en PRODUIT")} ${__("sur le compte « {0} »", [esc(compte)])},
+             ${__("dans l’écriture de la remise. Le paiement n’est pas modifié : la commande du client reste réglée.")}</div>`
+        : `<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;color:#991b1b">
+             ${moins ? __("Aucun compte de perte n’est réglé pour les écarts de carte (Bank Retenue Sync Settings).")
+                     : __("La banque a encaissé PLUS que le paiement saisi, et aucun compte de produit n’est réglé pour ce cas (Bank Retenue Sync Settings). Corrigez plutôt le montant du paiement, ou réglez ce compte.")}</div>`}
+    </div>`);
+    if (!compte) d.get_primary_btn().prop("disabled", true);
+    d.show();
   }
 
   _render_solde() {

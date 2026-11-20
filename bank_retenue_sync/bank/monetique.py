@@ -77,6 +77,11 @@ SETTINGS = "Bank Retenue Sync Settings"
 CHAMP_COMPTE_ATTENTE = "compte_cartes_attente"
 NOM_COMPTE_ATTENTE = "Cartes à encaisser"
 COMPTE_FRAIS = "Frais bancaire - A&S"
+#: Ecart de carte ACCEPTE (20/11/2026) : ou va la difference entre ce que la banque a encaisse et le paiement saisi.
+CHAMP_COMPTE_PERTE = "compte_ecart_cartes_perte"        # la banque a encaisse MOINS : une perte
+CHAMP_COMPTE_PRODUIT = "compte_ecart_cartes_produit"    # la banque a encaisse PLUS : un produit (vide = refuse)
+COMPTE_PERTE_DEFAUT = "Perte de non paiement - A&S"
+MOTIF_MIN = 5
 #: Pose par le patch `cartes_compte_attente` : les paiements par carte saisis AVANT la regle (sur un compte de
 #: banque) sont ramenes une fois au compte d'attente, au premier passage.
 CLE_RAPATRIER = "brs_cartes_a_rapatrier"
@@ -455,6 +460,19 @@ def _nombre(valeur) -> str:
     return f"{_m(valeur):,.3f}".replace(",", " ").replace(".", ",")
 
 
+def ecart_de(t: dict) -> float:
+    """Banque − ERPNext pour une transaction dont le paiement est designe : negatif = la banque a encaisse moins. Pur."""
+    return _m(_m(t.get("montant")) - _m(t.get("montant_erp")))
+
+
+def ecart_est_accepte(t: dict) -> bool:
+    """Demande du 20/11/2026 (« comment accepter l'ecart et le comptabiliser ») : une transaction « Montant
+    différent » dont quelqu'un a ACCEPTE l'ecart compte comme rapprochee. L'acceptation vaut pour l'ecart qu'il a
+    vu : si le paiement ou la transaction change de montant ensuite, elle tombe et la ligne redevient a signaler. Pur."""
+    return (t.get("etat") == MONTANT_DIFFERENT and bool(t.get("paiement")) and bool(int(t.get("ecart_accepte") or 0))
+            and abs(_m(t.get("ecart_montant")) - ecart_de(t)) <= TOLERANCE)
+
+
 def verdict(transactions: list, anomalies=()) -> dict:
     """Le verdict d'une remise, pour un ecran qui dit une seule chose (« Tout est bon » / « À signaler »).
     `transactions` : les lignes avec leur `etat`. -> {controle, a_signaler: [phrases]}."""
@@ -465,7 +483,7 @@ def verdict(transactions: list, anomalies=()) -> dict:
         quoi = f"Carte du {_jour_fr(t.get('date_achat'))} de {_nombre(t.get('montant'))} (autorisation {t.get('autorisation')})"
         if t.get("etat") == INTROUVABLE:
             phrases.append(f"{quoi} : {t.get('remarque') or 'aucun paiement dans ERPNext'}.")
-        elif t.get("etat") == MONTANT_DIFFERENT:
+        elif t.get("etat") == MONTANT_DIFFERENT and not ecart_est_accepte(t):
             phrases.append(f"{quoi} : montant différent du paiement {t.get('paiement')} ({_nombre(t.get('montant_erp'))} dans ERPNext).")
     return {"controle": A_SIGNALER if phrases else BON, "a_signaler": phrases}
 
@@ -668,27 +686,37 @@ def raison_prelevement(montant, trouve: dict | None, brut=None) -> str:
     return phrase
 
 
-def decider_ecriture(remise: dict, paiements: dict, attente: str, banque: str) -> dict:
+def decider_ecriture(remise: dict, paiements: dict, attente: str, banque: str, comptes_ecart: dict = None) -> dict:
     """Faut-il passer l'ecriture d'une remise creditee, et laquelle ? Pur.
 
-    `remise` : {name, brut, montant_credite, controle, transactions: [{paiement, montant, etat}]} ;
+    `remise` : {name, brut, montant_credite, controle, transactions: [{paiement, montant, etat, …}]} ;
     `paiements` : {name: {docstatus, compte, montant}} — l'etat ACTUEL des paiements designes ;
-    `attente` : le compte d'attente des cartes ; `banque` : le compte de la banque.
-    -> {faire, raison, lignes: [{account, debit|credit}], frais}
+    `attente` : le compte d'attente des cartes ; `banque` : le compte de la banque ;
+    `comptes_ecart` : {"perte", "produit"} — ou vont les ecarts ACCEPTES (`ecart_est_accepte`).
+    -> {faire, raison, lignes: [{account, debit|credit}], frais, perte, produit}
 
-    On ne comptabilise que ce qui est certain : toutes les transactions ont leur paiement, au bon montant,
-    soumis, ET sur le compte d'attente — sinon l'ecriture crediterait un compte que le paiement n'a jamais
-    debite. Tout refus dit pourquoi ; la remise reste visible, « pas comptabilisée »."""
-    non = lambda raison: {"faire": False, "raison": raison, "lignes": [], "frais": 0.0}   # noqa: E731
+    On ne comptabilise que ce qui est certain : toutes les transactions ont leur paiement, au bon montant (ou
+    avec un ecart que quelqu'un a accepte), soumis, ET sur le compte d'attente — sinon l'ecriture crediterait un
+    compte que le paiement n'a jamais debite. Tout refus dit pourquoi ; la remise reste visible, « pas
+    comptabilisée ».
+
+    Avec un ecart accepte, le compte d'attente est credite de ce que les PAIEMENTS y ont porte, et la difference
+    avec le brut de la banque va en perte (la banque a encaisse moins) ou en produit (elle a encaisse plus) :
+        Dr banque (credite)  Dr frais (brut − credite)  Dr perte        Cr attente (paiements)  Cr produit"""
+    non = lambda raison: {"faire": False, "raison": raison, "lignes": [], "frais": 0.0, "perte": 0.0, "produit": 0.0}   # noqa: E731
     if not attente:
         return non("le compte d’attente des cartes n’est pas réglé (Bank Retenue Sync Settings)")
+    comptes_ecart = comptes_ecart or {}
     brut, credite = _m(remise.get("brut")), _m(remise.get("montant_credite"))
     transactions = remise.get("transactions") or []
-    if remise.get("controle") != BON or not transactions:
-        manquantes = len([t for t in transactions if t.get("etat") not in (TROUVE, TROUVE_MONTANT)])
-        return non(f"{manquantes} transaction(s) sans paiement au bon montant dans ERPNext : voir la fiche" if manquantes
-                   else "le relevé des transactions n’est pas encore arrivé par courriel")
-    total = 0.0
+    bonne = lambda t: t.get("etat") in (TROUVE, TROUVE_MONTANT) or ecart_est_accepte(t)   # noqa: E731
+    manquantes = len([t for t in transactions if not bonne(t)])
+    if manquantes or remise.get("controle") != BON or not transactions:
+        if manquantes:
+            return non(f"{manquantes} transaction(s) sans paiement au bon montant dans ERPNext : voir la fiche")
+        return non("le relevé des transactions n’est pas encore arrivé par courriel" if not transactions
+                   else "la remise est « à signaler » : voir la fiche")
+    total, perte, produit = 0.0, 0.0, 0.0
     for t in transactions:
         p = paiements.get(t.get("paiement")) or {}
         if int(p.get("docstatus") or 0) != 1:
@@ -696,16 +724,31 @@ def decider_ecriture(remise: dict, paiements: dict, attente: str, banque: str) -
         if p.get("compte") != attente:
             return non(f"le paiement {t.get('paiement')} n’est pas sur le compte d’attente des cartes (il est sur {p.get('compte')})")
         total = _m(total + _m(p.get("montant")))
-    if abs(total - brut) > TOLERANCE:
+        if ecart_est_accepte(t):
+            # l'ecart accepte est celui du paiement TEL QU'IL EST aujourd'hui, pas d'un montant retenu ailleurs
+            ecart = _m(_m(t.get("montant")) - _m(p.get("montant")))
+            if abs(ecart - _m(t.get("ecart_montant"))) > TOLERANCE:
+                return non(f"le paiement {t.get('paiement')} a changé de montant depuis que son écart a été accepté : voir la fiche")
+            perte, produit = _m(perte + max(-ecart, 0.0)), _m(produit + max(ecart, 0.0))
+    if abs(_m(total - perte + produit) - brut) > TOLERANCE:
         return non(f"les paiements font {_nombre(total)}, la remise {_nombre(brut)}")
+    if perte > TOLERANCE and not comptes_ecart.get("perte"):
+        return non("le compte de perte des écarts de carte n’est pas réglé (Bank Retenue Sync Settings)")
+    if produit > TOLERANCE and not comptes_ecart.get("produit"):
+        return non("le compte de produit des écarts de carte n’est pas réglé (Bank Retenue Sync Settings)")
     if credite <= 0 or credite > brut + TOLERANCE:
         return non(f"montant crédité incohérent ({_nombre(credite)} pour un brut de {_nombre(brut)})")
     frais = _m(brut - credite) if brut - credite > TOLERANCE else 0.0
     lignes = [{"account": banque, "debit": credite}]
     if frais:
         lignes.append({"account": COMPTE_FRAIS, "debit": frais})
-    lignes.append({"account": attente, "credit": brut})
-    return {"faire": True, "raison": "", "lignes": lignes, "frais": frais}
+    if perte > TOLERANCE:
+        lignes.append({"account": comptes_ecart["perte"], "debit": perte})
+    lignes.append({"account": attente, "credit": total})
+    if produit > TOLERANCE:
+        lignes.append({"account": comptes_ecart["produit"], "credit": produit})
+    return {"faire": True, "raison": "", "lignes": lignes, "frais": frais,
+            "perte": perte if perte > TOLERANCE else 0.0, "produit": produit if produit > TOLERANCE else 0.0}
 
 
 def resume_remises(remises: list, sans_releve: list = (), aujourd_hui=None) -> dict:
@@ -918,6 +961,9 @@ def rapprocher(nom: str) -> dict:
                                max(jours) + datetime.timedelta(days=4 * FENETRE_PAIEMENT))
         for ligne, reponse in zip(doc.transactions, rapprocher_transactions(transactions, paiements, _pris_ailleurs(nom))):
             ligne.update(reponse)
+            if int(ligne.get("ecart_accepte") or 0) and not ecart_est_accepte(ligne.as_dict()):
+                # le paiement a ete corrige, ou son montant a change : l'ecart accepte n'est plus celui-la
+                ligne.update({"ecart_accepte": 0, "ecart_montant": 0, "ecart_motif": "", "ecart_par": "", "ecart_le": None})
     avis = verdict([t.as_dict() for t in doc.get("transactions") or []],
                    [a for a in (doc.get("lecture_anomalies") or "").split("\n") if a.strip()])
     doc.controle = avis["controle"]
@@ -1071,6 +1117,19 @@ def compte_attente() -> str | None:
     return compte if compte and facturation_prete(compte) else None
 
 
+def comptes_ecart() -> dict:
+    """{"perte", "produit"} : les comptes regles pour les ecarts de carte acceptes (None si non regle ou disparu)."""
+    import frappe
+
+    out = {}
+    for cle, champ in (("perte", CHAMP_COMPTE_PERTE), ("produit", CHAMP_COMPTE_PRODUIT)):
+        compte = None
+        if frappe.get_meta(SETTINGS).has_field(champ):
+            compte = frappe.db.get_single_value(SETTINGS, champ) or None
+        out[cle] = compte if compte and frappe.db.exists("Account", {"name": compte, "is_group": 0}) else None
+    return out
+
+
 SCRIPT_FACTURATION = "Facturation Auto"
 
 
@@ -1194,6 +1253,7 @@ def comptabiliser(insert: bool = True) -> dict:
     if not attente or not pret() or not frappe.db.has_column(DOCTYPE, "ecriture"):
         return out
     banque = biat.compte()
+    ecarts = comptes_ecart()
     centre = frappe.db.get_value("Company", COMPANY, "cost_center")
     for nom in frappe.db.get_all(DOCTYPE, filters={"banque": BANQUE, "etat": ETAT_CREDITEE, "ecriture": ["is", "not set"]},
                                  order_by="date_traitement asc, remise asc", pluck="name"):
@@ -1208,19 +1268,26 @@ def comptabiliser(insert: bool = True) -> dict:
             etats = {p.name: {"docstatus": p.docstatus, "compte": p.paid_to, "montant": p.paid_amount}
                      for p in frappe.db.get_all("Payment Entry", filters={"name": ["in", noms or [""]]},
                                                 fields=["name", "docstatus", "paid_to", "paid_amount"])}
-            decision = decider_ecriture(dict(doc.as_dict(), transactions=transactions), etats, attente, banque)
+            decision = decider_ecriture(dict(doc.as_dict(), transactions=transactions), etats, attente, banque, ecarts)
             if not decision["faire"]:
                 out["refus"][nom] = decision["raison"]
                 if (doc.comptabilisation or "") != decision["raison"]:
                     frappe.db.set_value(DOCTYPE, nom, "comptabilisation", decision["raison"])
                 continue
             jour = fees.date_ecriture(doc.date_credit or doc.date_traitement)
-            lignes = [dict(l, cost_center=centre) if l["account"] == COMPTE_FRAIS else l for l in decision["lignes"]]
+            # frais, perte et produit sont des comptes de resultat : ils portent le centre de cout de la societe
+            lignes = [dict(l, cost_center=centre) if l["account"] not in (banque, attente) else l for l in decision["lignes"]]
             detail = (f"Remise carte (terminal de paiement) n° {doc.remise}, traitée par la banque le {_jour_fr(doc.date_traitement)}"
                       f" : {len(transactions)} paiement(s) par carte, brut {_nombre(doc.brut)}, crédité {_nombre(doc.montant_credite)}"
                       f" le {_jour_fr(doc.date_credit)}.\nPaiements : " + ", ".join(noms)
                       + (f"\nFrais retenus par la banque sur le crédit : {_nombre(decision['frais'])}" if decision["frais"] else
                          "\nLa commission est prélevée à part par la banque : elle est dans l’écriture mensuelle des frais BIAT."))
+            acceptes = [t for t in transactions if ecart_est_accepte(t)]
+            if acceptes:
+                detail += "\nÉcart(s) accepté(s) : " + " ; ".join(
+                    "%s — banque %s, ERPNext %s, %s par %s" % (t.get("paiement"), _nombre(t.get("montant")), _nombre(t.get("montant_erp")),
+                                                              (t.get("ecart_motif") or "").strip(), t.get("ecart_par") or "?")
+                    for t in acceptes)
             je = journal.build_journal_entry(COMPANY, jour, lignes, remark=f"{nom}\n{detail}", cheque_no=nom, cheque_date=jour)
             soumise = False
             if insert:
@@ -1235,6 +1302,78 @@ def comptabiliser(insert: bool = True) -> dict:
             frappe.log_error(title="Cartes : écriture de la remise %s" % nom, message=frappe.get_traceback())
             out["erreurs"].append({"erreur": f"remise {nom} : {str(e)[:160]}"})
     return out
+
+
+def accepter_ecart(remise: str, ligne: str, motif: str) -> dict:
+    """Quelqu'un ACCEPTE l'ecart d'une transaction « Montant différent » : la banque n'a pas encaisse le montant du
+    paiement saisi, et on ne corrigera pas le paiement. L'ecart ira en perte (banque < ERPNext) ou en produit
+    (banque > ERPNext) dans l'ecriture de la remise, passee aussitot si la banque l'a deja creditee.
+    Une transaction « Introuvable » ne s'accepte pas : aucun paiement n'a debite le compte d'attente.
+    -> {remise, ecart, sens, controle, ecriture, raison}"""
+    import frappe
+
+    motif = (motif or "").strip()
+    if len(motif) < MOTIF_MIN:
+        frappe.throw("Dites en quelques mots pourquoi l’écart est accepté.")
+    doc = frappe.get_doc(DOCTYPE, remise)
+    if doc.get("ecriture"):
+        frappe.throw(f"La remise {remise} est déjà comptabilisée ({doc.ecriture}).")
+    t = next((x for x in doc.get("transactions") or [] if x.name == ligne), None)
+    if not t:
+        frappe.throw("Transaction introuvable sur cette remise.")
+    if t.etat != MONTANT_DIFFERENT or not t.paiement:
+        frappe.throw("Seul un écart de MONTANT s’accepte : cette transaction est « %s ». Sans paiement en face, "
+                     "il faut d’abord saisir le paiement par carte." % (t.etat or "sans état"))
+    actuel = frappe.db.get_value("Payment Entry", t.paiement, ["docstatus", "paid_amount"], as_dict=True)
+    if not actuel or actuel.docstatus != 1:
+        frappe.throw(f"Le paiement {t.paiement} n’est plus validé.")
+    t.montant_erp = _m(actuel.paid_amount)
+    ecart = ecart_de(t.as_dict())
+    if abs(ecart) <= TOLERANCE:
+        frappe.throw("Il n’y a plus d’écart : relancez la reconnaissance, la remise se comptabilisera seule.")
+    comptes = comptes_ecart()
+    sens = "perte" if ecart < 0 else "produit"
+    if not comptes.get(sens):
+        frappe.throw("La banque a encaissé MOINS que le paiement : réglez d’abord le compte de perte des écarts de carte "
+                     "(Bank Retenue Sync Settings)." if sens == "perte" else
+                     "La banque a encaissé PLUS que le paiement saisi. Aucun compte de produit n’est réglé pour ce cas "
+                     "(Bank Retenue Sync Settings) : corrigez plutôt le montant du paiement, ou réglez ce compte.")
+    qui = frappe.utils.get_fullname(frappe.session.user)
+    t.update({"ecart_accepte": 1, "ecart_montant": ecart, "ecart_motif": motif[:500], "ecart_par": qui[:140],
+              "ecart_le": frappe.utils.now_datetime()})
+    avis = verdict([x.as_dict() for x in doc.transactions],
+                   [a for a in (doc.get("lecture_anomalies") or "").split("\n") if a.strip()])
+    doc.controle, doc.a_signaler = avis["controle"], "\n".join(avis["a_signaler"])
+    doc.flags.ignore_permissions = True
+    doc.save()
+    doc.add_comment("Info", "Écart accepté sur le paiement %s : %s à la banque, %s dans ERPNext → %s en %s (%s). Motif : %s — %s"
+                    % (t.paiement, _nombre(t.montant), _nombre(t.montant_erp), _nombre(abs(ecart)), sens, comptes[sens], motif, qui))
+    bilan = comptabiliser() if doc.etat == ETAT_CREDITEE else {"ecritures": [], "refus": {}}
+    ecriture = next((e["je"] for e in bilan.get("ecritures") or [] if e["remise"] == remise), None)
+    return {"remise": remise, "ecart": ecart, "sens": sens, "compte": comptes[sens], "controle": doc.controle,
+            "ecriture": ecriture, "raison": (bilan.get("refus") or {}).get(remise) or
+            ("" if ecriture else "la banque n’a pas encore crédité cette remise : l’écriture se passera à ce moment-là"
+             if doc.etat != ETAT_CREDITEE else "")}
+
+
+def annuler_ecart(remise: str, ligne: str) -> dict:
+    """Revient sur un ecart accepte, tant que la remise n'est pas comptabilisee."""
+    import frappe
+
+    doc = frappe.get_doc(DOCTYPE, remise)
+    if doc.get("ecriture"):
+        frappe.throw(f"La remise {remise} est déjà comptabilisée ({doc.ecriture}) : annulez d’abord cette écriture.")
+    t = next((x for x in doc.get("transactions") or [] if x.name == ligne), None)
+    if not t or not int(t.get("ecart_accepte") or 0):
+        frappe.throw("Aucun écart accepté sur cette transaction.")
+    t.update({"ecart_accepte": 0, "ecart_montant": 0, "ecart_motif": "", "ecart_par": "", "ecart_le": None})
+    avis = verdict([x.as_dict() for x in doc.transactions],
+                   [a for a in (doc.get("lecture_anomalies") or "").split("\n") if a.strip()])
+    doc.controle, doc.a_signaler = avis["controle"], "\n".join(avis["a_signaler"])
+    doc.flags.ignore_permissions = True
+    doc.save()
+    doc.add_comment("Info", "Écart du paiement %s : acceptation annulée par %s" % (t.paiement, frappe.utils.get_fullname(frappe.session.user)))
+    return {"remise": remise, "controle": doc.controle}
 
 
 def paiements_sans_releve() -> list:
@@ -1275,8 +1414,10 @@ def tableau(limite: int = 40) -> dict:
                                      if frappe.db.has_column(DOCTYPE, "ecriture") else []))
     lignes = frappe.db.get_all(
         DOCTYPE_TRANSACTION, filters={"parent": ["in", [r.name for r in remises] or [""]]}, order_by="parent, idx",
-        fields=["parent", "date_achat", "montant", "commission", "carte", "autorisation", "etat", "paiement", "client",
-                "montant_erp", "remarque"], limit_page_length=0)
+        fields=["name", "parent", "date_achat", "montant", "commission", "carte", "autorisation", "etat", "paiement", "client",
+                "montant_erp", "remarque"]
+        + (["ecart_accepte", "ecart_montant", "ecart_motif", "ecart_par", "ecart_le"]
+           if frappe.db.has_column(DOCTYPE_TRANSACTION, "ecart_accepte") else []), limit_page_length=0)
     par_remise = {}
     for l in lignes:
         par_remise.setdefault(l.parent, []).append(l)
@@ -1284,6 +1425,8 @@ def tableau(limite: int = 40) -> dict:
         r["transactions"] = par_remise.get(r.name, [])
         for t in r["transactions"]:
             t["taux"] = taux(t.commission, t.montant)                 # commission annoncee / montant de la transaction
+            t["ecart"] = ecart_de(t) if t.etat == MONTANT_DIFFERENT and t.paiement else 0.0
+            t["ecart_accepte"] = 1 if ecart_est_accepte(t) else 0
         r["taux_annonce"] = taux(_m(r.commission) + _m(r.tva), r.brut)
         r["taux_commission"] = taux(r.commission, r.brut)
     attente = compte_attente()
@@ -1292,7 +1435,8 @@ def tableau(limite: int = 40) -> dict:
         solde = _m(frappe.db.sql("select ifnull(sum(debit - credit), 0) from `tabGL Entry` where account = %s and is_cancelled = 0",
                                  (attente,))[0][0])
     return {"pret": True, "remises": remises, "sans_releve": paiements_sans_releve(), "resume": resume(),
-            "compte_attente": attente, "solde_attente": solde}
+            "compte_attente": attente, "solde_attente": solde,
+            "comptes_ecart": comptes_ecart() if frappe.db.has_column(DOCTYPE_TRANSACTION, "ecart_accepte") else None}
 
 
 def resume() -> dict:

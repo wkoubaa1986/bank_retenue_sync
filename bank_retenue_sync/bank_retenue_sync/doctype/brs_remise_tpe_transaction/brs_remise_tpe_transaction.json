@@ -17,7 +17,13 @@
   "paiement",
   "client",
   "montant_erp",
-  "remarque"
+  "remarque",
+  "section_ecart",
+  "ecart_accepte",
+  "ecart_montant",
+  "ecart_motif",
+  "ecart_par",
+  "ecart_le"
  ],
  "fields": [
   {
@@ -112,12 +118,49 @@
    "in_list_view": 1,
    "columns": 1,
    "read_only": 1
+  },
+  {
+   "fieldname": "section_ecart",
+   "fieldtype": "Section Break",
+   "label": "Écart accepté"
+  },
+  {
+   "default": "0",
+   "fieldname": "ecart_accepte",
+   "fieldtype": "Check",
+   "label": "Écart accepté",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ecart_montant",
+   "fieldtype": "Currency",
+   "label": "Écart accepté (banque − ERPNext)",
+   "read_only": 1,
+   "description": "Négatif : la banque a encaissé moins que le paiement saisi (perte). Positif : elle a encaissé plus (produit)."
+  },
+  {
+   "fieldname": "ecart_motif",
+   "fieldtype": "Small Text",
+   "label": "Motif de l’écart",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ecart_par",
+   "fieldtype": "Data",
+   "label": "Accepté par",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ecart_le",
+   "fieldtype": "Datetime",
+   "label": "Accepté le",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-11-17 14:00:00.000000",
+ "modified": "2026-11-20 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Remise TPE Transaction",

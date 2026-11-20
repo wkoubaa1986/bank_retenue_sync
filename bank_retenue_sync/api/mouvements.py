@@ -248,6 +248,32 @@ def biat_cartes_relire() -> dict:
     return out
 
 
+@frappe.whitelist(methods=["POST"])
+def biat_carte_accepter_ecart(remise, ligne, motif) -> dict:
+    """Accepte l'ecart d'une transaction carte « Montant différent » (la banque n'a pas encaisse le montant du
+    paiement saisi) : la difference ira en perte ou en produit dans l'ecriture de la remise, passee aussitot si la
+    banque l'a creditee. Rend le tableau des cartes a jour, avec le bilan de l'acceptation."""
+    _guard(write=True)
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.bank import biat, monetique
+    bilan = monetique.accepter_ecart(remise, ligne, motif)
+    if bilan.get("ecriture"):
+        biat.classer_registre(persist=True)             # la ligne du releve passe « Identifié » avec son ecriture
+    out = monetique.tableau()
+    out["acceptation"] = bilan
+    return out
+
+
+@frappe.whitelist(methods=["POST"])
+def biat_carte_annuler_ecart(remise, ligne) -> dict:
+    """Revient sur un ecart accepte, tant que la remise n'est pas comptabilisee."""
+    _guard(write=True)
+    frappe.only_for(("System Manager", "Accounts Manager"))
+    from bank_retenue_sync.bank import monetique
+    monetique.annuler_ecart(remise, ligne)
+    return monetique.tableau()
+
+
 @frappe.whitelist()
 def biat_cheques_pour_remise(cle) -> dict:
     """Remise de cheques BIAT sans bordereau : les cheques du portefeuille, et ceux que le montant designe."""

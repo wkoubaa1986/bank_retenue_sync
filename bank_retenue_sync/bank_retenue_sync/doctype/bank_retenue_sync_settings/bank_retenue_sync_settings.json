@@ -82,6 +82,8 @@
   "column_break_bordereaux",
   "biat_robot_actif",
   "compte_cartes_attente",
+  "compte_ecart_cartes_perte",
+  "compte_ecart_cartes_produit",
   "majoration_carte_taux",
   "majoration_carte_arrondi",
   "majoration_carte_arrondi_sens"
@@ -588,6 +590,20 @@
    "description": "Un paiement reçu par carte y est porté au lieu d’aller directement en banque ; quand la banque crédite la remise du terminal, l’écriture solde ce compte. Vide : les paiements par carte restent où l’écran les pose et aucune remise n’est comptabilisée."
   },
   {
+   "fieldname": "compte_ecart_cartes_perte",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Écart de carte accepté : compte de perte",
+   "description": "Quand la banque a encaissé MOINS que le paiement saisi et que l’écart est accepté sur la fiche de la remise, la différence est portée ici."
+  },
+  {
+   "fieldname": "compte_ecart_cartes_produit",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Écart de carte accepté : compte de produit",
+   "description": "Quand la banque a encaissé PLUS que le paiement saisi. Vide : un tel écart ne peut pas être accepté, il faut corriger le paiement."
+  },
+  {
    "fieldname": "majoration_carte_taux",
    "fieldtype": "Percent",
    "label": "Majoration du prix pour un paiement par carte (%)",
@@ -613,7 +629,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-18 20:00:00.000000",
+ "modified": "2026-11-20 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",
