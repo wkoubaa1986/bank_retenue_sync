@@ -79,7 +79,10 @@ NOM_COMPTE_ATTENTE = "Cartes à encaisser"
 COMPTE_FRAIS = "Frais bancaire - A&S"
 #: Ecart de carte ACCEPTE (20/11/2026) : ou va la difference entre ce que la banque a encaisse et le paiement saisi.
 CHAMP_COMPTE_PERTE = "compte_ecart_cartes_perte"        # la banque a encaisse MOINS : une perte
-CHAMP_COMPTE_PRODUIT = "compte_ecart_cartes_produit"    # la banque a encaisse PLUS : un produit (vide = refuse)
+CHAMP_COMPTE_PRODUIT = "compte_ecart_cartes_produit"    # la banque a encaisse PLUS : le compte CREDITE (vide = refuse)
+#: Decision du 20/11/2026 : les deux sens vont sur le meme compte — au DEBIT quand la banque a encaisse moins, au
+#: CREDIT quand elle a encaisse plus (« ajoute ca dans perte de non paiement mais en credit »). Le compte porte ainsi
+#: le solde net des ecarts de carte acceptes.
 COMPTE_PERTE_DEFAUT = "Perte de non paiement - A&S"
 MOTIF_MIN = 5
 #: Pose par le patch `cartes_compte_attente` : les paiements par carte saisis AVANT la regle (sur un compte de
@@ -735,7 +738,7 @@ def decider_ecriture(remise: dict, paiements: dict, attente: str, banque: str, c
     if perte > TOLERANCE and not comptes_ecart.get("perte"):
         return non("le compte de perte des écarts de carte n’est pas réglé (Bank Retenue Sync Settings)")
     if produit > TOLERANCE and not comptes_ecart.get("produit"):
-        return non("le compte de produit des écarts de carte n’est pas réglé (Bank Retenue Sync Settings)")
+        return non("le compte à créditer pour les écarts de carte n’est pas réglé (Bank Retenue Sync Settings)")
     if credite <= 0 or credite > brut + TOLERANCE:
         return non(f"montant crédité incohérent ({_nombre(credite)} pour un brut de {_nombre(brut)})")
     frais = _m(brut - credite) if brut - credite > TOLERANCE else 0.0
@@ -1336,7 +1339,7 @@ def accepter_ecart(remise: str, ligne: str, motif: str) -> dict:
     if not comptes.get(sens):
         frappe.throw("La banque a encaissé MOINS que le paiement : réglez d’abord le compte de perte des écarts de carte "
                      "(Bank Retenue Sync Settings)." if sens == "perte" else
-                     "La banque a encaissé PLUS que le paiement saisi. Aucun compte de produit n’est réglé pour ce cas "
+                     "La banque a encaissé PLUS que le paiement saisi. Aucun compte à créditer n’est réglé pour ce cas "
                      "(Bank Retenue Sync Settings) : corrigez plutôt le montant du paiement, ou réglez ce compte.")
     qui = frappe.utils.get_fullname(frappe.session.user)
     t.update({"ecart_accepte": 1, "ecart_montant": ecart, "ecart_motif": motif[:500], "ecart_par": qui[:140],
@@ -1346,8 +1349,9 @@ def accepter_ecart(remise: str, ligne: str, motif: str) -> dict:
     doc.controle, doc.a_signaler = avis["controle"], "\n".join(avis["a_signaler"])
     doc.flags.ignore_permissions = True
     doc.save()
-    doc.add_comment("Info", "Écart accepté sur le paiement %s : %s à la banque, %s dans ERPNext → %s en %s (%s). Motif : %s — %s"
-                    % (t.paiement, _nombre(t.montant), _nombre(t.montant_erp), _nombre(abs(ecart)), sens, comptes[sens], motif, qui))
+    doc.add_comment("Info", "Écart accepté sur le paiement %s : %s à la banque, %s dans ERPNext → %s au %s de « %s ». Motif : %s — %s"
+                    % (t.paiement, _nombre(t.montant), _nombre(t.montant_erp), _nombre(abs(ecart)),
+                       "débit" if sens == "perte" else "crédit", comptes[sens], motif, qui))
     bilan = comptabiliser() if doc.etat == ETAT_CREDITEE else {"ecritures": [], "refus": {}}
     ecriture = next((e["je"] for e in bilan.get("ecritures") or [] if e["remise"] == remise), None)
     return {"remise": remise, "ecart": ecart, "sens": sens, "compte": comptes[sens], "controle": doc.controle,

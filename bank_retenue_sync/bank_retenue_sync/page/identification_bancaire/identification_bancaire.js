@@ -1211,7 +1211,7 @@ class IdentificationBancaire {
           title: __("Écart accepté"),
           indicator: a.ecriture ? "green" : "orange",
           message: a.ecriture
-            ? __("Remise comptabilisée : écriture {0} ({1} en {2} sur {3}).", [esc(a.ecriture), nb(Math.abs(a.ecart)), esc(a.sens), esc(a.compte || "")])
+            ? __("Remise comptabilisée : écriture {0} ({1} au {2} de « {3} »).", [esc(a.ecriture), nb(Math.abs(a.ecart)), a.sens === "perte" ? __("débit") : __("crédit"), esc(a.compte || "")])
             : __("Écart accepté, mais la remise n’est pas encore comptabilisée : {0}.", [esc(a.raison || "—")]),
         });
         this._cartes_biat();
@@ -1224,11 +1224,11 @@ class IdentificationBancaire {
       <div style="margin:6px 0">${__("Dans ERPNext")} : <b>${nb(t.montant_erp)}</b> · ${__("encaissé par la banque")} : <b>${nb(t.montant)}</b></div>
       ${compte
         ? `<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px 10px;color:#9a3412">
-             <b>${nb(Math.abs(ecart))}</b> ${moins ? __("iront en PERTE") : __("iront en PRODUIT")} ${__("sur le compte « {0} »", [esc(compte)])},
+             <b>${nb(Math.abs(ecart))}</b> ${moins ? __("iront au DÉBIT (perte)") : __("iront au CRÉDIT")} ${__("du compte « {0} »", [esc(compte)])},
              ${__("dans l’écriture de la remise. Le paiement n’est pas modifié : la commande du client reste réglée.")}</div>`
         : `<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;color:#991b1b">
              ${moins ? __("Aucun compte de perte n’est réglé pour les écarts de carte (Bank Retenue Sync Settings).")
-                     : __("La banque a encaissé PLUS que le paiement saisi, et aucun compte de produit n’est réglé pour ce cas (Bank Retenue Sync Settings). Corrigez plutôt le montant du paiement, ou réglez ce compte.")}</div>`}
+                     : __("La banque a encaissé PLUS que le paiement saisi, et aucun compte à créditer n’est réglé pour ce cas (Bank Retenue Sync Settings). Corrigez plutôt le montant du paiement, ou réglez ce compte.")}</div>`}
     </div>`);
     if (!compte) d.get_primary_btn().prop("disabled", true);
     d.show();

@@ -593,15 +593,15 @@
    "fieldname": "compte_ecart_cartes_perte",
    "fieldtype": "Link",
    "options": "Account",
-   "label": "Écart de carte accepté : compte de perte",
-   "description": "Quand la banque a encaissé MOINS que le paiement saisi et que l’écart est accepté sur la fiche de la remise, la différence est portée ici."
+   "label": "Écart de carte accepté : compte débité (la banque a encaissé moins)",
+   "description": "Quand la banque a encaissé MOINS que le paiement saisi et que l’écart est accepté sur la remise, la différence est portée au débit de ce compte."
   },
   {
    "fieldname": "compte_ecart_cartes_produit",
    "fieldtype": "Link",
    "options": "Account",
-   "label": "Écart de carte accepté : compte de produit",
-   "description": "Quand la banque a encaissé PLUS que le paiement saisi. Vide : un tel écart ne peut pas être accepté, il faut corriger le paiement."
+   "label": "Écart de carte accepté : compte crédité (la banque a encaissé plus)",
+   "description": "Quand la banque a encaissé PLUS que le paiement saisi, la différence est portée au crédit de ce compte — le même que ci-dessus par défaut, qui porte alors le solde net des écarts. Vide : un tel écart ne peut pas être accepté."
   },
   {
    "fieldname": "majoration_carte_taux",
@@ -629,7 +629,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-11-20 20:00:00.000000",
+ "modified": "2026-11-20 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "Bank Retenue Sync Settings",

@@ -457,11 +457,21 @@ class TestEcritureDeLaRemise(unittest.TestCase):
         paiements = self.paiements(PE_1={"montant": 99.6})
         d = M.decider_ecriture(r, paiements, self.ATTENTE, self.BANQUE, {"perte": self.PERTE, "produit": None})
         self.assertFalse(d["faire"])
-        self.assertIn("compte de produit", d["raison"])
+        self.assertIn("compte à créditer", d["raison"])
         d = M.decider_ecriture(r, paiements, self.ATTENTE, self.BANQUE, {"perte": self.PERTE, "produit": self.PRODUIT})
         self.assertEqual(d["lignes"], [{"account": self.BANQUE, "debit": 1500.0}, {"account": self.ATTENTE, "credit": 1499.6},
                                        {"account": self.PRODUIT, "credit": 0.4}])
         self.assertEqual((d["perte"], d["produit"]), (0.0, 0.4))
+
+    def test_les_deux_sens_sur_le_meme_compte_debit_ou_credit(self):
+        """Décision du 20/11/2026 : « ajoute ça dans perte de non paiement mais en crédit »."""
+        comptes = {"perte": self.PERTE, "produit": self.PERTE}
+        plus = M.decider_ecriture(self.remise_ecart(banque=100.0, erp=99.6), self.paiements(PE_1={"montant": 99.6}),
+                                  self.ATTENTE, self.BANQUE, comptes)
+        self.assertEqual(plus["lignes"], [{"account": self.BANQUE, "debit": 1500.0}, {"account": self.ATTENTE, "credit": 1499.6},
+                                          {"account": self.PERTE, "credit": 0.4}])
+        moins = M.decider_ecriture(self.remise_ecart(), self.paiements(PE_1={"montant": 100.4}), self.ATTENTE, self.BANQUE, comptes)
+        self.assertEqual(moins["lignes"][1], {"account": self.PERTE, "debit": 0.4})
 
     def test_l_acceptation_vaut_pour_l_ecart_vu_pas_pour_un_autre(self):
         # accepté à −0,400 ; le paiement est ensuite passé à 101 : ce n'est plus l'écart accepté
