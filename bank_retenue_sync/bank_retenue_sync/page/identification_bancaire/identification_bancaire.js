@@ -218,6 +218,9 @@ class IdentificationBancaire {
     this.$root.on("click", "[data-ignorer]", (e) =>
       this._ignorer($(e.currentTarget).attr("data-ignorer"))
     );
+    this.$root.on("click", "[data-ecart-carte]", (e) =>
+      this._cartes_biat(false, $(e.currentTarget).attr("data-ecart-carte"))
+    );
     this.$root.on("click", "[data-remise-biat]", (e) =>
       this._remise_biat($(e.currentTarget).attr("data-remise-biat"))
     );
@@ -1047,7 +1050,7 @@ class IdentificationBancaire {
      transaction, avec son n° d'autorisation) et l'avis de crédit (brut − commission − TVA = net versé). Une
      carte par remise, pensée pour la largeur d'un téléphone : ce que la banque verse, si c'est crédité, et pour
      chaque transaction le paiement saisi à la caisse. Rien ne se saisit ici, et rien n'est comptabilisé. */
-  async _cartes_biat(relire = false) {
+  async _cartes_biat(relire = false, cibler = null) {
     const esc = frappe.utils.escape_html;
     const nb = (v) => format_number(v || 0, null, 3);
     const jour = (d) => (d ? frappe.datetime.str_to_user(String(d).substring(0, 10)) : "—");
@@ -1130,7 +1133,7 @@ class IdentificationBancaire {
       const montants = flt(r.net, 3)
         ? `${__("Brut")} ${nb(r.brut)} − ${__("commission")} ${nb(r.commission)} − ${__("TVA")} ${nb(r.tva)} = <b>${__("net")} ${nb(r.net)}</b>`
         : `${__("Brut")} ${nb(r.brut)} <span class="text-muted">(${__("avis de crédit pas encore reçu : net inconnu")})</span>`;
-      return `<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      return `<div data-remise-carte="${esc(r.name)}" style="border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;margin-bottom:10px">
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between">
           <b>${__("Remise n° {0}", [esc(r.remise || "")])}</b>
           <span>${creditee ? pastille("✔ " + __("Créditée le {0}", [jour(r.date_credit)]), VERT) : pastille("⏳ " + __("En attente du crédit"), ORANGE)} ${verdict}</span>
@@ -1179,6 +1182,24 @@ class IdentificationBancaire {
       });
     });
     d.show();
+    if (cibler) {
+      // Venu de la ligne du relevé : la fenêtre se place sur CETTE remise, encadrée ; s'il n'y a qu'un écart à
+      // accepter dessus, son dialogue s'ouvre directement.
+      const $carte = d.$body.find("[data-remise-carte]").filter((_, el) => el.getAttribute("data-remise-carte") === cibler);
+      if ($carte.length) {
+        $carte.css({ outline: "2px solid #0ea5e9", "outline-offset": "2px" });
+        setTimeout(() => {
+          $carte[0].scrollIntoView({ block: "center" });
+          const $ecarts = $carte.find("[data-accepter-ecart]");
+          if ($ecarts.length === 1) $ecarts.trigger("click");
+          else if (!$ecarts.length && !$carte.find("[data-annuler-ecart]").length) {
+            frappe.show_alert({ message: __("Aucun écart de montant à accepter sur cette remise : la transaction en cause n’a pas de paiement en face (« Introuvable »). Saisissez le paiement par carte, puis « Reclassifier »."), indicator: "orange" }, 12);
+          }
+        }, 400);
+      } else {
+        frappe.show_alert({ message: __("La remise {0} n’est pas dans les 40 dernières : ouvrez sa fiche.", [frappe.utils.escape_html(cibler)]), indicator: "orange" }, 8);
+      }
+    }
     if (relire) {
       // Le relevé BIAT vient d'être reclassé avec les remises nouvelles : le tableau et le bandeau suivent.
       this.load();
@@ -1969,6 +1990,13 @@ class IdentificationBancaire {
       // Remise de chèques pas encore encaissée : on peut désigner ses chèques à la main, sans bordereau.
       if (r.regle === "enc_cheque" && !r.ignore_manuel && ["Orphelin", "A verifier"].includes(r.statut)) {
         b.push(`<button data-remise-biat="${esc(r.cle)}" title="${__("Désigner les chèques de cette remise : l'encaissement est créé et soumis")}">Encaisser sans bordereau</button>`);
+      }
+      // Remise carte créditée mais pas comptabilisée (une transaction sans paiement au bon montant) : la ligne
+      // mène à SA remise, où l'écart s'accepte — le bouton n'était que dans la fenêtre « cartes », introuvable
+      // depuis le tableau (retour du 20/11/2026).
+      if (r.regle === "remise_tpe" && r.statut === "Identifie non comptabilise" && !r.ignore_manuel && r.document_name) {
+        b.push(`<button data-ecart-carte="${esc(r.document_name)}" style="font-weight:600"
+                 title="${__("Ouvrir cette remise : voir la transaction en cause et accepter l’écart")}">Accepter l’écart</button>`);
       }
       b.push(r.ignore_manuel ? `<button data-reactiver="${esc(r.cle)}">Réactiver</button>`
         : `<button data-ignorer="${esc(r.cle)}">Ignorer</button>`);
