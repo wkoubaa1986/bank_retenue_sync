@@ -265,6 +265,7 @@
   };
 
   $(document).on("app_ready", () => {
+    if (window.frameElement) return;   // fiche ouverte en fenêtre (ouvrir_document.js) : l'alerte est déjà dessous
     if (!frappe.session || frappe.session.user === "Guest") return;
     charger();
     setInterval(charger, 300000);
