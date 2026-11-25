@@ -162,6 +162,12 @@ def ligne_financement_stock(ligne: dict, net_charges, commande: str) -> dict:
     return l
 
 
+#: Une ecriture qui SOLDE la reception d'une fiche d'achat contre la charge d'une depense payee comme facture (part stock
+#: d'une facture, ou BL deja recu que la facture couvre — customization_app.caisse_stock_partiel.solder_reception,
+#: 25/11/2026). Aucune facture d'achat ne suivra : la depense EST la facture, et elle reste ENTIERE au dossier.
+RAISON_SOLDE_RECEPTION = "solde d'une réception : la dépense est la facture (stock compris)"
+
+
 def raison_hors_dossier(ligne: dict, net_charges, exclus: set, sorties: bool = True) -> str:
     """Pourquoi cette ligne reste hors du dossier, ou "" si elle y va. Fonction pure.
 
@@ -169,6 +175,8 @@ def raison_hors_dossier(ligne: dict, net_charges, exclus: set, sorties: bool = T
     `net_charges` : debit − credit de la piece sur les comptes de charge du bloc (None = inconnu)."""
     if ligne.get("document_type") != "Journal Entry":
         return ""
+    if ligne.get("solde_reception"):
+        return RAISON_SOLDE_RECEPTION
     if ligne.get("financement_stock"):
         return ""
     if sorties and net_charges is not None and float(net_charges) <= 0.0005:
@@ -492,10 +500,13 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str, journal_hor
     ecartees = []
     if cle == "depenses":
         nets = nets_par_voucher(ecritures)
-        financements = _financements_stock(par_type.get("Journal Entry", []))
+        financements, soldes = _financements_stock(par_type.get("Journal Entry", []), avec_soldes=True)
         lignes = [ligne_financement_stock(l, nets.get(("Journal Entry", l["document_name"])), financements[l["document_name"]])
                   if l.get("document_type") == "Journal Entry" and l["document_name"] in financements else l
                   for l in lignes]
+        for l in lignes:
+            if l.get("document_type") == "Journal Entry" and l.get("document_name") in soldes:
+                l["solde_reception"] = True
         lignes, ecartees = ecarter(lignes, nets, comptes_hors_dossier(), sorties_ecartees())
 
     return {
@@ -508,16 +519,37 @@ def _bloc(cle: str, titre: str, comptes: list, debut: str, fin: str, journal_hor
     }
 
 
-def _financements_stock(noms_journal: list) -> dict:
+def separer_financements(fiches: list) -> tuple:
+    """({ecriture -> commande} des FINANCEMENTS, {ecritures qui SOLDENT une reception}). Fonction pure.
+
+    `fiches` : [{journal_entry, purchase_order, statut, purchase_invoice}] des fiches de caisse liees a une depense.
+    Financement : la fiche attend (ou a recu) sa facture d'achat, qui portera le HT du stock — la ligne devient
+    NEGATIVE au bloc des depenses. Solde : fiche « Saisie » SANS facture d'achat — la depense etait la facture, aucune
+    facture d'achat ne suivra ; l'ecriture reste hors du dossier et la depense y reste entiere (25/11/2026)."""
+    financements, soldes = {}, set()
+    for f in fiches or []:
+        if not f.get("journal_entry"):
+            continue
+        if f.get("statut") == "Saisie" and not f.get("purchase_invoice"):
+            soldes.add(f["journal_entry"])
+        else:
+            financements[f["journal_entry"]] = f.get("purchase_order") or "?"
+    return financements, soldes
+
+
+def _financements_stock(noms_journal: list, avec_soldes: bool = False):
     """{ ecriture -> commande d'achat } des ecritures « le compte de charge finance la commande »
-    (fiches de caisse d'une part stock). Vide si la fiche de caisse n'a pas ce champ."""
+    (fiches de caisse d'une part stock) ; avec `avec_soldes`, aussi l'ensemble des ecritures qui soldent une
+    reception (cf. `separer_financements`). Vide si la fiche de caisse n'a pas ce champ."""
+    vide = ({}, set()) if avec_soldes else {}
     if not noms_journal or not frappe.db.exists("DocType", "Facture Achat a Saisir"):
-        return {}
+        return vide
     if not frappe.get_meta("Facture Achat a Saisir").has_field("depense_a_payer"):
-        return {}
-    return {f.journal_entry: f.purchase_order or "?" for f in frappe.get_all(
+        return vide
+    financements, soldes = separer_financements(frappe.get_all(
         "Facture Achat a Saisir", filters={"journal_entry": ["in", noms_journal], "depense_a_payer": ["is", "set"]},
-        fields=["journal_entry", "purchase_order"])}
+        fields=["journal_entry", "purchase_order", "statut", "purchase_invoice"]))
+    return (financements, soldes) if avec_soldes else financements
 
 
 def totaux_du_bloc(lignes: list) -> dict:

@@ -48,3 +48,30 @@ class TestHorsDossier(unittest.TestCase):
                          [("JV-1034", C.RAISON_SORTIE), ("JV-PUB", "financée par " + EUROS)])
         self.assertEqual(C.totaux_du_bloc([dict(l, ht=0, tva=0, retenue=0, manque=False, exemption="", justificatifs=[])
                                            for l in gardees])["ttc"], 29972.4)
+
+
+class TestSoldeDeReception(unittest.TestCase):
+    """25/11/2026 : une écriture qui SOLDE une réception (part stock d'une facture, BL déjà reçu que la facture couvre)
+    reste hors du dossier — la dépense est la facture et y reste entière —, quelle que soit la case du réglage."""
+
+    def test_separer_financements_et_soldes(self):
+        fiches = [
+            {"journal_entry": "JV-AVANCE", "purchase_order": "PO-1", "statut": "À saisir", "purchase_invoice": None},
+            {"journal_entry": "JV-FACTUREE", "purchase_order": "PO-2", "statut": "Saisie", "purchase_invoice": "PINV-2"},
+            {"journal_entry": "JV-SOLDE-STOCK", "purchase_order": "PO-3", "statut": "Saisie", "purchase_invoice": None},
+            {"journal_entry": "JV-SOLDE-BL", "purchase_order": "PO-4", "statut": "Saisie", "purchase_invoice": ""},
+            {"journal_entry": None, "purchase_order": "PO-5", "statut": "À saisir", "purchase_invoice": None},
+        ]
+        financements, soldes = C.separer_financements(fiches)
+        self.assertEqual(financements, {"JV-AVANCE": "PO-1", "JV-FACTUREE": "PO-2"})
+        self.assertEqual(soldes, {"JV-SOLDE-STOCK", "JV-SOLDE-BL"})
+
+    def test_le_solde_est_hors_dossier_meme_case_decochee(self):
+        ligne = dict(je("JV-SOLDE-BL", ["Charges Diverses - A&S"]), solde_reception=True)
+        for sorties in (True, False):
+            self.assertEqual(C.raison_hors_dossier(ligne, -9.75, set(), sorties=sorties), C.RAISON_SOLDE_RECEPTION)
+        gardees, ecartees = C.ecarter([ligne, je("JV-DEPENSE", ["Espèces - A&S"])],
+                                      {("Journal Entry", "JV-SOLDE-BL"): -9.75, ("Journal Entry", "JV-DEPENSE"): 279.931},
+                                      set(), sorties=False)
+        self.assertEqual(([l["document_name"] for l in gardees], [e["document_name"] for e in ecartees]),
+                         (["JV-DEPENSE"], ["JV-SOLDE-BL"]))
