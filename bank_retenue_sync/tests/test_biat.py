@@ -36,6 +36,17 @@ class TestDetection(unittest.TestCase):
         self.assertEqual(biat.detecter("Versement TND", "Debit")["regle"], "")
         self.assertEqual(biat.detecter("Frais sur versement", "Credit")["regle"], "")      # « versement » en tete seulement
 
+    def test_commission_de_remise_d_effets(self):
+        # Libelle vu le 24/11/2026 (4 DT preleves au depot de traites) : un frais bancaire, avec le n° de la remise.
+        vu = biat.detecter("COM Remise effets Encaissement 132601", "Debit")
+        self.assertEqual((vu["regle"], vu["categorie"], vu["sous_categorie"], vu["numero"]),
+                         ("com_effet", "frais_bancaires", "commission", "132601"))
+        self.assertEqual(biat.detecter("Com. remise d'effets", "Debit")["regle"], "com_effet")      # sans numero
+        self.assertEqual(biat.detecter("Com. remise d'effets", "Debit")["numero"], "")
+        self.assertEqual(biat.detecter("COM Remise effets Encaissement 132601", "Credit")["regle"], "")   # jamais un credit
+        # La commission du terminal (« COM TVA REF REMISE AFF ») reste la sienne.
+        self.assertEqual(biat.detecter("COM TVA REF REMISE AFF 0010010006", "Debit")["regle"], "com_tpe")
+
     def test_libelle_inconnu(self):
         for libelle in ("Prelevement STE EXEMPLE", "Cheque 0001234", "", None):   # (un virement recu est reconnu depuis le 16/11/2026)
             self.assertEqual(biat.detecter(libelle, "Credit")["regle"], "")
@@ -553,6 +564,22 @@ class TestFraisMensuels(unittest.TestCase):
         # Le classement Zitouna indexe les references qui commencent par « Frais bancaire » : jamais celle de la BIAT.
         self.assertFalse(biat.cle_frais("2026-11").startswith(fees.PREFIXE_MENSUEL))
         self.assertNotEqual(biat.cle_frais("2026-11"), fees.cle_mensuelle("2026-11"))
+
+    def test_la_commission_de_remise_d_effets_rejoint_l_ecriture_de_son_mois(self):
+        effets = "COM Remise effets Encaissement 132601"
+        ctx = {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 1}}}
+        c = biat.classer_ligne(ligne(effets, debit=4.0, date="2026-11-24"), ctx)
+        self.assertEqual((c["statut"], c["regle"], c["categorie"], c["document_name"], c["groupe"]),
+                         ("Identifie", "com_effet", "frais_bancaires", "JV-F", "effets:132601"))
+        self.assertIn("remise de traites n° 132601", c["raison"])
+        sans = biat.classer_ligne(ligne(effets, debit=4.0, date="2026-11-24"), {})
+        self.assertEqual(sans["statut"], "Orphelin")
+        self.assertIn("frais bancaires à comptabiliser", sans["raison"])
+        # Elle compte dans le cumul du mois, comme les autres frais.
+        cumul = biat.cumul_frais([{**ligne(effets, debit=4.0, date="2026-11-24"), "categorie": "frais_bancaires"},
+                                  {**ligne(COMMISSION, debit=0.893, date="2026-11-12"), "categorie": "frais_bancaires"}],
+                                 "2026-11")
+        self.assertEqual((cumul["nb"], cumul["frais"]), (2, 4.893))
 
     def test_la_commission_rejoint_l_ecriture_de_son_mois(self):
         ctx = {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 1}}}

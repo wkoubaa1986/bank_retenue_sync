@@ -593,18 +593,50 @@ def _etat_depot(fichier: str, **etat):
     frappe.publish_realtime("brs_bordereau_lu", {"fichier": fichier, **etat})
 
 
+def completer_par_attendu(lu: dict, attendu: dict) -> tuple:
+    """Ce que l'IA n'a pas su lire, complete par ce que la photo devait montrer. Pur.
+
+    Une photo prise depuis la relance d'un bordereau manquant (`bank/bordereaux_manquants`) sait quel bordereau
+    on attend : banque, numero, nature. On ne complete QUE ce qui manque a la lecture, jamais ce qu'elle a lu —
+    la photo fait foi : si c'est un autre bordereau, c'est lui qu'on enregistre, et la relance reste ouverte.
+    -> (lecture completee, [champs repris de la relance])"""
+    lu, attendu, repris = dict(lu or {}), attendu or {}, []
+    if attendu.get("banque") in BANQUES and not lu.get("banque_remise"):
+        lu["banque_remise"] = attendu["banque"]
+        repris.append("banque")
+    if attendu.get("numero") and not _chiffres(lu.get("numero")):
+        lu["numero"] = attendu["numero"]
+        repris.append("numero")
+    if attendu.get("nature") in NATURES and not lu.get("nature"):
+        lu["nature"] = attendu["nature"]
+        repris.append("nature")
+    return lu, repris
+
+
+def _attendu(attendu) -> dict:
+    """L'argument `attendu` du dialogue (texte JSON ou dict), reduit a ce qui sert."""
+    if isinstance(attendu, str):
+        try:
+            attendu = json.loads(attendu or "{}")
+        except ValueError:
+            attendu = {}
+    attendu = attendu if isinstance(attendu, dict) else {}
+    return {k: str(attendu[k]) for k in ("banque", "numero", "nature") if attendu.get(k)}
+
+
 @frappe.whitelist()
-def deposer(fichier: str) -> dict:
+def deposer(fichier: str, attendu=None) -> dict:
     """Le scan (ou la photo) vient d'etre televerse : l'IA le lit en arriere-plan — banque, numero, date,
     nature, pieces — et collecte le bordereau toute seule. Rend tout de suite ; suivre avec `etat_depot`
-    ou le signal temps reel `brs_bordereau_lu`."""
+    ou le signal temps reel `brs_bordereau_lu`. `attendu` : {banque, numero, nature} quand la photo repond a
+    la relance d'un bordereau manquant (`completer_par_attendu`)."""
     frappe.has_permission(DOCTYPE, "create", throw=True)
     if not fichier or not str(fichier).startswith(("/files/", "/private/files/")) \
             or not frappe.db.exists("File", {"file_url": fichier}):
         frappe.throw("Joignez le scan ou la photo du bordereau.")
     frappe.cache.set_value(CLE_DEPOT + fichier, {"etat": DEPOT_EN_COURS}, expires_in_sec=UNE_JOURNEE)
     frappe.enqueue("bank_retenue_sync.api.bordereaux.collecter_par_ia", queue="default", timeout=600,
-                   enqueue_after_commit=True, fichier=fichier)
+                   enqueue_after_commit=True, fichier=fichier, attendu=_attendu(attendu) or None)
     return {"etat": DEPOT_EN_COURS}
 
 
@@ -614,10 +646,11 @@ def etat_depot(fichier: str) -> dict:
     return frappe.cache.get_value(CLE_DEPOT + (fichier or "")) or {"etat": "inconnu"}
 
 
-def collecter_par_ia(fichier: str):
+def collecter_par_ia(fichier: str, attendu: dict = None):
     """LA TACHE DE FOND DU DEPOT. L'IA lit le scan ; si la banque et le numero en sortent, le bordereau est
     collecte et ses pieces cherchees dans ERPNext. Sinon (banque illisible, numeros contradictoires, panne
-    de l'IA), rien n'est perdu : l'etat dit ce qui manque, et la caisse propose la saisie a la main."""
+    de l'IA), rien n'est perdu : l'etat dit ce qui manque, et la caisse propose la saisie a la main.
+    `attendu` : ce que la relance d'un bordereau manquant attendait (`completer_par_attendu`)."""
     from bank_retenue_sync.ai import bordereau_extract
 
     indices = {}
@@ -625,7 +658,9 @@ def collecter_par_ia(fichier: str):
         contenu, nom = _contenu(fichier)
         indices = lire_nom_fichier(nom)
         indices = indices if indices.get("banque") else {}
-        lu = bordereau_extract.lire(contenu, nom, indices.get("nature"), aujourd_hui=_aujourd_hui_lisible())
+        lu = bordereau_extract.lire(contenu, nom, indices.get("nature") or (attendu or {}).get("nature"),
+                                    aujourd_hui=_aujourd_hui_lisible())
+        lu, repris = completer_par_attendu(lu, attendu)
         qui = identite(indices, lu, frappe.utils.today())
         propose = {"banque": qui["banque"], "numero": qui["numero"], "nature": qui["nature"],
                    "date_remise": qui["date_remise"], "montant_total": lu.get("total"),
@@ -650,6 +685,8 @@ def collecter_par_ia(fichier: str):
         if doc.nature in NATURES_LUES:
             avant = [] if qui["date_source"] != "jour" else [
                 "Date illisible sur le bordereau : la date du jour a été mise — corrigez-la sur la fiche si besoin."]
+            if "numero" in repris:
+                avant.append(f"N° du bordereau illisible sur la photo : repris de la relance (n° {doc.numero}).")
             _appliquer_lecture(doc, lu, avant)
         _etat_depot(fichier, etat=DEPOT_COLLECTE, name=doc.name)
     except Exception as e:
@@ -659,3 +696,41 @@ def collecter_par_ia(fichier: str):
                     message=message_d_echec(e) + " Vous pouvez saisir le bordereau à la main.")
     finally:
         frappe.db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Relance des bordereaux manquants (barre de ceux qui ont le role « Relance bordereaux »)
+# ---------------------------------------------------------------------------
+
+def _relance_autorisee() -> bool:
+    from bank_retenue_sync.bank import bordereaux_manquants
+
+    return bordereaux_manquants.ROLE in frappe.get_roles()
+
+
+@frappe.whitelist()
+def manquants_barre():
+    """Les bordereaux BIAT a photographier, pour la barre du Desk. None pour qui n'a pas le role de la relance :
+    l'ecran cesse alors de demander."""
+    from bank_retenue_sync.bank import bordereaux_manquants
+
+    if not _relance_autorisee():
+        return None
+    lignes = bordereaux_manquants.liste()
+    return {"n": len(lignes), "lignes": lignes, "motifs": list(bordereaux_manquants.MOTIFS),
+            "photo": bool(frappe.has_permission(DOCTYPE, "create"))}
+
+
+@frappe.whitelist()
+def ecarter_manquant(cle: str, motif: str, note: str = None):
+    """« Pas de bordereau » : la ligne ne revient plus (motif garde, avec qui et quand)."""
+    from bank_retenue_sync.bank import bordereaux_manquants
+
+    if not _relance_autorisee():
+        frappe.throw("Réservé à la relance des bordereaux.", frappe.PermissionError)
+    if not str(cle or "").startswith(bordereaux_manquants.BANQUE + "|"):
+        frappe.throw("Ligne inconnue.")
+    bordereaux_manquants.ecarter(cle, motif, note)
+    frappe.db.commit()
+    frappe.publish_realtime("brs_bordereaux_manquants", {})
+    return manquants_barre()

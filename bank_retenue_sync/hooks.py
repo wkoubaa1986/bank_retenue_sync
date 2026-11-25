@@ -252,6 +252,9 @@ app_include_js = [
     # Badge « nombre de virements a faire » sur le raccourci Rapport de l'espace Comptabilite
     # (le compteur natif des raccourcis ne couvre que les DocTypes).
     "/assets/bank_retenue_sync/js/paiements_a_faire_compteur.js?v=1",
+    # Barre des bordereaux de remise manquants (role « Relance bordereaux ») et depot d'une photo hors de la caisse
+    # (bouton de Ma journee) — 25/11/2026.
+    "/assets/bank_retenue_sync/js/bordereaux_relance.js?v=1",
 ]
 
 # Vue liste : l'etat du certificat TEJ de chaque facture. Charge APRES le fichier d'ERPNext, ce

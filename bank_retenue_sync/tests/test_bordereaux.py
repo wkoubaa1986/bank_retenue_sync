@@ -247,3 +247,27 @@ class TestLectureIA(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompleterParLaRelance(unittest.TestCase):
+    """Une photo prise depuis la relance d'un bordereau manquant : la lecture est completee, jamais contredite."""
+
+    def test_ce_que_l_ia_n_a_pas_lu_est_repris_de_la_relance(self):
+        lu, repris = B.completer_par_attendu({"numero": None, "pieces": []},
+                                             {"banque": "BIAT", "numero": "7473936", "nature": "Chèques"})
+        self.assertEqual((lu["banque_remise"], lu["numero"], lu["nature"]), ("BIAT", "7473936", "Chèques"))
+        self.assertEqual(repris, ["banque", "numero", "nature"])
+        qui = B.identite({}, lu, "2026-11-25")
+        self.assertEqual((qui["banque"], qui["numero"], qui["manque"]), ("BIAT", "7473936", []))
+
+    def test_la_photo_fait_foi(self):
+        # Un AUTRE bordereau photographie : c'est lui qu'on enregistre (la relance du 7473936 reste ouverte).
+        lu, repris = B.completer_par_attendu({"banque_remise": "BIAT", "numero": "7473935", "nature": "Chèques"},
+                                             {"banque": "BIAT", "numero": "7473936", "nature": "Chèques"})
+        self.assertEqual((lu["numero"], repris), ("7473935", []))
+
+    def test_sans_relance_rien_ne_change(self):
+        self.assertEqual(B.completer_par_attendu({"numero": "12345"}, None), ({"numero": "12345"}, []))
+        self.assertEqual(B._attendu('{"banque": "BIAT", "numero": 7473936, "x": 1}'), {"banque": "BIAT", "numero": "7473936"})
+        self.assertEqual(B._attendu("null"), {})
+        self.assertEqual(B._attendu("pas du json"), {})

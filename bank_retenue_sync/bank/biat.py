@@ -18,6 +18,7 @@ LES LIBELLES (compte ouvert le 02/11/2026 — trois natures de lignes vues au 16
     Versement TND                                                    credit   reference TT…
     Credit Divers Chq Telec A Enc Cre Global/borde : 7473933         credit   reference FT…
     Debit Divers Commission CHQ A Enc/Bordereau : 7473932            debit    reference FT…
+    COM Remise effets Encaissement 132601                            debit    reference CHG…  (vu le 24/11/2026)
 
 Le numero de BORDEREAU (7 chiffres) est la cle d'une remise : il relie le credit de la remise a sa
 commission, et c'est lui qu'on cherche sur les Payment Entry (`BR:<numero>`, la convention deja
@@ -75,6 +76,11 @@ REGLES = (
      "Remise du terminal de paiement (cartes)"),
     ("com_tpe", "Debit", re.compile(r"\bCOM\w*\s+(?:TVA\s+)?REF\s+REMISE\s+AFF"), "frais_bancaires", "commission",
      "Commission du terminal de paiement (cartes)"),
+    # REMISE DE TRAITES (effets) — libelle vu le 24/11/2026 : « COM Remise effets Encaissement 132601 », 4 DT preleves
+    # au DEPOT des traites (le montant des traites arrive a l'echeance, sous un libelle pas encore vu). Meme cle que
+    # la regle Zitouna « COMM REMISE EFFET » (`bank/rules.py`). Le numero est celui de la remise d'effets.
+    ("com_effet", "Debit", re.compile(r"\bCOM\w*\.?\s+(?:TVA\s+)?REMISE\s+(?:D\W*)?EFFETS?\b(?:\D{0,40}?(\d{4,12}))?"),
+     "frais_bancaires", "commission", "Commission de remise d’effets (traites)"),
     # Virement recu d'un client : meme mot entier que le flux Zitouna (`matching.is_virement_credit`), Aramex
     # exclu (son reversement a son propre circuit). Place APRES les regles precises : il ne prend que le reste.
     ("vir_recu", "Credit", re.compile(r"^(?!.*ARAMEX).*\bVIR(?:EMENT|T)?\b"), "encaissement", "virement",
@@ -111,7 +117,7 @@ def detecter(operation: str, sens: str) -> dict:
         trouve = motif.search(texte)
         if trouve:
             return {"regle": cle, "categorie": categorie, "sous_categorie": sous_categorie, "libelle": libelle,
-                    "numero": trouve.group(1) if trouve.groups() else ""}
+                    "numero": (trouve.group(1) or "") if trouve.groups() else ""}
     return {"regle": "", "categorie": "", "sous_categorie": "", "libelle": "", "numero": ""}
 
 
@@ -164,6 +170,19 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
                        raison=f"{raison} — dans l’écriture mensuelle des frais BIAT ({cle_frais(periode_de(ligne.get('date')))})")
         else:
             out.update(statut=STATUT_ORPHELIN, raison=raison + " — frais bancaires à comptabiliser")
+        return out
+    if vu["regle"] == "com_effet":
+        # COMMISSION DE REMISE D'EFFETS : un frais bancaire du mois, comme la commission d'une remise de cheques.
+        quoi = "commission de la remise de traites" + (f" n° {vu['numero']}" if vu["numero"] else "")
+        if vu["numero"]:
+            out["groupe"] = "effets:" + vu["numero"]
+        du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
+        if du_mois:
+            out.update(statut=STATUT_BROUILLON if int(du_mois.get("docstatus") or 0) == 0 else STATUT_IDENTIFIE,
+                       document_type="Journal Entry", document_name=du_mois["name"], montant_document=montant,
+                       raison=f"{quoi} : dans l’écriture mensuelle des frais BIAT ({cle_frais(periode_de(ligne.get('date')))})")
+        else:
+            out.update(statut=STATUT_ORPHELIN, raison=f"{quoi} : frais bancaires à comptabiliser")
         return out
     if not vu["regle"]:
         out["raison"] = "libellé BIAT inconnu : à classer (aucune règle ne le reconnaît)"
