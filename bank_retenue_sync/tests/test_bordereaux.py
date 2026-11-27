@@ -126,6 +126,42 @@ class TestRapprochement(unittest.TestCase):
         r = B.rapprocher([{"numero": "88", "montant": 581.0}], [_pe("PE-088", "0000088", 581.0, en_encaissement=True)])
         self.assertEqual(r[0]["remarque"], "déjà porté sur un encaissement")
 
+    def test_meme_tireur(self):
+        self.assertTrue(B.meme_tireur("Maison Hammami de chauffage et climatisation MH2C", "MH2C"))
+        self.assertTrue(B.meme_tireur("Sté BIO AQUA", "Ste BIO AQUA"))
+        self.assertTrue(B.meme_tireur("KARRAY Sarrah", "Karray Sarrah"))
+        self.assertFalse(B.meme_tireur("Mme Karray Sana", "KARRAY SARRAH"))          # un prenom different : pas le meme
+        self.assertFalse(B.meme_tireur("Ste", "Ste BIO AQUA"))                        # des mots creux ne designent personne
+        self.assertFalse(B.meme_tireur("", "MH2C"))
+        self.assertFalse(B.meme_tireur("MH2C", None))
+
+    def test_le_paiement_du_meme_client_est_nomme(self):
+        # Le cas du 27/11/2026 (bordereau BIAT 0132601) : traite de 3 965,000, numero mal lu ; dans ERPNext elle est
+        # saisie a 4 005,000 (la facture avant retenue a la source), dont 40,040 ne soldent aucune facture.
+        traite = {"numero": "0111790279", "montant": 3965.0, "tireur": "Maison Hammami de chauffage et climatisation MH2C"}
+        mh2c = _pe("ACC-PAY-08505", "011779021079", 4005.0, client="MH2C", non_affecte=40.04)
+        autre = _pe("PE-X", "011700000001", 3965.5, client="STE AUTRE")
+        r = B.rapprocher([traite], [autre, mh2c])
+        self.assertEqual((r[0]["etat"], r[0]["paiement"], r[0]["montant_erp"]), ("À vérifier", "ACC-PAY-08505", 4005.0))
+        self.assertIn("même client (MH2C) : paiement ACC-PAY-08505, n° 011779021079, de 4 005,000 dont 3 964,960 imputés",
+                      r[0]["remarque"])
+        self.assertIn("le bordereau dit 3 965,000", r[0]["remarque"])
+        (phrase,) = B.bilan(r, nature="Traites")["signalements"]
+        self.assertTrue(phrase.startswith("Traite n° 0111790279 : à vérifier (aucun paiement ne porte le numéro"), phrase)
+        # Sans la part non affectee, 40 DT d'ecart ne sont pas « proches » : on ne devine pas.
+        self.assertEqual(B.rapprocher([traite], [_pe("P", "011779021079", 4005.0, client="MH2C")])[0]["etat"], "Introuvable")
+        # Montant proche (5 DT) du meme client : nomme aussi, sans part non affectee.
+        r = B.rapprocher([traite], [_pe("P", "011779021079", 3968.0, client="MH2C")])
+        self.assertEqual((r[0]["etat"], r[0]["paiement"]), ("À vérifier", "P"))
+        self.assertNotIn("imputés", r[0]["remarque"])
+        # Deux paiements proches du meme client, ou un tireur non lu : on ne choisit pas.
+        deux = [_pe("P1", "011700000001", 3965.2, client="MH2C"), _pe("P2", "011700000002", 3966.0, client="MH2C")]
+        self.assertEqual(B.rapprocher([traite], deux)[0]["etat"], "Introuvable")
+        self.assertEqual(B.rapprocher([{**traite, "tireur": None}], [mh2c])[0]["etat"], "Introuvable")
+        # Le numero exact reste servi d'abord : la recherche par le client ne prend que ce qui reste.
+        r = B.rapprocher([traite, {"numero": "011779021079", "montant": 4005.0, "tireur": "x"}], [mh2c])
+        self.assertEqual([p["etat"] for p in r], ["Introuvable", "Trouvé"])
+
     def test_voisin_de_carnet_non_confondu(self):
         # 4001764 lu pour 500 : ni le 4001763 (798) ni le 4001767 (270) ne sont « proches ».
         r = B.rapprocher([{"numero": "4001764", "montant": 500.0}], self.PORTEFEUILLE)

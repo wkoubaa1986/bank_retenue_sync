@@ -111,6 +111,28 @@ def numeros_voisins(a, b) -> bool:
     return any(long_[:i] + long_[i + 1:] == court for i in range(len(long_)))
 
 
+#: Mots d'un nom qui ne designent personne (formes de societe, articles) : ils ne comptent pas dans `meme_tireur`.
+_MOTS_CREUX = {"STE", "SOCIETE", "SARL", "SUARL", "MME", "MLLE", "MONSIEUR", "MADAME", "ETS", "LES", "DES", "DE", "DU",
+               "LA", "LE", "ET", "EL", "BEN"}
+
+
+def _mots(nom) -> set:
+    import unicodedata
+
+    sans = unicodedata.normalize("NFKD", str(nom or "")).encode("ascii", "ignore").decode().upper()
+    mots = "".join(c if c.isalnum() else " " for c in sans).split()
+    return {m for m in mots if len(m) >= 3 and m not in _MOTS_CREUX}
+
+
+def meme_tireur(tireur, client) -> bool:
+    """Le tireur ecrit sur le bordereau est-il ce client d'ERPNext ? Pur.
+    Oui quand tous les mots qui comptent de l'un sont dans l'autre : le papier porte souvent la raison sociale
+    entiere (« Maison Hammami de chauffage et climatisation MH2C »), la fiche client son sigle (« MH2C »).
+    Un nom reduit a des mots creux (« Ste », « Mme ») ne designe personne."""
+    a, b = _mots(tireur), _mots(client)
+    return bool(a and b) and (a <= b or b <= a)
+
+
 def _dt(montant) -> str:
     """« 1 695,127 » — pour les remarques lues a l'ecran."""
     entier, _, millimes = f"{float(montant or 0):,.3f}".replace(",", " ").partition(".")
@@ -126,7 +148,7 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
 
     `pieces` : [{numero, montant, …}] (ce que l'IA a lu, ou ce qu'un humain a corrige).
     `portefeuille` : les paiements encore en attente de remise — [{name, numero, montant, client,
-    en_encaissement?}]. `ailleurs` : les paiements au meme numero deja sortis du portefeuille —
+    en_encaissement?, non_affecte?}] (`non_affecte` : la part du paiement qui ne solde aucune facture). `ailleurs` : les paiements au meme numero deja sortis du portefeuille —
     [{name, numero, montant, client, compte}].
     -> les memes pieces, completees de {etat, paiement, client, montant_erp, remarque}.
 
@@ -137,6 +159,10 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
       2. numero different d'un seul chiffre ET meme montant — « Trouvé », la difference est dite ;
       3. un seul paiement du portefeuille a exactement ce montant — « À vérifier » ;
       4. numero voisin, montant proche — « À vérifier » ;
+      4 bis. un seul paiement du MEME CLIENT (le tireur ecrit sur le bordereau, `meme_tireur`) dont le montant —
+         ou la part imputee aux factures — est proche — « À vérifier », le paiement est NOMME : le numero est
+         mal lu ou mal saisi, ou la piece a ete saisie a un autre montant que le sien (cas du 27/11/2026 : traite
+         MH2C de 3 965,000 saisie a 4 005,000, le montant de la facture avant retenue a la source) ;
       5. meme numero hors du portefeuille (deja en banque, impaye…) — le compte est dit ;
       sinon « Introuvable ».
     Un paiement ne sert qu'une fois."""
@@ -206,6 +232,27 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
             prendre(piece, voisins[0], ETAT_A_VERIFIER,
                     f"numéro et montant proches : lu {piece.get('numero')}, ERPNext {voisins[0].get('numero')} ; "
                     + ecart(piece, voisins[0]))
+
+    # 4 bis. Le seul paiement du meme client dont le montant, ou la part imputee, est proche.
+    for piece in out:
+        if piece["etat"] or piece.get("montant") is None or not piece.get("tireur"):
+            continue
+        lu = float(piece["montant"])
+
+        def proche(c) -> bool:
+            montant = float(c.get("montant") or 0)
+            return abs(lu - montant) <= ECART_VOISIN or (
+                c.get("non_affecte") and abs(lu - (montant - float(c["non_affecte"]))) <= ECART_TOLERE)
+
+        memes = [c for c in libres.values() if meme_tireur(piece["tireur"], c.get("client")) and proche(c)]
+        if len(memes) == 1:
+            c = memes[0]
+            part = (f" dont {_dt(float(c.get('montant') or 0) - float(c['non_affecte']))} imputés à ses factures"
+                    if c.get("non_affecte") else "")
+            prendre(piece, c, ETAT_A_VERIFIER,
+                    f"aucun paiement ne porte le numéro {piece.get('numero') or '?'} ; même client ({c.get('client')}) : "
+                    f"paiement {c['name']}, n° {c.get('numero') or '?'}, de {_dt(c.get('montant'))}{part} — "
+                    f"le bordereau dit {_dt(lu)}")
 
     # 5. Le meme numero, mais plus dans le portefeuille.
     pris = {p["paiement"] for p in out if p["paiement"]}
@@ -457,6 +504,13 @@ def _paiements(nature: str, numeros: list):
     portefeuille = [{"name": pe["name"], "numero": pe.get("numero"), "montant": pe.get("paid_amount"),
                      "client": pe.get("party"), "en_encaissement": pe["name"] in deja}
                     for pe in pending._pending_pes(compte, set(), extractor=extraire)]
+    if portefeuille:
+        # La part d'un paiement qui ne solde aucune facture (retenue a la source regularisee apres coup…).
+        non_affectes = dict(frappe.db.sql(
+            """select name, unallocated_amount from `tabPayment Entry`
+               where name in %s and ifnull(unallocated_amount, 0) > 0.0005""", ([c["name"] for c in portefeuille],)))
+        for c in portefeuille:
+            c["non_affecte"] = float(non_affectes.get(c["name"]) or 0) or None
     ailleurs = []
     for numero in {_chiffres(n) for n in numeros if len(_chiffres(n)) >= 4}:
         lignes = frappe.db.sql(
