@@ -63,3 +63,21 @@ class TestApresLaCorrection(unittest.TestCase):
                 {"name": "B", "numero": "011700000002", "montant": 3965.0, "client": "MH2C"}]
         r = B.rapprocher([self.TRAITE], deux)
         self.assertEqual((r[0]["etat"], r[0]["paiement"]), ("À vérifier", None))          # « plusieurs ont ce montant »
+
+
+class TestMarqueCaisse(unittest.TestCase):
+    """Le règlement repris au montant du bordereau n'est pas un encaissement du jour (27/11/2026)."""
+
+    TOUS = {"custom_cloture_caisse", "custom_exclu_caisse"}
+
+    def test_reste_dans_le_comptage_de_l_original(self):
+        self.assertEqual(N.marque_caisse("CLO-1905", self.TOUS), {"custom_cloture_caisse": "CLO-1905"})
+
+    def test_original_jamais_compte_exclu_des_caisses(self):
+        """MH2C : règlement du 16/11, avant le suivi par comptage — la reprise du 27/11 ne doit entrer dans aucune caisse."""
+        self.assertEqual(N.marque_caisse(None, self.TOUS), {"custom_exclu_caisse": 1})
+        self.assertEqual(N.marque_caisse("", self.TOUS), {"custom_exclu_caisse": 1})
+
+    def test_site_sans_les_champs_de_caisse(self):
+        self.assertEqual(N.marque_caisse(None, set()), {})
+        self.assertEqual(N.marque_caisse("CLO-1", set()), {})

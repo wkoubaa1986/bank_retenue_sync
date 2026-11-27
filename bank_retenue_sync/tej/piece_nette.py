@@ -119,6 +119,23 @@ def _supprimer_sans_bruit(nom: str) -> dict:
     return resultat
 
 
+#: Les champs de caisse d'un paiement (posés par customization_app ; absents sur un site sans cette application).
+CHAMPS_CAISSE = ("custom_cloture_caisse", "custom_exclu_caisse")
+
+
+def marque_caisse(cloture_originale, champs_presents) -> dict:
+    """Ce que le règlement REPRIS porte pour la caisse. Fonction pure.
+    `cloture_originale` : le comptage qui avait pris le règlement d'origine (ou vide) ; `champs_presents` : les champs
+    de caisse qui existent sur ce site. -> {champ: valeur}.
+    · pris par un comptage : la reprise reste dans CE comptage (elle ne compte nulle part ailleurs) ;
+    · jamais pris (règlement d'avant le suivi) : la reprise est exclue des caisses — visible, sans peser."""
+    if cloture_originale and "custom_cloture_caisse" in champs_presents:
+        return {"custom_cloture_caisse": cloture_originale}
+    if not cloture_originale and "custom_exclu_caisse" in champs_presents:
+        return {"custom_exclu_caisse": 1}
+    return {}
+
+
 def corriger(reglement: str, papier: float, bordereau: str, prouvee: bool, en_encaissement: bool = False,
              insert: bool = True, supprimer_maintenant: bool = True) -> dict:
     """Ramene un reglement au montant de la piece remise en banque, et retire l'avoir ne de la retenue.
@@ -144,6 +161,12 @@ def corriger(reglement: str, papier: float, bordereau: str, prouvee: bool, en_en
         copie.amended_from = original.name
     copie.paid_amount = copie.received_amount = plan["apres"]
     paiements.fusionner_references(copie)
+    # PAS DE L'ARGENT NOUVEAU (27/11/2026) : la copie naît aujourd'hui, au nom de celui qui a cliqué — la caisse la
+    # prenait pour un encaissement du jour (la traite MH2C de 3 965 DT, déjà en banque, est apparue dans la caisse de
+    # Wassim). Elle reste dans le comptage qui avait pris l'original, ou hors de toute caisse s'il n'y en a pas.
+    for champ, valeur in marque_caisse(original.get("custom_cloture_caisse"),
+                                       {c for c in CHAMPS_CAISSE if copie.meta.has_field(c)}).items():
+        copie.set(champ, valeur)
     copie.custom_remarks = 1               # sans quoi ERPNext recrit la remarque et la trace de la reprise disparait
     copie.remarks = ("%s\nRepris le %s : montant ramené de %s à %s, celui de la pièce remise en banque (bordereau %s). "
                      "Elle était nette de la retenue à la source (certificat TEJ %s) : l’avoir de %s est retiré."
