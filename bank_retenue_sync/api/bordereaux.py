@@ -157,6 +157,8 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
       1. meme numero — « Trouvé » si le montant est le meme ou a moins de `ECART_TOLERE` (un arrondi : il
          est note, pas signale), « À vérifier » sinon (l'ecart est montre) ;
       2. numero different d'un seul chiffre ET meme montant — « Trouvé », la difference est dite ;
+      2 bis. un seul paiement du MEME CLIENT (`meme_tireur`) au meme montant — « Trouvé », la difference de numero
+         est dite : le client et le montant designent la piece, le numero manuscrit est mal lu ou mal saisi ;
       3. un seul paiement du portefeuille a exactement ce montant — « À vérifier » ;
       4. numero voisin, montant proche — « À vérifier » ;
       4 bis. un seul paiement du MEME CLIENT (le tireur ecrit sur le bordereau, `meme_tireur`) dont le montant —
@@ -208,6 +210,17 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
             prendre(piece, voisins[0], ETAT_TROUVE,
                     f"même montant, numéro différent d’un chiffre : lu {piece.get('numero')}, "
                     f"ERPNext {voisins[0].get('numero')}")
+
+    # 2 bis. Le seul paiement du meme client, au meme montant.
+    for piece in out:
+        if piece["etat"] or piece.get("montant") is None or not piece.get("tireur"):
+            continue
+        memes = [c for c in libres.values() if meme_tireur(piece["tireur"], c.get("client"))
+                 and _egaux(piece.get("montant"), c.get("montant"))]
+        if len(memes) == 1:
+            prendre(piece, memes[0], ETAT_TROUVE,
+                    f"même client et même montant ; numéro lu {piece.get('numero') or '?'}, "
+                    f"ERPNext {memes[0].get('numero') or '?'}")
 
     # 3. Le seul paiement du portefeuille a ce montant.
     for piece in out:
@@ -535,6 +548,16 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
     if lecture is None:
         # Reverification apres correction a la main : ce qui a ete lu sur le scan reste la reference.
         lecture = {"total": doc.total_lu or None, "nombre": doc.nombre_lu or None}
+    # LE PAPIER DIT LE VRAI MONTANT (27/11/2026, `tej/piece_nette`) : une piece saisie au montant de la facture alors
+    # qu'elle etait nette de la retenue a la source a laisse un avoir que le client n'a jamais verse. Le reglement
+    # est repris au montant du papier, l'avoir retire, et la piece cherchee de nouveau.
+    from bank_retenue_sync.tej import piece_nette
+
+    corrections = piece_nette.corriger_depuis_bordereau(doc.name, rapprochees, portefeuille, lecture.get("total"))
+    if corrections:
+        portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
+        rapprochees = rapprocher(pieces, portefeuille, ailleurs)
+        avant = list(avant) + [c["phrase"] for c in corrections]
     etat = bilan(rapprochees, lecture, {"numero": doc.numero, "montant_total": doc.montant_total, "nombre": doc.nombre},
                  doc.nature)
     doc.set("pieces", [])
@@ -548,6 +571,7 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
     doc.a_signaler = "\n".join(etat["signalements"]) or None
     doc.flags.ignore_permissions = True
     doc.save()
+    piece_nette.supprimer_originaux(corrections)        # le bordereau ne cite plus le reglement annule
     if doc.banque == "BIAT" and doc.nature == "Chèques":
         # La BIAT ne publie pas le detail de ses remises : ce bordereau est ce qui permet d'encaisser la
         # sienne. Si elle est deja creditee, elle part tout de suite (`bank/biat.encaisser_remises`).

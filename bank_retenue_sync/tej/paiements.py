@@ -673,7 +673,23 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     # DEUX GESTES SELON LA NATURE DU REGLEMENT (cf. `argent_compte`). De l'argent compte ne se
     # reduit pas : c'est son affectation qui bouge, et la part liberee va eteindre une autre dette
     # du client — ou reste en avance a son credit si elle ne doit plus rien.
+    # ⚠️ SAUF SI LE PAPIER DIT AUTRE CHOSE (27/11/2026, `tej/piece_nette`). « Compte » suppose que le cheque ou la
+    # traite a ete saisi a son vrai montant. Quand le bordereau de remise prouve que la piece vaut le reglement
+    # MOINS la retenue (traite MH2C de 3 965,000 saisie a 4 005,000), le client n'a rien verse en plus : le
+    # reglement est repris au montant du papier, et aucun avoir ne nait.
+    papier = None
     if reel:
+        from bank_retenue_sync.tej import piece_nette
+
+        papier = piece_nette.montant_du_papier(pris["name"], montant)
+        if papier and round(papier["montant"] - (flt(pris["paid_amount"], 3) - montant), 3) < -0.0005:
+            papier = None                  # le papier vaut moins que ce qui resterait impute : a une personne
+    if papier:
+        nouveau_montant = flt(papier["montant"], 3)
+        # Ce qui depasse « reglement − retenue » est l'arrondi de la piece (3 965,000 pour 3 964,960) : il reste
+        # non affecte sur le reglement, sans etre note comme avoir.
+        affectations, non_affecte = [], round(nouveau_montant - (flt(pris["paid_amount"], 3) - montant), 3)
+    elif reel:
         nouveau_montant = flt(pris["paid_amount"], 3)
         affectations, non_affecte = repartir(montant, dettes_non_payees(cert["customer"]))
     else:
@@ -694,6 +710,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         "allocation_avant": flt(pris["allocated_amount"], 3),
         "allocation_apres": nouvelle_allocation,
         "argent_compte": reel,
+        "papier": papier,
         "reaffectations": affectations,
         "non_affecte": non_affecte,
         "regle": trouve.get("regle"),
@@ -739,8 +756,10 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         copie.remarks = ("%s\nRepris le %s : %s DT retenus a la source par le client "
                      "(certificat TEJ %s)%s"
                      % (original.remarks or "", frappe.utils.nowdate(), montant, reference,
-                        ("\nMontant inchange (argent compte) ; %s DT reaffectes a %s"
-                         % (montant, ", ".join(a["name"] for a in affectations))) if affectations
+                        ("\nMontant ramene de %s a %s : celui de la piece remise en banque (bordereau %s), "
+                         "nette de la retenue" % (plan["reglement_avant"], nouveau_montant, papier["bordereau"])) if papier
+                        else ("\nMontant inchange (argent compte) ; %s DT reaffectes a %s"
+                              % (montant, ", ".join(a["name"] for a in affectations))) if affectations
                         else ("\nMontant inchange (argent compte) ; %s DT en avance non affectee"
                               % non_affecte) if reel else ""))
     original.flags.ignore_permissions = True       # geste de la page, ouverte a tous (28/10/2026)
@@ -788,11 +807,13 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
         "revue_requise": 0 if valider else 1,
         "match_raison": ("retenue logee dans la facture %s : reglement %s repris en %s (%s)%s%s"
                          % (piece, original.name, copie.name if copie is not None else "— dette soldee",
-                            ("montant inchange %s, imputation %s -> %s%s"
-                             % (nouveau_montant, plan["allocation_avant"], nouvelle_allocation,
-                                (", %s DT vers %s" % (montant,
-                                                      ", ".join(a["name"] for a in affectations)))
-                                if affectations else ", %s DT en avance" % non_affecte))
+                            ("montant %s -> %s, celui de la piece remise en banque (bordereau %s), nette de la retenue"
+                             % (plan["reglement_avant"], nouveau_montant, papier["bordereau"])) if papier
+                            else ("montant inchange %s, imputation %s -> %s%s"
+                                  % (nouveau_montant, plan["allocation_avant"], nouvelle_allocation,
+                                     (", %s DT vers %s" % (montant,
+                                                           ", ".join(a["name"] for a in affectations)))
+                                     if affectations else ", %s DT en avance" % non_affecte))
                             if reel else "%s -> %s" % (plan["reglement_avant"], nouveau_montant),
                             "" if valider else " — BROUILLONS A VALIDER",
                             " ; original supprime" if suppression["supprime"]
@@ -805,7 +826,7 @@ def ajuster(reference: str, insert: bool = False, submit=None, reglement: str = 
     #        « j'ai regularise mais je n'ai pas trouve l'avoir »). On le NOTE ici, au moment ou il nait ; les
     #        avoirs disponibles du client le comptent (customization_app, `avoir_client.avoirs_disponibles`).
     #        Aucune ecriture de plus : le credit existe deja en comptabilite, on ne fait que le nommer.
-    avoir = avoir_a_noter(reel, non_affecte, copie is not None)
+    avoir = avoir_a_noter(reel and not papier, non_affecte, copie is not None)
     if avoir and frappe.db.has_column(DOCTYPE, "avoir_retenue"):
         frappe.db.set_value(DOCTYPE, reference, {"avoir_retenue": avoir, "avoir_reglement": copie.name},
                             update_modified=False)
