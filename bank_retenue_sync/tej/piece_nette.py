@@ -103,8 +103,24 @@ def _certificat_de_l_avoir(reglement: str):
     return certs[0] if len(certs) == 1 else None
 
 
+def _supprimer_sans_bruit(nom: str) -> dict:
+    """Supprime le reglement annule sans laisser de message a l'ecran quand Frappe refuse (encore reference).
+    Le refus est attendu et rattrape ; mais `frappe.throw` avait deja pose son message, et l'utilisateur voyait un
+    bandeau rouge « Impossible de supprimer ou d'annuler … est associé à Retenue Certificate » alors que la
+    correction avait reussi (27/11/2026, bordereau BIAT 0132601 en production)."""
+    import frappe
+
+    from bank_retenue_sync.tej import paiements
+
+    n = len(frappe.local.message_log or [])
+    resultat = paiements._supprimer_reglement(nom)
+    if not resultat["supprime"]:
+        frappe.local.message_log = list(frappe.local.message_log or [])[:n]
+    return resultat
+
+
 def corriger(reglement: str, papier: float, bordereau: str, prouvee: bool, en_encaissement: bool = False,
-             insert: bool = True) -> dict:
+             insert: bool = True, supprimer_maintenant: bool = True) -> dict:
     """Ramene un reglement au montant de la piece remise en banque, et retire l'avoir ne de la retenue.
     -> le plan de `decider`, complete de {reglement, nouveau, certificat, avoir_retire} quand c'est fait."""
     import frappe
@@ -137,7 +153,9 @@ def corriger(reglement: str, papier: float, bordereau: str, prouvee: bool, en_en
     original.cancel()
     copie.insert(ignore_permissions=True)
     copie.submit()
-    suppression = paiements._supprimer_reglement(original.name) if supprimer else {"supprime": False, "raison": None}
+    # LE CERTIFICAT D'ABORD : il cite le reglement annule (`avoir_reglement`), et tant qu'il le cite Frappe refuse de
+    # le supprimer. Meme chose pour la piece du bordereau, reecrite par l'appelant : quand la correction vient d'un
+    # bordereau (`supprimer_maintenant=False`), la suppression se fait apres son enregistrement (`supprimer_originaux`).
     frappe.db.set_value(paiements.DOCTYPE, cert.name, {
         "avoir_retenue": 0, "avoir_reglement": copie.name,
         "match_raison": ((cert.match_raison or "") + " ; le %s : règlement %s repris en %s au montant de la pièce (%s, "
@@ -145,6 +163,8 @@ def corriger(reglement: str, papier: float, bordereau: str, prouvee: bool, en_en
                          % (frappe.utils.nowdate(), original.name, copie.name, _dt(plan["apres"]), bordereau,
                             _dt(cert.avoir_retenue)))[:1000],
     }, update_modified=False)
+    suppression = _supprimer_sans_bruit(original.name) if supprimer and supprimer_maintenant \
+        else {"supprime": False, "raison": None}
     plan.update(nouveau=copie.name, avoir_retire=_m(cert.avoir_retenue), original_supprime=suppression["supprime"],
                 original_a_supprimer=original.name if supprimer and not suppression["supprime"] else None)
     return plan
@@ -157,7 +177,7 @@ def supprimer_originaux(plans: list):
 
     for plan in plans or ():
         if plan.get("original_a_supprimer"):
-            paiements._supprimer_reglement(plan["original_a_supprimer"])
+            _supprimer_sans_bruit(plan["original_a_supprimer"])
 
 
 def corriger_depuis_bordereau(bordereau: str, rapprochees: list, portefeuille: list, total) -> list:
@@ -174,7 +194,8 @@ def corriger_depuis_bordereau(bordereau: str, rapprochees: list, portefeuille: l
         if p.get("etat") != "À vérifier" or not c or not c.get("non_affecte") or p.get("montant") in (None, ""):
             continue
         try:
-            plan = corriger(c["name"], p["montant"], bordereau, prouvee, bool(c.get("en_encaissement")))
+            plan = corriger(c["name"], p["montant"], bordereau, prouvee, bool(c.get("en_encaissement")),
+                            supprimer_maintenant=False)
         except Exception:
             frappe.db.rollback()
             frappe.log_error(title="Bordereau : règlement net de retenue non corrigé", message=frappe.get_traceback())
