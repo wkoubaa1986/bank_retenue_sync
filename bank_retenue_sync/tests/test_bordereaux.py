@@ -162,6 +162,15 @@ class TestRapprochement(unittest.TestCase):
         r = B.rapprocher([traite, {"numero": "011779021079", "montant": 4005.0, "tireur": "x"}], [mh2c])
         self.assertEqual([p["etat"] for p in r], ["Introuvable", "Trouvé"])
 
+    def test_la_recherche_n_est_reecrite_que_si_elle_change(self):
+        ecrit = [{"numero": "0000373", "etat": "Introuvable", "paiement": None}]
+        self.assertFalse(B.rapprochement_change(ecrit, [{"numero": "0000373", "etat": "Introuvable", "paiement": None, "remarque": "x"}]))
+        # Le chèque du colis Aramex est passé par la caisse depuis : il est retrouvé au passage suivant.
+        self.assertTrue(B.rapprochement_change(ecrit, [{"numero": "0000373", "etat": "Trouvé", "paiement": "ACC-PAY-1"}]))
+        self.assertTrue(B.rapprochement_change(ecrit, [{"numero": "0000373", "etat": "À vérifier", "paiement": "ACC-PAY-1"}]))
+        self.assertTrue(B.rapprochement_change(ecrit, []))
+        self.assertFalse(B.rapprochement_change([], None))
+
     def test_voisin_de_carnet_non_confondu(self):
         # 4001764 lu pour 500 : ni le 4001763 (798) ni le 4001767 (270) ne sont « proches ».
         r = B.rapprocher([{"numero": "4001764", "montant": 500.0}], self.PORTEFEUILLE)

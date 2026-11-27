@@ -541,8 +541,9 @@ def _paiements(nature: str, numeros: list):
 CHAMPS_PIECE = ("numero", "banque", "tireur", "echeance", "montant", "doute")
 
 
-def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
-    """Rapproche `pieces` et ecrit le resultat sur le bordereau. `avant` : remarques a mettre en tete."""
+def _poser(doc, pieces: list, lecture: dict = None, avant: list = (), relancer: bool = True):
+    """Rapproche `pieces` et ecrit le resultat sur le bordereau. `avant` : remarques a mettre en tete.
+    `relancer=False` : appele DEPUIS le passage BIAT (`reverifier_a_signaler`) — ne pas le remettre en file."""
     portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
     rapprochees = rapprocher(pieces, portefeuille, ailleurs)
     if lecture is None:
@@ -572,7 +573,7 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = ()):
     doc.flags.ignore_permissions = True
     doc.save()
     piece_nette.supprimer_originaux(corrections)        # le bordereau ne cite plus le reglement annule
-    if doc.banque == "BIAT" and doc.nature == "Chèques":
+    if relancer and doc.banque == "BIAT" and doc.nature == "Chèques":
         # La BIAT ne publie pas le detail de ses remises : ce bordereau est ce qui permet d'encaisser la
         # sienne. Si elle est deja creditee, elle part tout de suite (`bank/biat.encaisser_remises`).
         frappe.enqueue("bank_retenue_sync.bank.biat.passage_job", queue="default", timeout=900,
@@ -638,6 +639,47 @@ def verifier(name: str) -> dict:
         p["montant"] = frappe.utils.flt(p["montant"], 3) if p["montant"] not in (None, "") else None
     _poser(doc, pieces)
     return detail(doc.name)
+
+
+def rapprochement_change(avant: list, apres: list) -> bool:
+    """La recherche des pieces d'un bordereau donne-t-elle autre chose que ce qui y est ecrit ? Pur.
+    `avant` / `apres` : [{numero, etat, paiement}] dans l'ordre des lignes."""
+    cle = lambda p: (str(p.get("numero") or ""), p.get("etat") or "", p.get("paiement") or "")  # noqa: E731
+    return [cle(p) for p in avant or ()] != [cle(p) for p in apres or ()]
+
+
+def reverifier_a_signaler() -> list:
+    """Rejoue, SANS IA, la recherche des bordereaux lus qui ont encore quelque chose a signaler, et n'ecrit que
+    ceux dont le resultat change. Appele au debut de chaque passage BIAT. -> [noms des bordereaux mis a jour].
+
+    Pourquoi (27/11/2026, sa question « pourquoi en prod la traite n'etait pas corrigee ? ») : un bordereau garde le
+    resultat de sa DERNIERE recherche. Le paiement saisi ou corrige apres coup (cheque d'un colis Aramex passe
+    ensuite par la caisse), comme une regle de recherche ajoutee depuis, ne changeait rien tant que personne ne
+    cliquait « Verifier » : l'alerte restait, la remise n'etait pas encaissee, la correction liee a la retenue a la
+    source (`tej/piece_nette`) n'avait pas lieu. Ne leve jamais : un bordereau en echec n'arrete pas le passage."""
+    faits = []
+    noms = frappe.get_all(DOCTYPE, filters={"lecture_statut": LECTURE_LUE, "a_signaler": ["is", "set"],
+                                            "nature": ["in", list(NATURES_LUES)]}, pluck="name", order_by="creation asc")
+    for nom in noms:
+        try:
+            doc = frappe.get_doc(DOCTYPE, nom)
+            pieces = [{champ: ligne.get(champ) for champ in CHAMPS_PIECE} for ligne in doc.pieces]
+            for p in pieces:
+                p["numero"] = "".join(c for c in str(p["numero"] or "") if c.isdigit())
+                p["montant"] = frappe.utils.flt(p["montant"], 3) if p["montant"] not in (None, "") else None
+            portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
+            neuf = rapprocher(pieces, portefeuille, ailleurs)
+            ecrit = [{"numero": "".join(c for c in str(l.numero or "") if c.isdigit()), "etat": l.etat, "paiement": l.paiement}
+                     for l in doc.pieces]
+            if not rapprochement_change(ecrit, neuf):
+                continue
+            _poser(doc, pieces, relancer=False)
+            frappe.db.commit()
+            faits.append(nom)
+        except Exception:
+            frappe.db.rollback()
+            frappe.log_error(title="Bordereau : nouvelle recherche au passage", message=frappe.get_traceback())
+    return faits
 
 
 @frappe.whitelist()

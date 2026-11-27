@@ -1336,6 +1336,14 @@ def passage(refresh: bool = None, courriels: bool = None) -> dict:
     from bank_retenue_sync.bank import biat_reprise
 
     reprise = biat_reprise.rejouer()
+    # Les bordereaux qui avaient quelque chose a signaler sont recherches de nouveau AVANT d'encaisser : un paiement
+    # saisi ou corrige depuis est retrouve tout seul, sans attendre qu'on clique « Verifier » (27/11/2026).
+    try:
+        from bank_retenue_sync.api import bordereaux
+
+        bordereaux.reverifier_a_signaler()
+    except Exception:
+        frappe.log_error(title="BIAT : nouvelle recherche des bordereaux", message=frappe.get_traceback())
     # Cartes (terminal de paiement) : les courriels de la banque sont lus AVANT le classement, pour qu'un credit
     # arrive le meme jour que son avis soit reconnu au meme passage. Seulement au passage planifie : un depot de
     # bordereau ou un « Reclassifier » ne relit pas la boite.
