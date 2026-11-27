@@ -19,6 +19,8 @@ LES LIBELLES (compte ouvert le 02/11/2026 — trois natures de lignes vues au 16
     Credit Divers Chq Telec A Enc Cre Global/borde : 7473933         credit   reference FT…
     Debit Divers Commission CHQ A Enc/Bordereau : 7473932            debit    reference FT…
     COM Remise effets Encaissement 132601                            debit    reference CHG…  (vu le 24/11/2026)
+    Frais abonnement TPE                                             debit    reference CHG…  (vu le 26/11/2026)
+    TVA sur Com REF : 132601                                         debit    MEME reference CHG… que sa commission
 
 Le numero de BORDEREAU (7 chiffres) est la cle d'une remise : il relie le credit de la remise a sa
 commission, et c'est lui qu'on cherche sur les Payment Entry (`BR:<numero>`, la convention deja
@@ -81,6 +83,15 @@ REGLES = (
     # la regle Zitouna « COMM REMISE EFFET » (`bank/rules.py`). Le numero est celui de la remise d'effets.
     ("com_effet", "Debit", re.compile(r"\bCOM\w*\.?\s+(?:TVA\s+)?REMISE\s+(?:D\W*)?EFFETS?\b(?:\D{0,40}?(\d{4,12}))?"),
      "frais_bancaires", "commission", "Commission de remise d’effets (traites)"),
+    # ABONNEMENT DU TERMINAL — libelle vu le 26/11/2026 : « Frais abonnement TPE », 25 DT par mois.
+    ("abo_tpe", "Debit", re.compile(r"\bFRAIS\s+ABONNEMENT\s+TPE\b"), "frais_bancaires", "abonnement",
+     "Abonnement du terminal de paiement (cartes)"),
+    # TVA D'UNE COMMISSION, SUR SA LIGNE A ELLE — vus les 24 et 26/11/2026 : « TVA sur Com REF : 132601 » (0,760 = 19 %
+    # des 4 DT de la remise d'effets 132601) et « TVA sur Com REF : » (4,750 = 19 % de l'abonnement du terminal).
+    # Elle porte la MEME reference bancaire (CHG…) que la commission qu'elle taxe : c'est le lien (`frais_par_reference`).
+    # Demande du 27/11/2026 : « lorsqu'il y a une ref TVA en frais il faut bien l'ajouter dans les frais bancaires ».
+    ("tva_com", "Debit", re.compile(r"^TVA\s+SUR\s+COM\w*\b(?:\s+REF\b\s*:?\s*(\d{4,12}))?"), "frais_bancaires", "tva",
+     "TVA sur commission"),
     # Virement recu d'un client : meme mot entier que le flux Zitouna (`matching.is_virement_credit`), Aramex
     # exclu (son reversement a son propre circuit). Place APRES les regles precises : il ne prend que le reste.
     ("vir_recu", "Credit", re.compile(r"^(?!.*ARAMEX).*\bVIR(?:EMENT|T)?\b"), "encaissement", "virement",
@@ -119,6 +130,21 @@ def detecter(operation: str, sens: str) -> dict:
             return {"regle": cle, "categorie": categorie, "sous_categorie": sous_categorie, "libelle": libelle,
                     "numero": (trouve.group(1) or "") if trouve.groups() else ""}
     return {"regle": "", "categorie": "", "sous_categorie": "", "libelle": "", "numero": ""}
+
+
+def frais_par_reference(lignes: list) -> dict:
+    """{REFERENCE bancaire: la commission (ou le frais) qui la porte} — pour dire de quoi une ligne de TVA est la
+    TVA : la banque preleve la commission et sa TVA sur deux lignes de meme reference. Pur.
+    -> {reference: {operation, montant, regle, numero}} ; la ligne de TVA elle-meme n'y figure jamais."""
+    out = {}
+    for ligne in lignes:
+        reference = (ligne.get("reference") or "").strip().upper()
+        sens = ligne.get("sens") or ("Debit" if _m(ligne.get("debit")) else "Credit")
+        vu = detecter(ligne.get("operation"), sens)
+        if reference and vu["categorie"] == "frais_bancaires" and vu["regle"] != "tva_com" and reference not in out:
+            out[reference] = {"operation": " ".join(str(ligne.get("operation") or "").split()), "regle": vu["regle"],
+                              "montant": _m(ligne.get("debit") or ligne.get("montant")), "numero": vu["numero"]}
+    return out
 
 
 def classer_ligne(ligne: dict, contexte: dict) -> dict:
@@ -176,6 +202,27 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
         quoi = "commission de la remise de traites" + (f" n° {vu['numero']}" if vu["numero"] else "")
         if vu["numero"]:
             out["groupe"] = "effets:" + vu["numero"]
+        du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
+        if du_mois:
+            out.update(statut=STATUT_BROUILLON if int(du_mois.get("docstatus") or 0) == 0 else STATUT_IDENTIFIE,
+                       document_type="Journal Entry", document_name=du_mois["name"], montant_document=montant,
+                       raison=f"{quoi} : dans l’écriture mensuelle des frais BIAT ({cle_frais(periode_de(ligne.get('date')))})")
+        else:
+            out.update(statut=STATUT_ORPHELIN, raison=f"{quoi} : frais bancaires à comptabiliser")
+        return out
+    if vu["regle"] in ("abo_tpe", "tva_com"):
+        # FRAIS SANS PIECE A RAPPROCHER : ils rejoignent l'ecriture des frais de leur mois, comme les commissions.
+        if vu["regle"] == "abo_tpe":
+            quoi = "abonnement du terminal de paiement (cartes)"
+        else:
+            # La TVA dit de quelle commission elle est la TVA : celle qui porte la meme reference bancaire.
+            mere = (contexte.get("frais_par_reference") or {}).get((ligne.get("reference") or "").strip().upper())
+            if mere:
+                quoi = f"TVA de « {mere['operation']} » ({mere['montant']:.3f}, même référence bancaire)"
+                if mere["regle"] == "com_effet" and mere["numero"]:
+                    out["groupe"] = "effets:" + mere["numero"]
+            else:
+                quoi = "TVA sur commission" + (f" (réf. {vu['numero']})" if vu["numero"] else "")
         du_mois = contexte.get("frais_mensuels", {}).get(periode_de(ligne.get("date")))
         if du_mois:
             out.update(statut=STATUT_BROUILLON if int(du_mois.get("docstatus") or 0) == 0 else STATUT_IDENTIFIE,
@@ -314,7 +361,8 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
 # de la BIAT de ceux de Zitouna ; le mecanisme est le meme ». Donc, comme `expenses/fees.py` : UNE
 # ecriture par mois, refaite en entier depuis le registre a chaque frais nouveau (jamais incrementee :
 # une ligne vue deux fois ne double rien), datee du dernier frais du mois. Pas de part TVA ni timbre :
-# la BIAT ne les donne pas sur des lignes a part, et tout va en « Frais bancaire ».
+# tout va en « Frais bancaire », y compris la TVA que la BIAT preleve sur une ligne a part (« TVA sur Com REF »,
+# vue le 24/11/2026 ; demande du 27/11/2026 : « l'ajouter dans les frais bancaires »).
 
 def periode_de(jour) -> str:
     """« YYYY-MM » d'une date (ou de son texte ISO)."""
@@ -715,6 +763,7 @@ def charger_contexte(lignes: list) -> dict:
     return {"tpe": tpe, "prelevements_tpe": _prelevements_tpe(lignes, tpe),
             "paiements_par_bordereau": paiements, "ecritures_par_reference": par_reference,
             "ecritures_versement": versements, "remises": remises, "frais_mensuels": mensuelles,
+            "frais_par_reference": frais_par_reference(lignes),
             "bordereaux": bordereaux, "lectures": lectures, "refus": refus, "encaissements": encaissements,
             "paiements_par_reference": paiements_ref, "encaissements_par_reference": encaissements_ref,
             "brouillons_par_reference": brouillons_ref, "refus_virements": refus_virements}

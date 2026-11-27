@@ -47,6 +47,22 @@ class TestDetection(unittest.TestCase):
         # La commission du terminal (« COM TVA REF REMISE AFF ») reste la sienne.
         self.assertEqual(biat.detecter("COM TVA REF REMISE AFF 0010010006", "Debit")["regle"], "com_tpe")
 
+    def test_abonnement_du_terminal_et_tva_d_une_commission(self):
+        # Libelles vus les 24 et 26/11/2026, restes « inconnus » : des frais bancaires.
+        vu = biat.detecter("Frais abonnement TPE", "Debit")
+        self.assertEqual((vu["regle"], vu["categorie"], vu["sous_categorie"]), ("abo_tpe", "frais_bancaires", "abonnement"))
+        for libelle, numero in (("TVA sur Com REF : 132601", "132601"), ("TVA sur Com REF :", ""), ("tva  sur com", "")):
+            vu = biat.detecter(libelle, "Debit")
+            self.assertEqual((vu["regle"], vu["categorie"], vu["sous_categorie"], vu["numero"]),
+                             ("tva_com", "frais_bancaires", "tva", numero), libelle)
+        # Jamais un credit ; « TVA » ailleurs dans un libelle ne suffit pas ; les commissions gardent leur regle.
+        self.assertEqual(biat.detecter("TVA sur Com REF : 132601", "Credit")["regle"], "")
+        self.assertEqual(biat.detecter("Frais abonnement TPE", "Credit")["regle"], "")
+        self.assertEqual(biat.detecter("Remboursement TVA sur commande", "Debit")["regle"], "")
+        self.assertEqual(biat.detecter("Frais de tenue de compte", "Debit")["regle"], "")
+        self.assertEqual(biat.detecter("COM TVA REF REMISE AFF 0010010006", "Debit")["regle"], "com_tpe")
+        self.assertEqual(biat.detecter("COM Remise effets Encaissement 132601", "Debit")["regle"], "com_effet")
+
     def test_libelle_inconnu(self):
         for libelle in ("Prelevement STE EXEMPLE", "Cheque 0001234", "", None):   # (un virement recu est reconnu depuis le 16/11/2026)
             self.assertEqual(biat.detecter(libelle, "Credit")["regle"], "")
@@ -103,6 +119,48 @@ class TestClassement(unittest.TestCase):
         self.assertEqual(deux["statut"], "A verifier")                                      # deux candidates : on ne choisit pas
         self.assertIsNone(deux["document_name"])
         self.assertEqual(biat.classer_ligne(v, {})["statut"], "Orphelin")
+
+    def test_l_abonnement_du_terminal_et_sa_tva_rejoignent_les_frais_du_mois(self):
+        # Le cas reel du 26/11/2026 : 25,000 + 4,750 de TVA sous la MEME reference bancaire.
+        abo = ligne("Frais abonnement TPE", debit=25.0, reference="CHG26330V0WAD", date="2026-11-26", cle="a")
+        tva = ligne("TVA sur Com REF :", debit=4.75, reference="CHG26330V0WAD", date="2026-11-26", cle="t")
+        ctx = {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 1}},
+               "frais_par_reference": biat.frais_par_reference([tva, abo])}
+        c = biat.classer_ligne(abo, ctx)
+        self.assertEqual((c["statut"], c["regle"], c["categorie"], c["document_name"], c["montant_document"]),
+                         ("Identifie", "abo_tpe", "frais_bancaires", "JV-F", 25.0))
+        self.assertIn("abonnement du terminal", c["raison"])
+        c = biat.classer_ligne(tva, ctx)
+        self.assertEqual((c["statut"], c["regle"], c["categorie"], c["document_name"], c["groupe"]),
+                         ("Identifie", "tva_com", "frais_bancaires", "JV-F", None))
+        self.assertIn("TVA de « Frais abonnement TPE » (25.000", c["raison"])
+        self.assertIn("BIAT frais bancaires 11-2026", c["raison"])
+        # Ecriture du mois en brouillon, puis absente : jamais « inconnu ».
+        brouillon = biat.classer_ligne(tva, {**ctx, "frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 0}}})
+        self.assertEqual(brouillon["statut"], biat.STATUT_BROUILLON)
+        sans = biat.classer_ligne(tva, {})
+        self.assertEqual((sans["statut"], sans["categorie"]), ("Orphelin", "frais_bancaires"))
+        self.assertIn("frais bancaires à comptabiliser", sans["raison"])
+        # Les deux comptent dans le cumul du mois.
+        cumul = biat.cumul_frais([{**abo, "categorie": "frais_bancaires"}, {**tva, "categorie": "frais_bancaires"}], "2026-11")
+        self.assertEqual((cumul["total"], cumul["nb"], cumul["references"]), (29.75, 2, ["CHG26330V0WAD"]))
+
+    def test_la_tva_d_une_remise_d_effets_suit_sa_commission(self):
+        # Le cas reel du 24/11/2026 : 4,000 de commission + 0,760 de TVA, meme reference, meme n° de remise.
+        com = ligne("COM Remise effets Encaissement 132601", debit=4.0, reference="CHG26328JX5JY", date="2026-11-24", cle="c")
+        tva = ligne("TVA sur Com REF : 132601", debit=0.76, reference="chg26328jx5jy", date="2026-11-24", cle="t")
+        autre = ligne("TVA sur Com REF : 999999", debit=0.19, reference="CHG-SEULE", date="2026-11-24", cle="s")
+        par_ref = biat.frais_par_reference([com, tva, autre, ligne(REMISE, credit=100.0, reference="CHG26328JX5JY")])
+        self.assertEqual(list(par_ref), ["CHG26328JX5JY"])                 # ni la TVA, ni un credit
+        self.assertEqual((par_ref["CHG26328JX5JY"]["regle"], par_ref["CHG26328JX5JY"]["montant"]), ("com_effet", 4.0))
+        ctx = {"frais_mensuels": {"2026-11": {"name": "JV-F", "docstatus": 1}}, "frais_par_reference": par_ref}
+        c = biat.classer_ligne(tva, ctx)
+        self.assertEqual((c["statut"], c["regle"], c["groupe"]), ("Identifie", "tva_com", "effets:132601"))
+        self.assertIn("TVA de « COM Remise effets Encaissement 132601 » (4.000", c["raison"])
+        # Une TVA dont la commission n'est pas (encore) au releve reste un frais, avec ce qu'elle cite.
+        c = biat.classer_ligne(autre, ctx)
+        self.assertEqual((c["statut"], c["categorie"], c["groupe"]), ("Identifie", "frais_bancaires", None))
+        self.assertIn("TVA sur commission (réf. 999999)", c["raison"])
 
     def test_libelle_inconnu_jamais_passe_sous_silence(self):
         c = biat.classer_ligne(ligne("Operation nouvelle 42", debit=10.0), {})
