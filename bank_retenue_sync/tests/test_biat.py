@@ -145,6 +145,30 @@ class TestClassement(unittest.TestCase):
         cumul = biat.cumul_frais([{**abo, "categorie": "frais_bancaires"}, {**tva, "categorie": "frais_bancaires"}], "2026-11")
         self.assertEqual((cumul["total"], cumul["nb"], cumul["references"]), (29.75, 2, ["CHG26330V0WAD"]))
 
+    def test_la_tva_prelevee_par_la_banque_a_sa_ligne_dans_l_ecriture(self):
+        # Demande du 27/11/2026 : « les 4 dinars etaient de la TVA, il fallait la mettre dans TVA ».
+        f = lambda op, debit, regle, cle: {**ligne(op, debit=debit, date="2026-11-26", cle=cle, reference="R" + cle),  # noqa: E731
+                                           "categorie": "frais_bancaires", "regle": regle}
+        lignes = [f("Frais abonnement TPE", 25.0, "abo_tpe", "a"), f("TVA sur Com REF :", 4.75, "tva_com", "t"),
+                  f("TVA sur Com REF : 132601", 0.76, "tva_com", "u"), f(COMMISSION, 0.893, "com_enc_cheque", "c")]
+        cumul = biat.cumul_frais(lignes, "2026-11")
+        self.assertEqual((cumul["frais"], cumul["tva"], cumul["total"], cumul["nb"]), (31.403, 5.51, 31.403, 4))
+        self.assertEqual(biat.cumul_frais(lignes[:1] + lignes[3:], "2026-11")["tva"], 0.0)       # sans ligne de TVA
+        L = lambda total, tva: biat.lignes_ecriture_frais(total, tva, "BIAT", "FRAIS", "TVA", "CC")  # noqa: E731
+        self.assertEqual(L(31.403, 5.51), [{"account": "BIAT", "credit": 31.403},
+                                           {"account": "TVA", "debit": 5.51, "cost_center": "CC"},
+                                           {"account": "FRAIS", "debit": 25.893, "cost_center": "CC"}])
+        # Pas de TVA ce mois-ci : l'ecriture d'avant, deux lignes.
+        self.assertEqual(L(2.679, 0), [{"account": "BIAT", "credit": 2.679}, {"account": "FRAIS", "debit": 2.679, "cost_center": "CC"}])
+        # Les ecarts favorables depassent les frais : la banque est debitee, la TVA reste au debit de son compte.
+        self.assertEqual(L(-1.0, 2.0), [{"account": "BIAT", "debit": 1.0}, {"account": "TVA", "debit": 2.0, "cost_center": "CC"},
+                                        {"account": "FRAIS", "credit": 3.0, "cost_center": "CC"}])
+        self.assertEqual(L(0, 2.0), [{"account": "TVA", "debit": 2.0, "cost_center": "CC"},
+                                     {"account": "FRAIS", "credit": 2.0, "cost_center": "CC"}])
+        for total, tva in ((31.403, 5.51), (2.679, 0), (-1.0, 2.0), (0, 2.0), (4.75, 4.75)):     # toujours equilibree
+            lignes_je = L(total, tva)
+            self.assertAlmostEqual(sum(x.get("debit", 0) for x in lignes_je), sum(x.get("credit", 0) for x in lignes_je), 3)
+
     def test_la_tva_d_une_remise_d_effets_suit_sa_commission(self):
         # Le cas reel du 24/11/2026 : 4,000 de commission + 0,760 de TVA, meme reference, meme n° de remise.
         com = ligne("COM Remise effets Encaissement 132601", debit=4.0, reference="CHG26328JX5JY", date="2026-11-24", cle="c")

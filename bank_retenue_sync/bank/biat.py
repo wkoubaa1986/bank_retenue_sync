@@ -360,9 +360,12 @@ def classer_ligne(ligne: dict, contexte: dict) -> dict:
 # Decision du 16/11/2026 : « pour le moment tout passe en frais bancaire pour la BIAT ; separe les frais
 # de la BIAT de ceux de Zitouna ; le mecanisme est le meme ». Donc, comme `expenses/fees.py` : UNE
 # ecriture par mois, refaite en entier depuis le registre a chaque frais nouveau (jamais incrementee :
-# une ligne vue deux fois ne double rien), datee du dernier frais du mois. Pas de part TVA ni timbre :
-# tout va en « Frais bancaire », y compris la TVA que la BIAT preleve sur une ligne a part (« TVA sur Com REF »,
-# vue le 24/11/2026 ; demande du 27/11/2026 : « l'ajouter dans les frais bancaires »).
+# une ligne vue deux fois ne double rien), datee du dernier frais du mois. Pas de timbre.
+# LA TVA A SA LIGNE (demande du 27/11/2026 : « les 4 dinars etaient de la TVA, il fallait la mettre dans TVA ») :
+# ce que la BIAT preleve sous « TVA sur Com REF » (regle `tva_com`) va au debit de « TVA 19% - A&S », le compte
+# deja utilise pour la TVA des frais Zitouna (`fees.FEE_TVA_ACCOUNT`) ; le reste va en « Frais bancaire ».
+# Seule la TVA que la banque ecrit sur une ligne a elle est separee : une commission prelevee TVA comprise sur une
+# seule ligne (remise de cheques, terminal) reste entiere en frais.
 
 def periode_de(jour) -> str:
     """« YYYY-MM » d'une date (ou de son texte ISO)."""
@@ -396,6 +399,26 @@ def ecart_a_absorber(ligne: dict) -> float:
     return ecart if sens != "Debit" else _m(-ecart)
 
 
+def lignes_ecriture_frais(total: float, tva: float, compte_banque: str, compte_frais: str, compte_tva: str,
+                          centre: str = None) -> list:
+    """Les lignes de l'ecriture mensuelle des frais BIAT. Pur.
+
+        Cr  BIAT            total
+        Dr  TVA 19%         tva                (absente s'il n'y a pas de TVA ce mois-ci)
+        Dr  Frais bancaire  total − tva
+
+    Total negatif (les petits ecarts favorables des encaissements depassent les frais) : le compte BIAT est
+    debite. La TVA reste toujours au debit de son compte ; les frais prennent le reste, dans le sens qu'il a."""
+    total, tva = _m(total), _m(tva)
+    lignes = [{"account": compte_banque, ("credit" if total > 0 else "debit"): abs(total)}] if total else []
+    if tva:
+        lignes.append({"account": compte_tva, "debit": tva, "cost_center": centre})
+    reste = _m(total - tva)
+    if reste:
+        lignes.append({"account": compte_frais, ("debit" if reste > 0 else "credit"): abs(reste), "cost_center": centre})
+    return lignes
+
+
 def cumul_frais(lignes: list, periode: str) -> dict:
     """Le cumul mensuel de la BIAT : ses frais, ET les petits ecarts de ses encaissements — une seule
     ecriture, comme pour Zitouna (« il y a un process qui absorbe les ecarts de paiement dans les frais »,
@@ -405,15 +428,18 @@ def cumul_frais(lignes: list, periode: str) -> dict:
       ecarts  : somme des `ecart_a_absorber` du mois (banque − comptabilite) ;
       total   : frais − ecarts = ce qu'il faut porter au CREDIT du compte BIAT pour que la comptabilite
                 retombe sur la banque. Negatif quand les ecarts favorables depassent les frais du mois.
-    -> {periode, cle, frais, ecarts, nb_ecarts, total, nb, jour (derniere ligne), references}"""
+      tva     : la part des frais que la banque a prelevee comme TVA, sur une ligne a elle (regle `tva_com`) ;
+                elle est COMPRISE dans `frais` et dans `total`, et part sur le compte de TVA.
+    -> {periode, cle, frais, tva, ecarts, nb_ecarts, total, nb, jour (derniere ligne), references}"""
     retenues = [ligne for ligne in lignes
                 if (ligne.get("categorie") == "frais_bancaires" and not ligne.get("ignore_manuel")
                     and periode_de(ligne.get("date")) == periode and _m(ligne.get("debit")) > 0)]
     portes = [(ligne, ecart_a_absorber(ligne)) for ligne in lignes if periode_de(ligne.get("date")) == periode]
     portes = [(ligne, e) for ligne, e in portes if e]
     frais = _m(sum(_m(ligne.get("debit")) for ligne in retenues))
+    tva = _m(sum(_m(ligne.get("debit")) for ligne in retenues if ligne.get("regle") == "tva_com"))
     ecarts = _m(sum(e for _l, e in portes))
-    return {"periode": periode, "cle": cle_frais(periode), "nb": len(retenues), "frais": frais,
+    return {"periode": periode, "cle": cle_frais(periode), "nb": len(retenues), "frais": frais, "tva": tva,
             "ecarts": ecarts, "nb_ecarts": len(portes), "total": _m(frais - ecarts),
             "jour": max((str(ligne.get("date")) for ligne in retenues + [l for l, _e in portes]), default=None),
             "references": sorted({(ligne.get("reference") or "").strip() for ligne in retenues} - {""})}
@@ -895,7 +921,8 @@ def classer_registre(persist: bool = True, _frais: bool = True) -> dict:
 def sync_frais(periode: str = None, insert: bool = True) -> list:
     """Refait l'ecriture mensuelle des frais BIAT de chaque mois qui porte des frais (ou de `periode`).
 
-        Dr  Frais bancaire - A&S     total du mois
+        Dr  Frais bancaire - A&S     total du mois, hors TVA
+        Dr  TVA 19% - A&S            TVA prelevee par la banque sur une ligne a elle (`lignes_ecriture_frais`)
         Cr  BIAT - A&S               total du mois
 
     Memes regles que les frais Zitouna (`expenses/fees.sync_ecriture_mensuelle`) : rien n'est cree tant
@@ -907,7 +934,8 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
 
     lignes = frappe.db.get_all(
         registry.DOCTYPE, filters={"banque": BANQUE}, limit_page_length=0,
-        fields=["name", "date", "reference", "debit", "credit", "sens", "categorie", "statut", "ecart", "ignore_manuel"])
+        fields=["name", "date", "reference", "debit", "credit", "sens", "categorie", "regle", "statut", "ecart",
+                "ignore_manuel"])
     periodes = [periode] if periode else sorted({periode_de(ligne.date) for ligne in lignes
                                                  if ligne.categorie == "frais_bancaires" or ecart_a_absorber(ligne)})
     if not fees.is_enabled():
@@ -917,7 +945,7 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
         cumul = cumul_frais(lignes, p)
         existant = frappe.db.get_value("Journal Entry", {"cheque_no": cumul["cle"], "docstatus": ["<", 2]},
                                        ["name", "total_debit", "docstatus"], as_dict=True)
-        if abs(cumul["total"]) < 0.0005:
+        if abs(cumul["total"]) < 0.0005 and not cumul["tva"]:
             # Rien a porter (aucun frais, ou des ecarts qui les compensent au millime) : une ecriture restee
             # d'un passage precedent n'a plus lieu d'etre.
             if existant and insert and (cumul["nb"] or cumul["nb_ecarts"]):
@@ -926,13 +954,15 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
             bilan.append({"periode": p, "statut": "vide", "total": 0.0, "je": existant.name if existant else None})
             continue
         # L'ecriture en place est la bonne si elle porte le meme montant DANS LE MEME SENS (credit du compte
-        # BIAT quand le total est positif).
+        # BIAT quand le total est positif), ET la meme part de TVA sur le compte de TVA.
         en_place = None
         if existant:
-            credit_banque = flt(frappe.db.sql(
-                """select ifnull(sum(credit_in_account_currency - debit_in_account_currency), 0)
-                   from `tabJournal Entry Account` where parent = %s and account = %s""", (existant.name, compte()))[0][0], 3)
-            en_place = abs(credit_banque - cumul["total"]) < 0.0005
+            solde = lambda sens, nom: flt(frappe.db.sql(  # noqa: E731
+                f"""select ifnull(sum({sens}), 0) from `tabJournal Entry Account`
+                    where parent = %s and account = %s""", (existant.name, nom))[0][0], 3)
+            credit_banque = solde("credit_in_account_currency - debit_in_account_currency", compte())
+            tva_en_place = solde("debit_in_account_currency - credit_in_account_currency", fees.FEE_TVA_ACCOUNT)
+            en_place = abs(credit_banque - cumul["total"]) < 0.0005 and abs(tva_en_place - cumul["tva"]) < 0.0005
         if existant and en_place:
             statut = "inchangee"
             if insert and existant.docstatus == 0 and journal._auto_submit_enabled():
@@ -947,17 +977,16 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
         remplacee = "%s (%s)" % (existant.name, fees._supprimer_ecriture(existant.name)) if existant and insert else None
         jour = fees.date_ecriture(cumul["jour"])
         centre = frappe.db.get_value("Company", COMPANY, "cost_center")
-        montant = abs(cumul["total"])
         # Total positif : la banque a pris des frais -> credit du compte BIAT. Negatif (les encaissements
-        # ont rapporte plus que les frais n'ont coute) : l'ecriture s'inverse.
-        cote_banque, cote_frais = ("credit", "debit") if cumul["total"] > 0 else ("debit", "credit")
+        # ont rapporte plus que les frais n'ont coute) : l'ecriture s'inverse (`lignes_ecriture_frais`).
         detail = "%d opérations bancaires cumulées : %.3f" % (cumul["nb"], cumul["frais"])
+        if cumul["tva"]:
+            detail += " (dont TVA prélevée par la banque : %.3f)" % cumul["tva"]
         if cumul["nb_ecarts"]:
             detail += "\nPetits écarts de %d encaissement(s), banque − comptabilité : %+.3f" % (cumul["nb_ecarts"], cumul["ecarts"])
         je = journal.build_journal_entry(
             COMPANY, jour,
-            [{"account": compte(), cote_banque: montant},
-             {"account": COMPTE_FRAIS, cote_frais: montant, "cost_center": centre}],
+            lignes_ecriture_frais(cumul["total"], cumul["tva"], compte(), COMPTE_FRAIS, fees.FEE_TVA_ACCOUNT, centre),
             remark="%s\n%s\nRéf. banque %s" % (cumul["cle"], detail, ", ".join(cumul["references"][:20])),
             cheque_no=cumul["cle"], cheque_date=jour)
         if insert:
@@ -965,7 +994,7 @@ def sync_frais(periode: str = None, insert: bool = True) -> list:
             if etait_soumise or journal._auto_submit_enabled():
                 je.submit()
         bilan.append({"periode": p, "statut": "remplacee" if remplacee else "cree", "total": cumul["total"],
-                      "frais": cumul["frais"], "ecarts": cumul["ecarts"],
+                      "frais": cumul["frais"], "tva": cumul["tva"], "ecarts": cumul["ecarts"],
                       "je": je.name if insert else "(essai)", "remplacee": remplacee})
     return bilan
 
