@@ -190,8 +190,12 @@ def get_charges(mois=None) -> dict:
     from bank_retenue_sync.facturation import controle
 
     mois = periode.normaliser(mois)
+    rattacher_auto()
     donnees = controle.attacher_aux_lignes(M_charges.liste(mois))
     donnees["envoi"] = _etat_envoi(_dossier_doc(mois))
+    # Ce que le dossier a recu TOUT SEUL (pieces anciennes saisies apres l'envoi de leur mois) : l'ecran
+    # le dit en tete des charges, et marque chaque ligne dans son sous-bloc « Retards ».
+    donnees["ajouts_auto"] = _ajouts_automatiques(mois)
     donnees["peut_rattacher"] = any(r in frappe.get_roles() for r in ROLES_ECRITURE)
     donnees["retards"] = [{"mois": g["mois"], "libelle": _libelle_mois(g["mois"]),
                            "totaux": g["totaux"], "lignes": g["lignes"]}
@@ -454,6 +458,7 @@ def generer_dossier(mois=None, avec_pdf=1, avec_releve=0) -> dict:
     _guard(ecriture=True)
     mois = periode.normaliser(mois)
     _refuser_mois_en_cours(mois)
+    rattacher_auto(force=True)             # le dossier part avec tout ce qui manque au comptable
     etat = M_dossier.lancer(mois, avec_pdf=bool(frappe.utils.cint(avec_pdf)),
                             avec_releve=bool(frappe.utils.cint(avec_releve)))
     return {"mois": mois, "etat": etat,
@@ -612,6 +617,7 @@ def _vue_pool(l: dict) -> dict:
 def _vue_child(r) -> dict:
     """Une retardataire deja rattachee, lue depuis la table enfant (instantane du rattachement)."""
     return {
+        "automatique": bool(r.get("automatique")),
         "mois_origine": r.mois_origine,
         "libelle_origine": periode.libelle(r.mois_origine) if r.mois_origine else "",
         "document_type": r.document_type,
@@ -635,6 +641,7 @@ def get_dossier_mensuel(mois=None, nb_mois=NB_MOIS_RETARDS) -> dict:
     _guard()
     mois = periode.normaliser(mois)
     nb_mois = frappe.utils.cint(nb_mois) or NB_MOIS_RETARDS
+    rattacher_auto()
     doc = _dossier_doc(mois)
     candidats = [_vue_pool(l) for l in _pool_retardataires(nb_mois)
                  if (l.get("mois_origine") or "") < mois]
@@ -672,14 +679,33 @@ def marquer_envoye(mois=None) -> dict:
     mois = periode.normaliser(mois)
     _refuser_mois_en_cours(mois)
     doc = _dossier_doc(mois, creer=True)
+    reportees, constitue_le = [], None
     if (doc.statut or "Brouillon") != "Envoyé":
+        # ⚠️ CE QUI EST PARTI, C'EST L'ARCHIVE — PAS L'INSTANT DU CLIC (27/11/2026). Le dossier d'octobre a
+        # ete constitue le 10/11 et n'etait toujours pas marque envoye le 27 : dater l'envoi du clic
+        # aurait declare « dans le dossier » dix-sept jours de pieces que le ZIP ne contient pas. La
+        # date d'envoi est donc celle de la derniere archive constituee ; sans archive, celle du clic.
+        archives = M_dossier.archives(mois)
+        constitue_le = archives[0].creation if archives else None
+        if constitue_le:
+            # Meme raison : une retardataire rattachee APRES cette archive n'y est pas. La figer ici
+            # la ferait disparaitre sans qu'elle soit jamais transmise ; detachee, elle repart d'elle-meme
+            # avec le prochain dossier (`rattacher_auto`).
+            # ⚠️ `rattachee_le`, PAS `creation` : Frappe recopie sur chaque ligne enfant la date de creation
+            # du dossier. Une ligne d'avant ce champ n'a pas de date : on ne la deplace pas.
+            for r in list(doc.retardataires):
+                if r.get("rattachee_le") and frappe.utils.get_datetime(r.rattachee_le) > frappe.utils.get_datetime(constitue_le):
+                    reportees.append({"document_type": r.document_type, "document_name": r.document_name})
+                    doc.remove(r)
         doc.statut = "Envoyé"
-        doc.date_envoi = frappe.utils.now_datetime()
+        doc.date_envoi = constitue_le or frappe.utils.now_datetime()
         doc.envoye_par = frappe.session.user
         doc.libelle = periode.libelle(mois)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
-    return {"mois": mois, "envoi": _etat_envoi(doc)}
+        if reportees:
+            rattacher_auto(force=True)
+    return {"mois": mois, "envoi": _etat_envoi(doc), "reportees": reportees, "date_archive": bool(constitue_le)}
 
 
 @frappe.whitelist()
@@ -742,15 +768,112 @@ def rattacher(mois=None, document_type=None, document_name=None, attacher=1, man
             frappe.throw(_("Cette pièce est déjà rattachée au dossier d'un autre mois."))
         desc = _decrire_voucher(document_type, document_name)
         _exiger_retardataire(desc, mois, manuel=manuel)
-        doc.append("retardataires", desc)
+        doc.append("retardataires", {**desc, "rattachee_le": frappe.utils.now_datetime()})
         doc.save(ignore_permissions=True)
+        _noter_refus_auto(cle, False)          # recochee a la main : elle n'est plus « refusee »
         frappe.db.commit()
     elif not attacher and existe:
         doc.remove(existe)
         doc.save(ignore_permissions=True)
+        # Detachee A LA MAIN : le rattachement automatique ne la remettra pas (cf. `rattacher_auto`).
+        _noter_refus_auto(M_retards.cle_voucher(document_type, document_name), True)
         frappe.db.commit()
 
     return {"mois": mois, "attache": attacher, "nb_rattaches": len(doc.retardataires)}
+
+
+# ------------------------------------------------------------------ rattachement automatique
+#
+# Demande du 27/11/2026 : « hier j'ai ajouté des achats et des dépenses anciennes ; comment être certain
+# que ces factures qui n'étaient pas déjà envoyées au comptable sont automatiquement dans le mois en
+# cours ; est-ce que dans Charges tu peux ajouter ça d'une façon automatique et visible ».
+#
+# Jusque-la une retardataire attendait qu'on la COCHE dans « À rattraper ». Elle est maintenant jointe
+# d'elle-meme au PROCHAIN DOSSIER A PARTIR (`retards.prochain_dossier`), des que la page s'ouvre et
+# avant chaque constitution d'archive. Memes garde-fous que le geste a la main (`_exiger_retardataire`) ;
+# une piece deja partie sous une autre ecriture (`deja_envoyee`) n'est pas jointe ; une piece qu'une
+# personne a DETACHEE ne l'est plus jamais d'office. La ligne porte « automatique » : l'ecran le montre.
+
+CLE_REFUS_AUTO = "brs_retards_refus_auto"
+CLE_PASSAGE_AUTO = "brs_retards_auto_passage"
+DELAI_PASSAGE_AUTO = 60          # secondes : la page appelle trois lectures d'affilee, une seule detecte
+
+
+def _refus_auto() -> set:
+    import json
+
+    try:
+        brut = frappe.db.sql("select defvalue from `tabDefaultValue` where parent = '__global' and defkey = %s limit 1",
+                             CLE_REFUS_AUTO)
+        return set(json.loads((brut[0][0] if brut else None) or "[]"))
+    except Exception:
+        return set()
+
+
+def _noter_refus_auto(cle: str, refuse: bool) -> None:
+    import json
+
+    refus = _refus_auto()
+    if refuse == (cle in refus):
+        return
+    refus = (refus | {cle}) if refuse else (refus - {cle})
+    frappe.db.set_global(CLE_REFUS_AUTO, json.dumps(sorted(refus), ensure_ascii=False))
+
+
+def rattacher_auto(force: bool = False) -> list:
+    """Joint chaque retardataire du vivier au prochain dossier a partir. Idempotent, ne leve jamais.
+    -> [{mois, document_type, document_name}] des pieces jointes par CET appel."""
+    try:
+        if not force and frappe.cache.get_value(CLE_PASSAGE_AUTO):
+            return []
+        frappe.cache.set_value(CLE_PASSAGE_AUTO, 1, expires_in_sec=DELAI_PASSAGE_AUTO)
+        vivier = [l for l in _pool_retardataires() if not l.get("deja_envoyee")]
+        if not vivier:
+            return []
+        refus = _refus_auto()
+        envoyes = set(_envois_map())
+        courant = periode.courant()
+        faits, docs = [], {}
+        for l in vivier:
+            cle = M_retards.cle_voucher(l["document_type"], l["document_name"])
+            mois = M_retards.prochain_dossier(l.get("mois_origine"), envoyes, courant)
+            if not mois or cle in refus:
+                continue
+            desc = _decrire_voucher(l["document_type"], l["document_name"])
+            try:
+                _exiger_retardataire(desc, mois)
+            except Exception:
+                continue                       # pas une vraie retardataire pour ce mois : a une personne
+            doc = docs.get(mois) or _dossier_doc(mois, creer=True)
+            docs[mois] = doc
+            if any(r.document_type == l["document_type"] and r.document_name == l["document_name"]
+                   for r in doc.retardataires):
+                continue
+            doc.append("retardataires", {**desc, "automatique": 1, "rattachee_le": frappe.utils.now_datetime()})
+            faits.append({"mois": mois, "document_type": l["document_type"], "document_name": l["document_name"]})
+        for doc in docs.values():
+            doc.save(ignore_permissions=True)
+        if faits:
+            frappe.db.commit()
+        return faits
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(frappe.get_traceback(), "Facturation mensuelle : rattachement automatique")
+        return []
+
+
+def _ajouts_automatiques(mois: str) -> list:
+    """Les pieces que ce dossier a recues toutes seules, les plus recentes d'abord."""
+    if not frappe.db.exists(DOCTYPE_MENSUEL, mois) or not frappe.db.has_column("BRS Dossier Retardataire", "automatique"):
+        return []
+    rows = frappe.get_all("BRS Dossier Retardataire", filters={"parent": mois, "automatique": 1},
+                          fields=["mois_origine", "document_type", "document_name", "tiers", "reference", "montant",
+                                  "rattachee_le"], order_by="rattachee_le desc", limit_page_length=0)
+    return [{"mois_origine": r.mois_origine, "libelle_origine": _libelle_mois(r.mois_origine),
+             "document_type": r.document_type, "document_name": r.document_name, "tiers": r.tiers,
+             "reference": r.reference, "montant": r.montant,
+             "ajoutee_le": frappe.utils.format_datetime(r.rattachee_le, "dd/MM/yyyy HH:mm") if r.rattachee_le else ""}
+            for r in rows]
 
 
 def _exiger_retardataire(desc: dict, mois: str, manuel: bool = False) -> None:

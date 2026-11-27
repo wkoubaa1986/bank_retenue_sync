@@ -450,8 +450,17 @@ def vouchers_charges_du_mois(mois: str, comptes: list | None = None) -> list:
     if comptes is None:
         comptes = comptes_charges()
     ecritures = _ecritures(comptes, debut, fin)
-    return sorted({(e.voucher_type, e.voucher_no) for e in ecritures
-                   if e.voucher_type in TYPES_CHARGE})
+    vouchers = {(e.voucher_type, e.voucher_no) for e in ecritures if e.voucher_type in TYPES_CHARGE}
+    # ⚠️ ET LES FACTURES NEES D'UN RECU (27/11/2026). Le bloc « Achats » de `liste` les montre depuis le
+    # 10/11/2026 (elles touchent « Stock Reçus Mais Non Facturés », pas « Stock Existant »), mais ce
+    # vivier-ci les ignorait : une facture d'aout saisie fin novembre (SCPS, ACC-PINV-2026-00134)
+    # etait listee dans un mois deja envoye sans jamais etre signalee comme retardataire. Seulement
+    # les FACTURES : l'ecriture de journal qui solde une reception reste hors dossier, comme dans `liste`.
+    recus = _resoudre(compte_stock_recu_non_facture())
+    if recus:
+        vouchers |= {(e.voucher_type, e.voucher_no) for e in _ecritures([recus], debut, fin)
+                     if e.voucher_type == "Purchase Invoice"}
+    return sorted(vouchers)
 
 
 def creations_des_vouchers(vouchers) -> dict:

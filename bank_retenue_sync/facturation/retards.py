@@ -133,6 +133,33 @@ def raison_de_refus(origine, mois, envoi, creation, manuel: bool = False) -> str
     return None
 
 
+def mois_suivant(mois: str) -> str:
+    """« 2026-12 » -> « 2027-01 ». Fonction pure."""
+    annee, m = int(mois[:4]), int(mois[5:7])
+    return "%04d-%02d" % ((annee + 1, 1) if m == 12 else (annee, m + 1))
+
+
+def prochain_dossier(origine: str, envoyes, mois_courant: str) -> str | None:
+    """Le dossier qui portera AUTOMATIQUEMENT une retardataire (27/11/2026). Fonction pure.
+
+    Demande : « comment être certain que ces factures qui n'étaient pas déjà envoyées au comptable
+    sont automatiquement dans le mois en cours ». La règle : le PROCHAIN DOSSIER À PARTIR — le plus
+    ancien mois postérieur à l'origine qui n'est pas encore envoyé, et au plus tard le mois en
+    cours (qui ne peut pas être envoyé : il porte donc toujours ce qui reste).
+
+    Jamais le mois d'origine ni un mois antérieur (double comptage, cf. `raison_de_refus`), jamais
+    un mois déjà envoyé (la pièce disparaîtrait du vivier sans être transmise). None si l'origine
+    est illisible ou n'est pas antérieure au mois en cours.
+    """
+    if not origine or not mois_courant or len(origine) != 7 or origine >= mois_courant:
+        return None
+    deja = set(envoyes or ())
+    mois = mois_suivant(origine)
+    while mois < mois_courant and mois in deja:
+        mois = mois_suivant(mois)
+    return mois
+
+
 def grouper_par_mois_origine(retards: list[dict]) -> list[dict]:
     """[{mois, lignes, totaux}] trié du mois d'origine le plus ancien au plus récent.
 

@@ -1165,9 +1165,10 @@ class FacturationMensuelle {
          ${d.nb_candidats || 0} retardataire(s) encore en attente partiront avec un mois suivant.
          Annulez l’envoi de ${this._esc(d.libelle)} pour modifier ses rattachements.</div>`
       : `<div class="muted" style="font-size:12px;">Charges d’un mois déjà envoyé, saisies après
-         son envoi. Cochez-les pour les joindre au dossier de <b>${this._esc(d.libelle)}</b> :
-         elles y paraîtront dans un sous-bloc « Retards de … », à sous-total séparé, sans gonfler
-         le total du mois.</div>`;
+         son envoi. Elles sont <b>jointes d’office au prochain dossier à partir</b> (ici
+         <b>${this._esc(d.libelle)}</b> s’il n’est pas encore envoyé) : elles y paraissent dans un
+         sous-bloc « Retards de … », à sous-total séparé, sans gonfler le total du mois. Décochez une
+         pièce pour la retirer : elle ne sera plus jointe d’office.</div>`;
 
     return `<div class="fm-dossier">
         <div class="tete"><b>Envoi au comptable</b>${bouton}</div>${banniere}
@@ -1203,7 +1204,8 @@ class FacturationMensuelle {
         ${coche ? "checked" : ""}${fige ? " disabled" : ""}></td>
       <td>${this._esc(r.libelle_origine || r.mois_origine || "")}</td>
       <td>${this._esc(r.tiers || "")}</td>
-      <td>${this._esc(r.reference || "")}${this._deja_envoyee(r)}</td>
+      <td>${this._esc(r.reference || "")}${r.automatique
+        ? ' <span class="fm-badge warn">ajoutée automatiquement</span>' : ""}${this._deja_envoyee(r)}</td>
       <td class="num">${this._m(r.montant)}</td>
       <td>${r.avec_justificatif
         ? '<span class="fm-badge ok">présent</span>'
@@ -1218,9 +1220,22 @@ class FacturationMensuelle {
       () => r(true), () => r(false)));
     if (!ok) return;
     try {
-      await frappe.call({ method: "bank_retenue_sync.api.cloture.marquer_envoye",
-        args: { mois: this.mois } });
+      const r = (await frappe.call({ method: "bank_retenue_sync.api.cloture.marquer_envoye",
+        args: { mois: this.mois } })).message || {};
       frappe.show_alert({ message: __("Mois marqué comme envoyé."), indicator: "green" });
+      // L’envoi est daté de la dernière archive constituée : ce qui a été saisi ou rattaché APRÈS
+      // elle n’est pas chez le comptable, et repart avec le prochain dossier.
+      if (r.date_archive) {
+        frappe.msgprint({
+          title: __("Envoi daté de l’archive"), indicator: "blue",
+          message: __("L’envoi est daté du {0}, le moment où la dernière archive a été constituée : "
+            + "c’est elle que le comptable a reçue. Toute pièce saisie après partira d’elle-même avec "
+            + "le prochain dossier.", [(r.envoi || {}).date_envoi_libelle || ""])
+            + ((r.reportees || []).length
+              ? "<br><br>" + __("{0} pièce(s) rattachée(s) après cette archive n’y sont pas : "
+                + "elles sont reportées sur le prochain dossier.", [r.reportees.length]) : ""),
+        });
+      }
       this._charger_mensuel();
     } catch (e) {
       frappe.msgprint({ title: __("Envoi impossible"), message: String(e), indicator: "red" });
@@ -1399,8 +1414,34 @@ class FacturationMensuelle {
            </table></div>` + ecartees(b);
     }).join("");
 
-    return kpis + absents + controle + this._encart_rattrapage(d) + blocs
+    return kpis + absents + controle + this._encart_ajouts_auto(d) + this._encart_rattrapage(d) + blocs
       + this._blocs_retards(d);
+  }
+
+  /** Les pièces anciennes que ce dossier a reçues TOUTES SEULES (27/11/2026) : saisies après l’envoi
+   *  de leur mois, elles n’ont jamais été remises au comptable. Dit en tête des charges, pour qu’on
+   *  n’ait pas à les chercher ; chacune se retrouve plus bas dans son sous-bloc « Retards de … ». */
+  _encart_ajouts_auto(d) {
+    const ajouts = d.ajouts_auto || [];
+    if (!ajouts.length) return "";
+    const total = ajouts.reduce((t, a) => t + (parseFloat(a.montant) || 0), 0);
+    const lignes = ajouts.map((a) => `<tr>
+      <td>${this._esc(a.libelle_origine || a.mois_origine || "")}</td>
+      <td>${this._esc(a.tiers || "")}</td>
+      <td>${this._esc(a.reference || "")}</td>
+      <td class="num"><b>${this._m(a.montant)}</b></td>
+      <td class="muted">${this._esc(a.ajoutee_le || "")}</td>
+      <td>${this._lien(a.document_type, a.document_name)}</td></tr>`).join("");
+    return `<div class="fm-dossier" style="border-left:4px solid #b35900;">
+      <div class="tete"><b>📥 ${ajouts.length} pièce(s) ancienne(s) ajoutée(s) automatiquement à ce dossier</b>
+        <span class="fm-badge warn">${this._m(total)} TTC, hors total du mois</span></div>
+      <div class="muted" style="font-size:12px;margin-bottom:6px;">Saisies après l’envoi de leur mois, elles
+        n’ont jamais été remises au comptable : elles partent avec le dossier de
+        <b>${this._esc(d.libelle)}</b>, dans un sous-bloc « Retards de … » plus bas. Pour en retirer une,
+        décochez-la dans l’onglet Dossier : elle ne sera plus ajoutée d’office.</div>
+      <div class="fm-scroll"><table class="fm-tbl"><thead><tr><th>Mois d’origine</th><th>Tiers</th>
+        <th>Référence</th><th class="num">TTC</th><th>Ajoutée le</th><th>Pièce</th></tr></thead>
+        <tbody>${lignes}</tbody></table></div></div>`;
   }
 
   // ------------------------------------------------ rattrapage manuel (onglet Charges)
@@ -1528,11 +1569,14 @@ class FacturationMensuelle {
   _blocs_retards(d) {
     const groupes = d.retards || [];
     if (!groupes.length) return "";
+    const autos = new Set((d.ajouts_auto || []).map((a) => `${a.document_type}|${a.document_name}`));
     return groupes.map((g) => {
       const t = g.totaux || {};
       const corps = (g.lignes || []).map((l) => `<tr>
         <td class="muted">${this._esc(l.date || "")}</td>
-        <td><b>${this._esc(l.reference_export || l.ref || "")}</b></td>
+        <td><b>${this._esc(l.reference_export || l.ref || "")}</b>${
+          autos.has(`${l.document_type}|${l.document_name}`)
+            ? ' <span class="fm-badge warn">ajoutée automatiquement</span>' : ""}</td>
         <td>${this._esc(l.tiers || "")}</td>
         <td class="muted">${this._esc(l.categorie || "")}</td>
         <td class="num">${this._m(l.ht)}</td>

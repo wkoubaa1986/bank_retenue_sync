@@ -12,7 +12,9 @@
   "tiers",
   "reference",
   "montant",
-  "avec_justificatif"
+  "avec_justificatif",
+  "automatique",
+  "rattachee_le"
  ],
  "fields": [
   {
@@ -71,12 +73,27 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Justificatif"
+  },
+  {
+   "default": "0",
+   "description": "Jointe d-office au prochain dossier à partir (pièce saisie après l-envoi de son mois), sans qu-une personne l-ait cochée.",
+   "fieldname": "automatique",
+   "fieldtype": "Check",
+   "label": "Ajoutée automatiquement",
+   "read_only": 1
+  },
+  {
+   "description": "Le moment du rattachement. Une pièce rattachée après la constitution de l-archive envoyée n-y est pas : elle est reportée sur le dossier suivant.",
+   "fieldname": "rattachee_le",
+   "fieldtype": "Datetime",
+   "label": "Rattachée le",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-07 10:00:00.000000",
+ "modified": "2026-11-27 16:45:00.000000",
  "modified_by": "Administrator",
  "module": "Bank Retenue Sync",
  "name": "BRS Dossier Retardataire",
