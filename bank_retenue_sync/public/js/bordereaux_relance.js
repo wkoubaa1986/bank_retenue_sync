@@ -7,6 +7,12 @@
 //    (avec un motif). Données : bank_retenue_sync.api.bordereaux.manquants_barre ; rafraîchie toutes les 5 minutes et
 //    à chaque bordereau lu (temps réel `brs_bordereau_lu`, `brs_bordereaux_manquants`).
 //
+//    LES REMISES À CORRIGER (demande du 27/11/2026), pour ceux qui ont le rôle « Alerte remises à corriger » (Nejib
+//    et Wassim) : un chèque ou une traite d'un bordereau introuvable dans ERPNext, une remise carte « à signaler »,
+//    un écart bloquant d'encaissement (la forme que prend le même cas sur le compte Zitouna).
+//    Même barre, même liste : chaque ligne dit ce qui cloche, donne une piste quand elle est sûre, et ouvre la fiche
+//    à corriger. Elle disparaît d'elle-même quand le contrôle ne signale plus rien (`bank/remises_a_corriger`).
+//
 // 2. window.brs_bordereau_depot() : la même photo, hors de la caisse — le bouton de « Ma journée », pour celui qui
 //    va à la banque et prend le bordereau en photo au guichet.
 //
@@ -186,6 +192,13 @@
     .bm-carte .bm-non { font-size: 12.5px; display: inline-block; margin-top: 8px; }
   </style>`;
   const pluriel = (n) => (n > 1 ? `${n} ${__("bordereaux de remise à photographier")}` : __("1 bordereau de remise à photographier"));
+  const pluriel_c = (n) => (n > 1 ? `${n} ${__("remises à corriger")}` : __("1 remise à corriger"));
+  const corriger = () => (etat && etat.a_corriger) || [];
+  // Le texte de la barre : ce qui bloque de l'argent d'abord (à corriger), puis les photos.
+  const resume = () => {
+    const n = etat ? etat.n || 0 : 0, c = corriger().length;
+    return [c ? pluriel_c(c) : "", n ? pluriel(n) : ""].filter(Boolean).join(" · ");
+  };
   const notifier = (txt) => {
     try {
       if (!("Notification" in window)) return;
@@ -197,17 +210,17 @@
     } catch (e) { /* ignoré */ }
   };
   const peindre = () => {
-    const n = etat ? etat.n || 0 : 0;
+    const n = (etat ? etat.n || 0 : 0) + corriger().length;
     if (!n) { if ($b) { $b.remove(); $b = null; } dernier = 0; return; }
     if (!document.getElementById("bm-style")) $("head").append(style);
     if (!$b) {
-      $b = $(`<div class="bm-bandeau" title="${__("Voir les bordereaux à photographier")}"><span>🏦</span><span class="bm-txt"><span class="bm-court"></span><span class="bm-detail"></span></span><span class="bm-bt">${__("Voir")}</span></div>`).appendTo("body");
+      $b = $(`<div class="bm-bandeau" title="${__("Voir ce qu’il y a à faire sur les remises")}"><span>🏦</span><span class="bm-txt"><span class="bm-court"></span><span class="bm-detail"></span></span><span class="bm-bt">${__("Voir")}</span></div>`).appendTo("body");
       $b.on("click", ouvrir);
     }
-    const premier = etat.lignes[0];
-    $b.find(".bm-court").text(pluriel(n));
+    const premier = corriger()[0] || (etat.lignes || [])[0];
+    $b.find(".bm-court").text(resume());
     $b.find(".bm-detail").text(premier ? ` — ${premier.titre}${n > 1 ? " …" : ""}` : "");
-    if (dernier >= 0 && n > dernier) notifier(pluriel(n) + (premier ? " — " + premier.titre : ""));
+    if (dernier >= 0 && n > dernier) notifier(resume() + (premier ? " — " + premier.titre : ""));
     dernier = n;
   };
   const carte = (l) => `
@@ -222,19 +235,39 @@
         <button class="btn btn-default btn-sm" data-confirmer="${esc(l.cle)}" style="margin-top:6px">${__("Confirmer : pas de bordereau")}</button>
       </div>
     </div>`;
+  // Une remise à corriger : ce qui cloche, la piste, la fiche à ouvrir. Pas de photo à prendre ici.
+  const carte_corriger = (l) => `
+    <div class="bm-carte" data-cle="${esc(l.cle)}" style="border-color:#f0c58a;background:#fffaf2">
+      <div class="bm-titre">⚠ ${esc(l.titre)}</div>
+      <div class="bm-texte" style="margin-bottom:5px">${esc(l.detail)}</div>
+      <ul style="margin:0 0 8px;padding-left:18px;font-size:13.5px;font-weight:600">${(l.points || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+      ${l.piste ? `<div style="margin-bottom:9px">${boite("bleu", "💡 " + esc(l.piste))}</div>` : ""}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" data-ouvrir="${esc(l.cle)}" style="flex:1 1 180px;min-height:44px;font-weight:600">${__("Ouvrir la fiche à corriger")}</button>
+        ${l.verifier ? `<button class="btn btn-default" data-verifier="${esc(l.cle)}" style="flex:1 1 140px;min-height:44px">🔄 ${__("C’est corrigé : vérifier")}</button>` : ""}
+      </div>
+      <a href="#" class="bm-non" data-non="${esc(l.cle)}">${__("Ne plus signaler…")}</a>
+      <div data-zone="non" style="display:none;margin-top:8px">
+        <input class="form-control" data-note placeholder="${__("Pourquoi il n’y a rien à corriger (obligatoire)")}">
+        <button class="btn btn-default btn-sm" data-confirmer="${esc(l.cle)}" style="margin-top:6px">${__("Confirmer : ne plus signaler")}</button>
+      </div>
+    </div>`;
+  const intro_photos = `<div style="font-size:13px;color:var(--text-muted,#555);margin-bottom:8px">${
+    __("La BIAT ne dit pas quels chèques ou quelles traites composent une remise : seul le bordereau le dit. Prenez-le en photo, ou demandez-le à celui qui a fait la remise.")}</div>`;
+  const section = (titre) => `<div style="font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-muted,#555);margin:4px 0 8px">${esc(titre)}</div>`;
   const remplir = () => {
     if (!dialogue) return;
     const $l = dialogue.fields_dict.liste.$wrapper;
-    const lignes = (etat && etat.lignes) || [];
-    $l.html(lignes.length ? lignes.map(carte).join("")
-      : boite("vert", `✔ <b>${__("Aucun bordereau ne manque.")}</b>`));
+    const lignes = (etat && etat.lignes) || [], c = corriger();
+    if (!lignes.length && !c.length) { $l.html(boite("vert", `✔ <b>${__("Rien à faire : aucune remise à corriger, aucun bordereau ne manque.")}</b>`)); return; }
+    $l.html((c.length ? section(pluriel_c(c.length)) + c.map(carte_corriger).join("") : "")
+      + (lignes.length ? (c.length ? section(pluriel(lignes.length)) : "") + intro_photos + lignes.map(carte).join("") : ""));
   };
   const ouvrir = () => {
     if (dialogue) { dialogue.fields_dict.message.$wrapper.html(""); dialogue.show(); remplir(); return; }
-    dialogue = new frappe.ui.Dialog({ title: __("Bordereaux de remise à photographier"), fields: [
+    dialogue = new frappe.ui.Dialog({ title: __("Remises en banque : à faire"), fields: [
       { fieldtype: "HTML", fieldname: "intro" }, { fieldtype: "HTML", fieldname: "message" }, { fieldtype: "HTML", fieldname: "liste" }] });
-    dialogue.fields_dict.intro.$wrapper.html(`<div style="font-size:13px;color:var(--text-muted,#555);margin-bottom:8px">${
-      __("La BIAT ne dit pas quels chèques ou quelles traites composent une remise : seul le bordereau le dit. Prenez-le en photo, ou demandez-le à celui qui a fait la remise.")}</div>`);
+    // Le champ « intro » ne porte plus de texte : il garde les champs fichier cachés (jamais redessiné).
     const $m = dialogue.fields_dict.message.$wrapper, $l = dialogue.fields_dict.liste.$wrapper;
     brancher($l, (f, cle) => {
       const l = ((etat && etat.lignes) || []).find((x) => x.cle === cle) || {};
@@ -245,10 +278,30 @@
         .catch((e) => $m.html(boite("rouge", `✖ ${esc((e && e.message) || __("Envoi impossible."))}`)));
     }, dialogue.fields_dict.intro.$wrapper);
     $l.on("click", "[data-non]", (e) => { e.preventDefault(); $(e.currentTarget).siblings("[data-zone=non]").toggle(); });
+    // Remise à corriger : ouvrir sa fiche (bordereau ou remise carte), ou relancer la recherche après correction.
+    $l.on("click", "[data-ouvrir]", (e) => {
+      const l = corriger().find((x) => x.cle === $(e.currentTarget).attr("data-ouvrir"));
+      if (!l) return;
+      dialogue.hide();
+      frappe.set_route(...(l.route || ["Form", l.doctype, l.name]));
+    });
+    $l.on("click", "[data-verifier]", (e) => {
+      const l = corriger().find((x) => x.cle === $(e.currentTarget).attr("data-verifier"));
+      if (!l) return;
+      frappe.call({ method: `${API}.verifier`, args: { name: l.name }, freeze: true, freeze_message: __("Recherche dans ERPNext…") })
+        .then((r) => {
+          const signale = ((r.message || {}).a_signaler || "").split("\n").filter(Boolean);
+          $m.html(signale.length
+            ? boite("orange", `⚠ <b>${esc(l.titre)}</b> — ${__("toujours à corriger :")}<ul style="margin:4px 0 0;padding-left:18px">${signale.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`)
+            : boite("vert", `✔ <b>${esc(l.titre)}</b> — ${__("tout est retrouvé dans ERPNext. La remise s’encaisse au prochain passage.")}`));
+          $m[0].scrollIntoView({ block: "nearest" });
+          charger();
+        });
+    });
     $l.on("click", "[data-confirmer]", (e) => {
       const $c = $(e.currentTarget).closest(".bm-carte");
       frappe.call({ method: `${API}.ecarter_manquant`, freeze: true,
-        args: { cle: $(e.currentTarget).attr("data-confirmer"), motif: $c.find("[data-motif]").val(), note: $c.find("[data-note]").val() } })
+        args: { cle: $(e.currentTarget).attr("data-confirmer"), motif: $c.find("[data-motif]").val() || "Autre", note: $c.find("[data-note]").val() } })
         .then((r) => { if (r.message) { etat = r.message; peindre(); remplir(); } });
     });
     dialogue.show();

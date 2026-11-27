@@ -254,7 +254,7 @@ app_include_js = [
     "/assets/bank_retenue_sync/js/paiements_a_faire_compteur.js?v=1",
     # Barre des bordereaux de remise manquants (role « Relance bordereaux ») et depot d'une photo hors de la caisse
     # (bouton de Ma journee) — 25/11/2026.
-    "/assets/bank_retenue_sync/js/bordereaux_relance.js?v=2",
+    "/assets/bank_retenue_sync/js/bordereaux_relance.js?v=3",
 ]
 
 # Vue liste : l'etat du certificat TEJ de chaque facture. Charge APRES le fichier d'ERPNext, ce

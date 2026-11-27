@@ -708,28 +708,42 @@ def _relance_autorisee() -> bool:
     return bordereaux_manquants.ROLE in frappe.get_roles()
 
 
+def _correction_autorisee() -> bool:
+    from bank_retenue_sync.bank import remises_a_corriger
+
+    return remises_a_corriger.ROLE in frappe.get_roles()
+
+
 @frappe.whitelist()
 def manquants_barre():
-    """Les bordereaux BIAT a photographier, pour la barre du Desk. None pour qui n'a pas le role de la relance :
-    l'ecran cesse alors de demander."""
-    from bank_retenue_sync.bank import bordereaux_manquants
+    """Ce que la barre du Desk doit montrer : les bordereaux BIAT a photographier (role « Relance bordereaux »)
+    et les remises a corriger (role « Alerte remises à corriger » : cheque ou traite introuvable, remise carte
+    a signaler, ecart bloquant d'un encaissement Zitouna — `bank/remises_a_corriger`). None pour qui n'a aucun des deux roles : l'ecran cesse de demander.
+    `n` reste le nombre de bordereaux a photographier (un ecran pas encore recharge le lit ainsi)."""
+    from bank_retenue_sync.bank import bordereaux_manquants, remises_a_corriger
 
-    if not _relance_autorisee():
+    relance, correction = _relance_autorisee(), _correction_autorisee()
+    if not (relance or correction):
         return None
-    lignes = bordereaux_manquants.liste()
+    lignes = bordereaux_manquants.liste() if relance else []
+    a_corriger = remises_a_corriger.liste() if correction else []
     return {"n": len(lignes), "lignes": lignes, "motifs": list(bordereaux_manquants.MOTIFS),
-            "photo": bool(frappe.has_permission(DOCTYPE, "create"))}
+            "photo": bool(frappe.has_permission(DOCTYPE, "create")),
+            "n_corriger": len(a_corriger), "a_corriger": a_corriger}
 
 
 @frappe.whitelist()
 def ecarter_manquant(cle: str, motif: str, note: str = None):
-    """« Pas de bordereau » : la ligne ne revient plus (motif garde, avec qui et quand)."""
-    from bank_retenue_sync.bank import bordereaux_manquants
+    """« Pas de bordereau » / « Ne plus signaler » : la ligne ne revient plus (motif garde, avec qui et quand)."""
+    from bank_retenue_sync.bank import bordereaux_manquants, remises_a_corriger
 
-    if not _relance_autorisee():
-        frappe.throw("Réservé à la relance des bordereaux.", frappe.PermissionError)
-    if not str(cle or "").startswith(bordereaux_manquants.BANQUE + "|"):
+    correction = bool(remises_a_corriger.genre_de(cle))
+    if not correction and not str(cle or "").startswith(bordereaux_manquants.BANQUE + "|"):
         frappe.throw("Ligne inconnue.")
+    if not (_correction_autorisee() if correction else _relance_autorisee()):
+        frappe.throw("Réservé à ceux qui suivent les remises.", frappe.PermissionError)
+    if correction:
+        motif = "Autre"                    # une remise a corriger ne s'ecarte qu'avec son explication
     bordereaux_manquants.ecarter(cle, motif, note)
     frappe.db.commit()
     frappe.publish_realtime("brs_bordereaux_manquants", {})

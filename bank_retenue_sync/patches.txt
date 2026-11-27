@@ -39,3 +39,5 @@ bank_retenue_sync.patches.majoration_carte_arrondi
 bank_retenue_sync.patches.ecarts_cartes_compte_perte
 # Relance des bordereaux de remise manquants : le role, donne a Salma et Nejib (25/11/2026).
 bank_retenue_sync.patches.relance_bordereaux_role
+# Alerte des remises a corriger (cheque / traite introuvable, remise carte a signaler) : le role, donne a Nejib et Wassim (27/11/2026).
+bank_retenue_sync.patches.alerte_remises_role
