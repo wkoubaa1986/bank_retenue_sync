@@ -35,13 +35,22 @@ _LEADING_NUM_RE = re.compile(r"(\d{5,})")
 _ARAMEX_NUM_RE = re.compile(r"ARAMEX\s*N\s*:?\s*(\d{6,})", re.I)
 # N° annonce explicitement : « Traite N° 011644580146 », « Effet 011289089405 ».
 _TRAITE_NUM_RE = re.compile(r"(?:TRAITE|EFFET)\D{0,20}?(\d{5,})", re.I)
+# « Chèque N° 0000383 », « Cheque 4001710 », « CHQ n° 0001259 ».
+_CHEQUE_NUM_RE = re.compile(r"(?:CH[EÈ]QUE|CHQ)\D{0,20}?(\d{5,})", re.I)
 
 
 def _extract_number(reference_no: str):
     """Extrait le n° identifiant (cheque/traite) du reference_no d'une PE.
     Prend la premiere suite d'au moins 5 chiffres : '4001710-Banque Zitouna' -> '4001710',
-    '011644584802' -> '011644584802'."""
-    m = _LEADING_NUM_RE.search(reference_no or "")
+    '011644584802' -> '011644584802'.
+
+    ⚠️ LE PREMIER NOMBRE N'EST PAS TOUJOURS LE CHEQUE. Le cheque d'un colis Aramex est saisi
+    « Aramex N: 55087934495 / Chèque N° 0000383 - BIAT » (Caisse › Encaissement Aramex). La regle prenait le
+    suivi Aramex : le cheque de 701 DT de la remise BIAT 9437101 restait « à vérifier » alors que la piece
+    existait (ACC-PAY-2026-08682, 27/11/2026). Le suivi annonce par « Aramex N: » est retire AVANT de chercher,
+    et le numero qu'annonce « Chèque » passe devant — comme pour les traites (`_extract_traite_number`)."""
+    ref = _ARAMEX_NUM_RE.sub(" ", reference_no or "")
+    m = _CHEQUE_NUM_RE.search(ref) or _LEADING_NUM_RE.search(ref)
     return m.group(1) if m else None
 
 

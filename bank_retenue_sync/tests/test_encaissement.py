@@ -25,6 +25,15 @@ class TestPendingNumberExtraction(unittest.TestCase):
         self.assertEqual(pending._extract_number("4001710-Banque Zitouna"), "4001710")
         self.assertEqual(pending._extract_number("011289089405"), "011289089405")
 
+    def test_cheque_number_ignores_aramex_tracking(self):
+        # Cas reel 27/11/2026 (ACC-PAY-2026-08682, remise BIAT 9437101) : le suivi Aramex vient en premier.
+        ref = "Aramex N: 55087934495 / Chèque N° 0000383 - BIAT"
+        self.assertEqual(pending._extract_number(ref), "0000383")
+        self.assertEqual(pending._extract_number("Chèque N° 0000383 / Aramex N: 55087934495"), "0000383")
+        self.assertEqual(pending._extract_number("WEB1-007803 cheque 4001710"), "4001710")
+        self.assertIsNone(pending._extract_number("Aramex N: 55087934495"))
+        self.assertIsNone(pending._extract_number(None))
+
     def test_traite_number_ignores_aramex_tracking(self):
         # Cas reel 03/11/2026 (ACC-PAY-2026-07075) : le suivi Aramex vient en premier.
         ref = "Aramex N: 51330111851 / Traite N° 011644580146 - Al Baraka Bank"
