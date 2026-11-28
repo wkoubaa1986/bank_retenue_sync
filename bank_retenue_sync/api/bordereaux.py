@@ -166,6 +166,10 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
          mal lu ou mal saisi, ou la piece a ete saisie a un autre montant que le sien (cas du 27/11/2026 : traite
          MH2C de 3 965,000 saisie a 4 005,000, le montant de la facture avant retenue a la source) ;
       5. meme numero hors du portefeuille (deja en banque, impaye…) — le compte est dit ;
+      5 bis. le seul paiement DEJA ENCAISSE AVEC CE BORDEREAU (`du_bordereau` : sa reference porte « BR:<n° du
+         bordereau> ») au meme montant — « Trouvé » : la piece avait ete rapprochee malgre un numero mal lu ou mal
+         saisi (passes 2, 2 bis), puis encaissee ; une nouvelle verification ne doit pas la perdre (28/11/2026 :
+         cheque lu 0000373, saisi 0000383, remise BIAT 9437101) ;
       sinon « Introuvable ».
     Un paiement ne sert qu'une fois."""
     libres = {c["name"]: c for c in portefeuille or []}
@@ -283,6 +287,17 @@ def rapprocher(pieces: list, portefeuille: list, ailleurs: list = ()) -> list:
                          montant_erp=round(float(c.get("montant") or 0), 3),
                          remarque=f"plus dans le portefeuille : paiement sur « {c.get('compte') or '?'} »"
                          + ("" if juste else " ; montant différent : " + ecart(piece, c)))
+            pris.add(c["name"])
+            continue
+        # 5 bis. Le seul paiement deja encaisse avec CE bordereau, au meme montant.
+        memes = [c for c in ailleurs or [] if c.get("du_bordereau") and c["name"] not in pris
+                 and piece.get("montant") is not None and _egaux(piece.get("montant"), c.get("montant"))]
+        if len(memes) == 1:
+            c = memes[0]
+            piece.update(etat=ETAT_TROUVE, paiement=c["name"], client=c.get("client"),
+                         montant_erp=round(float(c.get("montant") or 0), 3),
+                         remarque=f"déjà encaissé avec ce bordereau : paiement sur « {c.get('compte') or '?'} » ; "
+                                  f"numéro lu {piece.get('numero') or '?'}, ERPNext {c.get('numero') or '?'}")
             pris.add(c["name"])
         else:
             piece.update(etat=ETAT_INTROUVABLE, remarque="aucun paiement à ce numéro, ni un seul à ce montant")
@@ -504,9 +519,11 @@ def _contenu(fichier: str):
     return doc.get_content(), doc.file_name or fichier
 
 
-def _paiements(nature: str, numeros: list):
+def _paiements(nature: str, numeros: list, bordereau: str = None):
     """(portefeuille, ailleurs) pour `rapprocher`. Lecture seule, sans droits : la reponse ne montre que le
-    nom du paiement, le client et le montant des pieces que la personne a elle-meme remises."""
+    nom du paiement, le client et le montant des pieces que la personne a elle-meme remises.
+    `bordereau` : le n° du bordereau — les paiements deja encaisses AVEC lui (« BR:<n°> » dans leur reference)
+    rejoignent `ailleurs`, marques `du_bordereau`."""
     from bank_retenue_sync.encaissement import pending
 
     if nature == "Traites":
@@ -535,6 +552,20 @@ def _paiements(nature: str, numeros: list):
             if _chiffres(extraire(pe.reference_no)) == numero:
                 ailleurs.append({"name": pe.name, "numero": numero, "montant": pe.paid_amount,
                                  "client": pe.party, "compte": pe.paid_to})
+    bon = _chiffres(bordereau)
+    if len(bon) >= 4:
+        connus = {c["name"] for c in ailleurs}
+        for pe in frappe.db.sql(
+                """select name, reference_no, paid_amount, party, paid_to from `tabPayment Entry`
+                   where docstatus = 1 and payment_type in ('Receive', 'Internal Transfer')
+                     and paid_to != %s and reference_no like %s
+                   order by posting_date desc, creation desc limit 200""", (compte, f"%BR:%{bon}%"), as_dict=True):
+            if pe.name in connus or not re.search(r"BR:\s*0*" + bon + r"(?!\d)", pe.reference_no or ""):
+                continue
+            # Le n° de la piece : la reference SANS sa mention « BR:… » (elle porterait le n° du bordereau).
+            numero = extraire(re.sub(r"BR:\s*\d+", " ", pe.reference_no or ""))
+            ailleurs.append({"name": pe.name, "numero": numero, "montant": pe.paid_amount, "client": pe.party,
+                             "compte": pe.paid_to, "du_bordereau": True})
     return portefeuille, ailleurs
 
 
@@ -544,7 +575,7 @@ CHAMPS_PIECE = ("numero", "banque", "tireur", "echeance", "montant", "doute")
 def _poser(doc, pieces: list, lecture: dict = None, avant: list = (), relancer: bool = True):
     """Rapproche `pieces` et ecrit le resultat sur le bordereau. `avant` : remarques a mettre en tete.
     `relancer=False` : appele DEPUIS le passage BIAT (`reverifier_a_signaler`) — ne pas le remettre en file."""
-    portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
+    portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces], doc.numero)
     rapprochees = rapprocher(pieces, portefeuille, ailleurs)
     if lecture is None:
         # Reverification apres correction a la main : ce qui a ete lu sur le scan reste la reference.
@@ -556,7 +587,7 @@ def _poser(doc, pieces: list, lecture: dict = None, avant: list = (), relancer: 
 
     corrections = piece_nette.corriger_depuis_bordereau(doc.name, rapprochees, portefeuille, lecture.get("total"))
     if corrections:
-        portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
+        portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces], doc.numero)
         rapprochees = rapprocher(pieces, portefeuille, ailleurs)
         avant = list(avant) + [c["phrase"] for c in corrections]
     etat = bilan(rapprochees, lecture, {"numero": doc.numero, "montant_total": doc.montant_total, "nombre": doc.nombre},
@@ -667,7 +698,7 @@ def reverifier_a_signaler() -> list:
             for p in pieces:
                 p["numero"] = "".join(c for c in str(p["numero"] or "") if c.isdigit())
                 p["montant"] = frappe.utils.flt(p["montant"], 3) if p["montant"] not in (None, "") else None
-            portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces])
+            portefeuille, ailleurs = _paiements(doc.nature, [p.get("numero") for p in pieces], doc.numero)
             neuf = rapprocher(pieces, portefeuille, ailleurs)
             ecrit = [{"numero": "".join(c for c in str(l.numero or "") if c.isdigit()), "etat": l.etat, "paiement": l.paiement}
                      for l in doc.pieces]

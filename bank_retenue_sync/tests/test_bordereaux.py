@@ -126,6 +126,29 @@ class TestRapprochement(unittest.TestCase):
         r = B.rapprocher([{"numero": "88", "montant": 581.0}], [_pe("PE-088", "0000088", 581.0, en_encaissement=True)])
         self.assertEqual(r[0]["remarque"], "déjà porté sur un encaissement")
 
+    def test_deja_encaisse_avec_ce_bordereau_malgre_un_numero_different(self):
+        """Cas reel 28/11/2026 (remise BIAT 9437101) : cheque lu 0000373, saisi 0000383, rapproche puis encaisse. Une
+        nouvelle verification le retrouve par le paiement qui porte « BR:9437101 », au meme montant."""
+        encaisse = dict(_pe("ACC-PAY-2026-08694", "0000383", 701.0, client="KARRAY SARRAH", compte="BIAT - A&S"),
+                        du_bordereau=True)
+        r = B.rapprocher([{"numero": "0000373", "montant": 701.0, "tireur": "Mme Karray Sana"}], [], [encaisse])
+        self.assertEqual((r[0]["etat"], r[0]["paiement"]), ("Trouvé", "ACC-PAY-2026-08694"))
+        self.assertIn("déjà encaissé avec ce bordereau", r[0]["remarque"])
+        self.assertIn("0000383", r[0]["remarque"])
+        # Un paiement en banque au meme montant mais d'un AUTRE bordereau ne designe rien.
+        autre = _pe("PE-AUTRE", "0000383", 701.0, compte="BIAT - A&S")
+        r = B.rapprocher([{"numero": "0000373", "montant": 701.0}], [], [autre])
+        self.assertEqual((r[0]["etat"], r[0]["paiement"]), ("Introuvable", None))
+        # Deux pieces du bordereau au meme montant : on ne choisit pas ; un montant different non plus.
+        r = B.rapprocher([{"numero": "0000373", "montant": 701.0}], [], [encaisse, dict(encaisse, name="PE-2")])
+        self.assertEqual(r[0]["etat"], "Introuvable")
+        r = B.rapprocher([{"numero": "0000373", "montant": 700.0}], [], [encaisse])
+        self.assertEqual(r[0]["etat"], "Introuvable")
+        # Chaque paiement ne sert qu'une fois : deux pieces, deux paiements du bordereau.
+        deux = [encaisse, dict(_pe("PE-B", "0000999", 50.0, compte="BIAT - A&S"), du_bordereau=True)]
+        r = B.rapprocher([{"numero": "0000373", "montant": 701.0}, {"numero": "0000998", "montant": 50.0}], [], deux)
+        self.assertEqual([x["paiement"] for x in r], ["ACC-PAY-2026-08694", "PE-B"])
+
     def test_meme_tireur(self):
         self.assertTrue(B.meme_tireur("Maison Hammami de chauffage et climatisation MH2C", "MH2C"))
         self.assertTrue(B.meme_tireur("Sté BIO AQUA", "Ste BIO AQUA"))
